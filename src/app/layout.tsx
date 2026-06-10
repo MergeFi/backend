@@ -2,6 +2,7 @@ import type { Metadata } from 'next';
 import './globals.css';
 import { NavBar } from '@/components/NavBar';
 import { ToastContainer } from '@/components/Toast';
+import { NetworkBanner } from '@/components/NetworkBanner';
 import { WalletProvider } from '@/context/WalletContext';
 import { ToastProvider } from '@/context/ToastContext';
 
@@ -21,6 +22,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
       <body className="bg-gray-950 text-white antialiased">
         <WalletProvider>
           <ToastProvider>
+            <NetworkBanner />
             <NavBar />
             {children}
             <footer className="border-t border-white/10 py-8 text-center text-xs text-gray-600">
