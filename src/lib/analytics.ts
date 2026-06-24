@@ -10,7 +10,8 @@ type EventName =
   | 'claim_success'
   | 'claim_error'
   | 'product_view'
-  | 'oracle_refresh';
+  | 'oracle_refresh'
+  | 'app_error';
 
 interface EventProperties {
   [key: string]: string | number | boolean | undefined;

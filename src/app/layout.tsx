@@ -6,6 +6,7 @@ import { NetworkBanner } from '@/components/NetworkBanner';
 import { WalletProvider } from '@/context/WalletContext';
 import { ToastProvider } from '@/context/ToastContext';
 import { Analytics } from '@/components/Analytics';
+import { ErrorBoundary } from '@/components/ErrorBoundary';
 
 export const metadata: Metadata = {
   title:       'Parashield — Parametric Insurance on Stellar',
@@ -26,7 +27,9 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
             <Analytics />
             <NetworkBanner />
             <NavBar />
-            {children}
+            <ErrorBoundary>
+              {children}
+            </ErrorBoundary>
             <footer className="border-t border-white/10 py-8 text-center text-xs text-gray-600">
               © 2026 Parashield · Built on Stellar · Powered by Soroban
             </footer>

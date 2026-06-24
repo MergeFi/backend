@@ -2,16 +2,16 @@
 
 import { use } from 'react';
 import { usePolicy } from '@/hooks/usePolicies';
-import { useClaim } from '@/hooks/useClaim';
 import { useWallet } from '@/hooks/useWallet';
 import { OracleDataWidget } from '@/components/OracleDataWidget';
 import { PolicyStatusTimeline } from '@/components/PolicyStatusTimeline';
 import { TransactionLink } from '@/components/TransactionLink';
 import { Badge } from '@/components/Badge';
 import { FullPageSpinner } from '@/components/LoadingSpinner';
-import { formatUSDC, formatDate, timeLeft, basisPointsToPercent } from '@/lib/format';
-import { useToast } from '@/context/ToastContext';
-import Link from 'next/link';
+import { formatUSDC, formatDate, timeLeft, shortenAddress } from '@/lib/format';
+import { CopyButton } from '@/components/CopyButton';
+import { ErrorBoundary } from '@/components/ErrorBoundary';
+import { ClaimStatus } from '@/components/ClaimStatus';
 
 export default function PolicyDetailPage({ params }: { params: Promise<{ id: string }> }) {
   const { id }            = use(params);
@@ -30,13 +30,6 @@ export default function PolicyDetailPage({ params }: { params: Promise<{ id: str
     );
   }
 
-  async function handleClaim() {
-    if (!address) { toast('Connect your wallet first', 'warning'); return; }
-    await submitClaim(address, id);
-    if (!claimError) toast('Claim submitted successfully', 'success');
-    else toast(claimError, 'error');
-  }
-
   const canClaim = policy.status === 'Active' && address === policy.policyholder;
 
   return (
@@ -49,13 +42,37 @@ export default function PolicyDetailPage({ params }: { params: Promise<{ id: str
       </div>
 
       <div className="grid gap-4 sm:grid-cols-2">
+        {/* Policyholder — truncated display with copy affordance for the full address */}
+        <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-5">
+          <p className="text-xs uppercase tracking-widest text-gray-500">Policy holder</p>
+          <div className="mt-1.5 flex items-center gap-2">
+            <span className="font-mono text-sm text-white">{shortenAddress(policy.policyholder)}</span>
+            <CopyButton text={policy.policyholder} label="Copy address" />
+          </div>
+        </div>
+
         {[
-          { label: 'Policy holder',  value: `${policy.policyholder.slice(0, 8)}…${policy.policyholder.slice(-4)}` },
-          { label: 'Coverage',       value: formatUSDC(policy.coverage) },
-          { label: 'Premium paid',   value: formatUSDC(policy.premiumPaid) },
-          { label: 'Oracle key',     value: policy.oracleKey },
-          { label: 'Start date',     value: formatDate(policy.startTime) },
-          { label: 'Expiry',         value: `${formatDate(policy.endTime)} (${timeLeft(policy.endTime)})` },
+          { label: 'Coverage',   value: formatUSDC(policy.coverage) },
+          { label: 'Premium paid', value: formatUSDC(policy.premiumPaid) },
+        ].map(({ label, value }) => (
+          <div key={label} className="rounded-2xl border border-white/10 bg-white/[0.03] p-5">
+            <p className="text-xs uppercase tracking-widest text-gray-500">{label}</p>
+            <p className="mt-1.5 font-mono text-sm text-white break-all">{value}</p>
+          </div>
+        ))}
+
+        {/* Oracle key — full value with inline copy button */}
+        <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-5">
+          <p className="text-xs uppercase tracking-widest text-gray-500">Oracle key</p>
+          <div className="mt-1.5 flex items-center gap-2">
+            <span className="font-mono text-sm text-white break-all">{policy.oracleKey}</span>
+            <CopyButton text={policy.oracleKey} label="Copy key" />
+          </div>
+        </div>
+
+        {[
+          { label: 'Start date', value: formatDate(policy.startTime) },
+          { label: 'Expiry',     value: `${formatDate(policy.endTime)} (${timeLeft(policy.endTime)})` },
         ].map(({ label, value }) => (
           <div key={label} className="rounded-2xl border border-white/10 bg-white/[0.03] p-5">
             <p className="text-xs uppercase tracking-widest text-gray-500">{label}</p>
@@ -79,7 +96,15 @@ export default function PolicyDetailPage({ params }: { params: Promise<{ id: str
       {policy.oracleKey && (
         <div className="mt-6">
           <h2 className="mb-3 text-sm font-semibold text-gray-400">Live Oracle Reading</h2>
-          <OracleDataWidget oracleKey={policy.oracleKey} />
+          <ErrorBoundary
+            fallback={
+              <p className="rounded-2xl border border-red-500/20 bg-red-500/5 px-4 py-3 text-sm text-red-400">
+                Oracle data unavailable — unable to parse the latest reading.
+              </p>
+            }
+          >
+            <OracleDataWidget oracleKey={policy.oracleKey} />
+          </ErrorBoundary>
         </div>
       )}
 
@@ -90,6 +115,9 @@ export default function PolicyDetailPage({ params }: { params: Promise<{ id: str
             If the oracle has confirmed the trigger condition was met, you can submit a claim.
             The smart contract will verify and pay out automatically.
           </p>
+          <div className="mt-4">
+            <ClaimStatus policyId={id} />
+          </div>
           <button
             onClick={handleClaim}
             disabled={step === 'submitting' || step === 'polling'}

@@ -7,6 +7,7 @@ import { PolicyCard } from '@/components/PolicyCard';
 import { SkeletonCard } from '@/components/Skeleton';
 import { EmptyState } from '@/components/EmptyState';
 import { formatUSDC } from '@/lib/format';
+import { StatsCard } from '@/components/StatsCard';
 import Link from 'next/link';
 
 export default function DashboardPage() {
@@ -32,17 +33,10 @@ export default function DashboardPage() {
 
       {/* Stats */}
       <div className="mt-8 grid grid-cols-2 gap-4 sm:grid-cols-4">
-        {[
-          { label: 'Active policies',  value: active.length.toString() },
-          { label: 'Total policies',   value: policies.length.toString() },
-          { label: 'Total coverage',   value: formatUSDC(totalCov) },
-          { label: 'Total premiums',   value: formatUSDC(totalPaid) },
-        ].map(({ label, value }) => (
-          <div key={label} className="rounded-2xl border border-white/10 bg-white/[0.03] p-5">
-            <p className="text-xs uppercase tracking-widest text-gray-500">{label}</p>
-            <p className="mt-2 text-2xl font-black text-white">{value}</p>
-          </div>
-        ))}
+        <StatsCard label="Active policies" value={active.length.toString()} />
+        <StatsCard label="Total policies"  value={policies.length.toString()} />
+        <StatsCard label="Total coverage"  value={formatUSDC(totalCov)} />
+        <StatsCard label="Total premiums"  value={formatUSDC(totalPaid)} />
       </div>
 
       {/* Active policies */}

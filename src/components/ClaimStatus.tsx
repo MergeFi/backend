@@ -5,6 +5,7 @@ import { useWallet } from '@/hooks/useWallet';
 import { Badge } from './Badge';
 import { LoadingSpinner } from './LoadingSpinner';
 import { formatDateTime, formatUSDC } from '@/lib/format';
+import Link from 'next/link';
 
 interface ClaimStatusProps {
   policyId: string;
@@ -51,6 +52,18 @@ export function ClaimStatus({ policyId }: ClaimStatusProps) {
         <button onClick={reset} className="text-xs text-gray-400 hover:text-white transition-colors">
           Try again
         </button>
+      </div>
+    );
+  }
+
+  if (step === 'timeout') {
+    return (
+      <div className="rounded-xl border border-yellow-500/20 bg-yellow-500/5 p-4 text-sm text-yellow-300">
+        Claim submitted — processing is taking longer than usual. Check your{' '}
+        <Link href="/claims" className="underline hover:text-yellow-200 transition-colors">
+          claim history
+        </Link>{' '}
+        for the final status.
       </div>
     );
   }
