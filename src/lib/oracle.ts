@@ -3,6 +3,8 @@ export interface OracleKey {
   location?: string;
   flightNumber?: string;
   period?: string;
+  defiKey?: string;
+  rawKey?: string;
 }
 
 export function parseOracleKey(key: string): OracleKey {
@@ -18,7 +20,14 @@ export function parseOracleKey(key: string): OracleKey {
     const [, flightNumber, date] = key.split(':');
     return { dataType: 'flight', flightNumber, period: date };
   }
-  return { dataType: 'defi' };
+  if (key === 'defi') {
+    return { dataType: 'defi' };
+  }
+  if (key.startsWith('defi:')) {
+    const [, defiKey] = key.split(':', 2);
+    return { dataType: 'defi', defiKey };
+  }
+  return { dataType: 'defi', rawKey: key };
 }
 
 export function oracleKeyLabel(key: string): string {
@@ -30,6 +39,14 @@ export function oracleKeyLabel(key: string): string {
       return `Temperature · ${parsed.location ?? ''} · ${parsed.period ?? ''}`;
     case 'flight':
       return `Flight ${parsed.flightNumber ?? ''} · ${parsed.period ?? ''}`;
+    case 'defi':
+      if (parsed.defiKey) {
+        return `DeFi · ${parsed.defiKey}`;
+      }
+      if (!parsed.rawKey || parsed.rawKey === 'defi') {
+        return 'DeFi Exploit Monitor';
+      }
+      return parsed.rawKey;
     default:
       return key;
   }

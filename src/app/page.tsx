@@ -14,7 +14,7 @@ import type { Category } from '@/types';
 type CategoryFilterValue = Category | 'all';
 
 export default function HomePage() {
-  const { products, loading } = useProducts();
+  const { products, loading, error, refetch } = useProducts();
   const [searchQuery, setSearchQuery]   = useState('');
   const [category, setCategory]         = useState<CategoryFilterValue>('all');
   const debouncedQuery                  = useDebounce(searchQuery, 250);
@@ -85,6 +85,16 @@ export default function HomePage() {
         {loading ? (
           <div className="grid grid-cols-1 gap-6 sm:grid-cols-2 lg:grid-cols-4">
             {[1, 2, 3, 4].map((i) => <SkeletonCard key={i} />)}
+          </div>
+        ) : error ? (
+          <div className="rounded-2xl border border-red-500/20 bg-red-500/5 p-6 text-sm text-red-400">
+            <p>{error}</p>
+            <button
+              onClick={refetch}
+              className="mt-3 rounded-lg border border-red-500/30 px-4 py-2 text-xs text-red-400 hover:bg-red-500/10 transition-colors"
+            >
+              Try again
+            </button>
           </div>
         ) : filteredProducts.length === 0 ? (
           <EmptyState
