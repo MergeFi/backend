@@ -134,17 +134,3 @@ export async function signAuthMessage(message: string): Promise<string> {
     `Please upgrade your wallet extension. Challenge: ${encoded}`,
   );
 }
-
-export function fromStroops(stroops: bigint | string, decimals = 7): string {
-  const n = BigInt(stroops);
-  const divisor = 10n ** BigInt(decimals);
-  const whole = n / divisor;
-  const frac  = n % divisor;
-  return `${whole}.${frac.toString().padStart(decimals, '0')}`;
-}
-
-export function toStroops(display: string, decimals = 7): bigint {
-  const [whole = '0', frac = ''] = display.split('.');
-  const fracPadded = frac.padEnd(decimals, '0').slice(0, decimals);
-  return BigInt(whole) * 10n ** BigInt(decimals) + BigInt(fracPadded || '0');
-}
