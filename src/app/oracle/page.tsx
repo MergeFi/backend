@@ -1,7 +1,7 @@
 'use client';
 
 import { useAllOracleReadings } from '@/hooks/useOracle';
-import { FullPageSpinner } from '@/components/LoadingSpinner';
+import { SkeletonTable } from '@/components/Skeleton';
 import { Badge } from '@/components/Badge';
 import { formatOracleValue, formatDateTime } from '@/lib/format';
 import { oracleKeyLabel, confidenceLabel, confidenceColour } from '@/lib/oracle';
@@ -26,7 +26,11 @@ export default function OraclePage() {
         </button>
       </div>
 
-      {loading && <FullPageSpinner />}
+      {loading && readings.length === 0 && (
+        <div className="mt-8">
+          <SkeletonTable rows={5} />
+        </div>
+      )}
 
       {error && (
         <div className="mt-8 rounded-2xl border border-red-500/20 bg-red-500/5 p-6 text-sm text-red-400">
@@ -40,8 +44,8 @@ export default function OraclePage() {
         </div>
       )}
 
-      {!loading && readings.length > 0 && (
-        <div className="mt-8 overflow-x-auto rounded-2xl border border-white/10 bg-white/[0.02]">
+      {readings.length > 0 && (
+        <div className={`mt-8 overflow-x-auto rounded-2xl border border-white/10 bg-white/[0.02] transition-opacity ${loading ? 'opacity-50' : ''}`}>
           <table className="w-full text-sm">
             <thead>
               <tr className="border-b border-white/10 text-left text-xs uppercase tracking-wider text-gray-500">
