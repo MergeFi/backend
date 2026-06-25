@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect } from 'react';
 import type { PoolStats } from '@/types';
 import { useWallet } from '@/hooks/useWallet';
 import { fetchPoolShares } from '@/lib/api';
@@ -46,9 +46,6 @@ export function DepositModal({ pool, onClose }: Props) {
   const [busy,         setBusy]         = useState(false);
   const [error,        setError]        = useState('');
 
-  const poolTotalLiquidityRef = useRef(pool.totalLiquidity);
-  useEffect(() => { poolTotalLiquidityRef.current = pool.totalLiquidity; });
-
   useEffect(() => {
     let cancelled = false;
     setLoadingShares(true);
@@ -61,9 +58,6 @@ export function DepositModal({ pool, onClose }: Props) {
       })
       .catch((err) => {
         if (cancelled) return;
-        const fallback = BigInt(poolTotalLiquidityRef.current);
-        setShareSupply(fallback);
-        setTotalLiquidity(fallback);
         setError(toUserMessage(err));
       })
       .finally(() => { if (!cancelled) setLoadingShares(false); });
@@ -72,7 +66,8 @@ export function DepositModal({ pool, onClose }: Props) {
 
   const amountNum     = parseFloat(amount) || 0;
   const depositStroops = amount ? displayToStroops(amount) : 0n;
-  const estimatedShares = shareSupply !== null && totalLiquidity !== null
+  const sharesAvailable = shareSupply !== null && totalLiquidity !== null;
+  const estimatedShares = sharesAvailable
     ? estimateShares(depositStroops, totalLiquidity, shareSupply)
     : 0n;
 
@@ -124,19 +119,19 @@ export function DepositModal({ pool, onClose }: Props) {
           <div className="mt-2 flex justify-between text-gray-400">
             <span>APY</span>
             <span className="text-emerald-400 font-semibold">
-              {pool.apy != null ? `${pool.apy.toFixed(2)}%` : '—'}
+              {pool.apy != null ? `${(pool.apy * 100).toFixed(2)}%` : '—'}
             </span>
           </div>
           <div className="mt-2 flex justify-between text-gray-400">
             <span>Utilization</span>
             <span className="text-white">
-              {pool.utilizationRate != null ? `${pool.utilizationRate.toFixed(2)}%` : '—'}
+              {pool.utilizationRate != null ? `${(pool.utilizationRate * 100).toFixed(2)}%` : '—'}
             </span>
           </div>
           <div className="mt-2 flex justify-between text-gray-400">
             <span>Estimated LP shares</span>
             <span className="font-semibold text-emerald-400">
-              {loadingShares ? '…' : stroopsToDisplay(estimatedShares.toString(), 4)}
+              {loadingShares ? '…' : sharesAvailable ? stroopsToDisplay(estimatedShares.toString(), 4) : '—'}
             </span>
           </div>
         </div>

@@ -71,7 +71,7 @@ export function NavBar() {
                 href={href}
                 onClick={() => setMobileMenuOpen(false)}
                 className={`block py-2 text-sm transition-colors hover:text-white ${
-                  pathname === href
+                  isActive(pathname, href)
                     ? 'text-white border-b-2 border-teal-400 pb-0.5'
                     : 'text-gray-400'
                 }`}
