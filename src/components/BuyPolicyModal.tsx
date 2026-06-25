@@ -262,8 +262,8 @@ export function BuyPolicyModal({ product, onClose }: Props) {
                 <input
                   type="text"
                   value={oracleKey}
-                  onChange={(e) => setOracleKey(e.target.value)}
-                  placeholder='e.g. "dis2606" for Disaster June 2026'
+                  onChange={(e) => { setOracleKey(e.target.value); setError(''); }}
+                  placeholder='e.g. "kis2606" for Kisumu June 2026'
                   maxLength={9}
                   className="w-full rounded-xl border border-white/10 bg-white/5 px-4 py-2.5 text-sm focus:border-teal-500 focus:outline-none"
                 />
@@ -273,20 +273,6 @@ export function BuyPolicyModal({ product, onClose }: Props) {
                 </div>
               </div>
             )}
-            <div>
-              <label className="mb-1 block text-xs font-semibold uppercase tracking-widest text-gray-400">
-                Oracle Key
-              </label>
-              <input
-                type="text"
-                value={oracleKey}
-                onChange={(e) => { setOracleKey(e.target.value); setError(''); }}
-                placeholder='e.g. "kis2606" for Kisumu June 2026'
-                maxLength={9}
-                className="w-full rounded-xl border border-white/10 bg-white/5 px-4 py-2.5 text-sm focus:border-teal-500 focus:outline-none"
-              />
-              <p className="mt-1 text-[10px] text-gray-500">Max 9 chars (Soroban Symbol)</p>
-            </div>
           </>
         )}
 
