@@ -31,6 +31,7 @@ export interface Policy {
   oracleKey:    string;
   startTime:    number;  // unix epoch seconds
   endTime:      number;  // unix epoch seconds
+  cancelledAt?: number;  // unix epoch seconds, set when status === 'Cancelled'
   status:       PolicyStatus;
   contractTxHash?: string;
 }

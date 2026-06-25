@@ -11,7 +11,7 @@ interface OracleDataWidgetProps {
 }
 
 export function OracleDataWidget({ oracleKey, className }: OracleDataWidgetProps) {
-  const { reading, loading, error } = useOracleReading(oracleKey);
+  const { reading, loading, error, refetch } = useOracleReading(oracleKey);
 
   if (loading) {
     return (
@@ -21,10 +21,31 @@ export function OracleDataWidget({ oracleKey, className }: OracleDataWidgetProps
     );
   }
 
-  if (error || !reading) {
+  if (error) {
     return (
-      <div className={`flex h-28 items-center justify-center rounded-2xl border border-white/10 bg-white/[0.03] text-sm text-gray-500 ${className ?? ''}`}>
-        No oracle data
+      <div className={`flex h-28 flex-col items-center justify-center gap-2 rounded-2xl border border-red-500/20 bg-white/[0.03] text-sm ${className ?? ''}`}>
+        <p className="text-red-400">{error}</p>
+        <button
+          onClick={refetch}
+          className="rounded-lg border border-white/10 px-3 py-1 text-xs text-gray-400 transition-all hover:border-white/20 hover:text-white active:scale-95"
+        >
+          Retry
+        </button>
+      </div>
+    );
+  }
+
+  if (!reading) {
+    return (
+      <div className={`flex h-28 flex-col items-center justify-center gap-2 rounded-2xl border border-white/10 bg-white/[0.03] text-sm text-gray-500 ${className ?? ''}`}>
+        <p>No oracle data</p>
+        <button
+          onClick={refetch}
+          className="rounded-lg border border-white/10 px-3 py-1 text-xs text-gray-400 transition-all hover:border-white/20 hover:text-white active:scale-95"
+          aria-label="Refresh oracle data"
+        >
+          ↻ Refresh
+        </button>
       </div>
     );
   }

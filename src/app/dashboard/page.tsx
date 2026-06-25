@@ -8,6 +8,7 @@ import { SkeletonCard } from "@/components/Skeleton";
 import { EmptyState } from "@/components/EmptyState";
 import { formatUSDC } from "@/lib/format";
 import { StatsCard } from "@/components/StatsCard";
+import { WalletAddressDisplay } from "@/components/WalletAddressDisplay";
 import Link from "next/link";
 
 export default function DashboardPage() {
@@ -29,7 +30,7 @@ export default function DashboardPage() {
   return (
     <main className="mx-auto max-w-7xl px-6 py-12">
       <h1 className="text-2xl font-bold">Dashboard</h1>
-      <p className="mt-1 text-sm text-gray-400 font-mono">{address}</p>
+      <WalletAddressDisplay full className="mt-1" />
 
       {/* Stats */}
       {error ? (
