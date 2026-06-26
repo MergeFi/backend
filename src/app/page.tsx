@@ -78,7 +78,6 @@ export default function HomePage() {
         <CategoryFilter value={category} onChange={setCategory} className="mb-4" />
         <SearchBar
           onSearch={setSearchQuery}
-          debounceMs={0}
           placeholder="Search products…"
           className="mb-8 max-w-md"
         />

@@ -13,7 +13,7 @@ interface ClaimStatusProps {
 
 export function ClaimStatus({ policyId }: ClaimStatusProps) {
   const { address }                           = useWallet();
-  const { step, claim, error, submit, reset } = useClaim();
+  const { step, claim, error, submit, reset } = useClaim(policyId);
 
   async function handleSubmit() {
     if (!address) return;

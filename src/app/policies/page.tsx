@@ -1,6 +1,6 @@
 'use client';
 
-import { useLocalStorage } from '@/hooks/useLocalStorage';
+import { useState } from 'react';
 import { useWallet } from '@/hooks/useWallet';
 import { usePolicies } from '@/hooks/usePolicies';
 import { PolicyCard } from '@/components/PolicyCard';
@@ -17,7 +17,7 @@ const FILTERS: Filter[] = ['All', 'Active', 'Expired', 'Claimed'];
 export default function PoliciesPage() {
   const { address, connected } = useWallet();
   const { policies, loading, error, refetch } = usePolicies(address);
-  const [filter, setFilter]    = useLocalStorage<Filter>('ps_policy_filter', 'All');
+  const [filter, setFilter]    = useState<Filter>('All');
 
   if (!connected) {
     return (

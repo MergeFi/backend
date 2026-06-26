@@ -7,6 +7,8 @@ import { WalletProvider } from '@/context/WalletContext';
 import { ToastProvider } from '@/context/ToastContext';
 import { Analytics } from '@/components/Analytics';
 import { ErrorBoundary } from '@/components/ErrorBoundary';
+import Link from 'next/link';
+import { LogoWordmark } from '@/components/Logo';
 
 export const metadata: Metadata = {
   metadataBase: new URL('https://parashield.app'),
@@ -36,6 +38,22 @@ export const metadata: Metadata = {
   },
 };
 
+const NavBarFallback = (
+  <nav className="sticky top-0 z-40 border-b border-white/10 bg-gray-950/90 backdrop-blur-md">
+    <div className="mx-auto flex h-16 max-w-7xl items-center justify-between px-6">
+      <Link href="/">
+        <LogoWordmark size={28} />
+      </Link>
+    </div>
+  </nav>
+);
+
+const FooterFallback = (
+  <footer className="border-t border-white/10 py-8 text-center text-xs text-gray-600">
+    © 2026 Parashield · Built on Stellar · Powered by Soroban
+  </footer>
+);
+
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
     <html lang="en">
@@ -44,14 +62,20 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
           <ToastProvider>
             <Analytics />
             <NetworkBanner />
-            <NavBar />
+            <ErrorBoundary fallback={NavBarFallback}>
+              <NavBar />
+            </ErrorBoundary>
             <ErrorBoundary>
               {children}
             </ErrorBoundary>
-            <footer className="border-t border-white/10 py-8 text-center text-xs text-gray-600">
-              © 2026 Parashield · Built on Stellar · Powered by Soroban
-            </footer>
-            <ToastContainer />
+            <ErrorBoundary fallback={FooterFallback}>
+              <footer className="border-t border-white/10 py-8 text-center text-xs text-gray-600">
+                © 2026 Parashield · Built on Stellar · Powered by Soroban
+              </footer>
+            </ErrorBoundary>
+            <ErrorBoundary fallback={null}>
+              <ToastContainer />
+            </ErrorBoundary>
           </ToastProvider>
         </WalletProvider>
       </body>
