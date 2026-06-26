@@ -89,6 +89,22 @@ export async function buildBuyPolicyTx(
   return assembled.toXDR();
 }
 
+const TX_POLL_INTERVAL_MS = 3_000;
+const TX_POLL_MAX_ATTEMPTS = 10;
+
+async function waitForConfirmation(hash: string): Promise<string> {
+  const rpc = getRpc();
+  for (let attempt = 0; attempt < TX_POLL_MAX_ATTEMPTS; attempt++) {
+    await new Promise((r) => setTimeout(r, TX_POLL_INTERVAL_MS));
+    const status = await rpc.getTransaction(hash);
+    if (status.status === 'SUCCESS') return hash;
+    if (status.status === 'FAILED') {
+      throw new ContractError(`Transaction failed on-chain: ${JSON.stringify((status as any).resultXdr ?? status)}`);
+    }
+  }
+  throw new ContractError(`Transaction not confirmed after ${TX_POLL_MAX_ATTEMPTS * TX_POLL_INTERVAL_MS / 1000}s — hash: ${hash}`);
+}
+
 // invokeBuyPolicy reuses buildBuyPolicyTx so the buy_policy argument list
 // lives in exactly one place — any future contract signature change only
 // needs to be updated in buildBuyPolicyTx (issue #128).
@@ -107,7 +123,7 @@ export async function invokeBuyPolicy(
   if (submitResult.status === 'ERROR') {
     throw new ContractError(`Transaction rejected: ${JSON.stringify(submitResult.errorResult)}`);
   }
-  return submitResult.hash;
+  return waitForConfirmation(submitResult.hash);
 }
 
 export async function invokeSubmitClaim(
@@ -145,7 +161,7 @@ export async function invokeSubmitClaim(
   if (submitResult.status === 'ERROR') {
     throw new ContractError(`Claim transaction rejected: ${JSON.stringify(submitResult.errorResult)}`);
   }
-  return submitResult.hash;
+  return waitForConfirmation(submitResult.hash);
 }
 
 export async function buildDepositTx(
