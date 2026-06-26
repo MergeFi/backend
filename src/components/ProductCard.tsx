@@ -43,7 +43,7 @@ export function ProductCard({ product }: ProductCardProps) {
           </div>
           <div className="rounded-xl bg-white/5 p-3">
             <dt className="text-[10px] uppercase tracking-widest text-gray-500">Max Coverage</dt>
-            <dd className="mt-0.5 font-semibold text-white">{product.coverageMax} USDC</dd>
+            <dd className="mt-0.5 font-semibold text-white">{formatUSDC(product.coverageMax)}</dd>
           </div>
         </dl>
 

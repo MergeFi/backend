@@ -6,6 +6,7 @@ import {
   basisPointsToPercent,
   formatOracleValue,
   timeLeft,
+  estimatePremium,
 } from '../lib/format';
 
 describe('stroopsToDisplay', () => {
@@ -79,5 +80,28 @@ describe('formatOracleValue', () => {
     const result = formatOracleValue('1200000000', 'flight');
     expect(result).toContain('120');
     expect(result).toContain('min');
+  });
+
+  it('handles large values without precision loss', () => {
+    // 9,007,199,254,740,991.4740991 mm rainfall
+    const result = formatOracleValue('90071992547409914740991', 'weather');
+    expect(result).toContain('9007199254740991.47');
+  });
+});
+
+describe('estimatePremium', () => {
+  it('matches on-chain integer calculation for edge case 1', () => {
+    // 9999.99 coverage, 500 bps (5%)
+    expect(estimatePremium('9999.99', 500)).toBe('499.99');
+  });
+
+  it('matches on-chain integer calculation for edge case 2', () => {
+    // 1000.01 coverage, 333 bps (3.33%)
+    expect(estimatePremium('1000.01', 333)).toBe('33.30');
+  });
+
+  it('matches on-chain integer calculation for edge case 3', () => {
+    // 0.05 coverage, 100 bps (1%)
+    expect(estimatePremium('0.05', 100)).toBe('0.00');
   });
 });

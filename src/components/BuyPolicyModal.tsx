@@ -3,7 +3,7 @@
 import { useState, useEffect } from 'react';
 import type { Product } from '@/types';
 import { useWallet } from '@/hooks/useWallet';
-import { displayToStroops, basisPointsToPercent } from '@/lib/format';
+import { displayToStroops, stroopsToDisplay, estimatePremium, basisPointsToPercent } from '@/lib/format';
 import { toUserMessage } from '@/lib/errors';
 import { invokeBuyPolicy } from '@/lib/contract';
 import { buildRainfallKey, buildFlightKey } from '@/lib/oracle';
@@ -39,9 +39,10 @@ export function BuyPolicyModal({ product, onClose }: Props) {
   const [flightNumber, setFlightNumber] = useState('');
   const [flightDate, setFlightDate] = useState(new Date().toISOString().split('T')[0]);
 
+  const minDisplay = stroopsToDisplay(product.coverageMin, 2);
+  const maxDisplay = stroopsToDisplay(product.coverageMax, 2);
   const coverageNum   = parseFloat(coverage) || 0;
-  const premiumPct    = product.premiumRate / 10_000;
-  const estimatedPrem = (coverageNum * premiumPct).toFixed(2);
+  const estimatedPrem = estimatePremium(coverage, product.premiumRate);
 
   // Automatically build oracle key based on inputs
   useEffect(() => {
@@ -58,8 +59,8 @@ export function BuyPolicyModal({ product, onClose }: Props) {
 
   function validate(): string {
     const cov = parseFloat(coverage);
-    if (isNaN(cov) || cov < parseFloat(product.coverageMin) || cov > parseFloat(product.coverageMax)) {
-      return `Coverage must be between ${product.coverageMin} and ${product.coverageMax} USDC`;
+    if (isNaN(cov) || cov < parseFloat(minDisplay) || cov > parseFloat(maxDisplay)) {
+      return `Coverage must be between ${minDisplay} and ${maxDisplay} USDC`;
     }
     const dur = parseInt(duration, 10);
     if (isNaN(dur) || dur < 1 || dur > product.maxDuration) {
@@ -124,7 +125,7 @@ export function BuyPolicyModal({ product, onClose }: Props) {
                 type="number"
                 value={coverage}
                 onChange={(e) => { setCoverage(e.target.value); setError(''); }}
-                placeholder={`${product.coverageMin} – ${product.coverageMax}`}
+                placeholder={`${minDisplay} – ${maxDisplay}`}
                 className="w-full rounded-xl border border-white/10 bg-white/5 px-4 py-2.5 text-sm focus:border-teal-500 focus:outline-none"
               />
             </div>

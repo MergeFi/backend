@@ -14,8 +14,8 @@ export interface Product {
   triggerType: TriggerType;
   threshold:   string;
   comparison:  Comparison;
-  coverageMin: string;
-  coverageMax: string;
+  coverageMin: string;  // stroops
+  coverageMax: string;  // stroops
   premiumRate: number;  // basis points (500 = 5.00%)
   maxDuration: number;  // days
   status:      'Active' | 'Paused' | 'Deprecated';

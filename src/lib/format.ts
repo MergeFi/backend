@@ -90,3 +90,9 @@ export function utilizationColor(rate: number): string {
   if (rate < 0.8) return 'text-amber-400';
   return 'text-red-400';
 }
+
+export function estimatePremium(coverageDisplay: string, premiumRateBps: number): string {
+  const coverageStroops = displayToStroops(coverageDisplay || '0');
+  const premiumStroops = (coverageStroops * BigInt(premiumRateBps)) / 10_000n;
+  return stroopsToDisplay(premiumStroops, 2);
+}
