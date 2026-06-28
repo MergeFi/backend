@@ -74,6 +74,12 @@ export interface PoolShareInfo {
   paused?:        boolean;
 }
 
+export interface ProtocolStats {
+  totalCoverage:  string;  // stroops — sum of active policy coverage
+  activeProducts: number;
+  totalPayouts:   string;  // stroops — cumulative paid claims
+}
+
 export interface WalletState {
   address:   string | null;
   connected: boolean;
