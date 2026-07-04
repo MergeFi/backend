@@ -1,23 +1,25 @@
 {
   "compilerOptions": {
-    "target": "ES2020",
-    "lib": ["dom", "dom.iterable", "esnext"],
-    "allowJs": true,
-    "skipLibCheck": true,
-    "strict": true,
-    "noEmit": true,
+    "module": "nodenext",
+    "moduleResolution": "nodenext",
+    "resolvePackageJsonExports": true,
     "esModuleInterop": true,
-    "module": "esnext",
-    "moduleResolution": "bundler",
-    "resolveJsonModule": true,
     "isolatedModules": true,
-    "jsx": "preserve",
+    "declaration": true,
+    "removeComments": true,
+    "emitDecoratorMetadata": true,
+    "experimentalDecorators": true,
+    "allowSyntheticDefaultImports": true,
+    "target": "ES2023",
+    "sourceMap": true,
+    "outDir": "./dist",
+    "baseUrl": "./",
     "incremental": true,
-    "plugins": [{ "name": "next" }],
-    "paths": {
-      "@/*": ["./src/*"]
-    }
-  },
-  "include": ["next-env.d.ts", "**/*.ts", "**/*.tsx", ".next/types/**/*.ts"],
-  "exclude": ["node_modules"]
+    "skipLibCheck": true,
+    "strictNullChecks": true,
+    "forceConsistentCasingInFileNames": true,
+    "noImplicitAny": true,
+    "strictBindCallApply": true,
+    "noFallthroughCasesInSwitch": true
+  }
 }
