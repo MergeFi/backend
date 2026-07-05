@@ -83,7 +83,7 @@ export class Bounty {
   @Column({ type: 'varchar', nullable: true })
   prUrl: string | null;
 
-  @Column({ nullable: true })
+  @Column({ type: 'int', nullable: true })
   prNumber: number | null;
 
   @Column({ type: 'timestamptz', nullable: true })
