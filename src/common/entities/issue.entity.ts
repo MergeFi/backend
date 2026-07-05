@@ -47,7 +47,7 @@ export class Issue {
   @Column()
   githubUrl: string;
 
-  @Column({ nullable: true })
+  @Column({ type: 'varchar', nullable: true })
   authorLogin: string | null;
 
   /** True for maintenance-type work (dep bumps, docs, cleanup) eligible for the pool. */
@@ -61,7 +61,7 @@ export class Issue {
   @JoinColumn()
   milestone: Milestone | null;
 
-  @Column({ nullable: true })
+  @Column({ type: 'varchar', nullable: true })
   milestoneId: string | null;
 
   @OneToOne(() => Bounty, (bounty) => bounty.issue, { nullable: true })

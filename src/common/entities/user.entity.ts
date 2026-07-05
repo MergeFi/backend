@@ -14,16 +14,16 @@ export class User {
   @PrimaryGeneratedColumn('uuid')
   id: string;
 
-  @Column({ unique: true, nullable: true })
+  @Column({ type: 'varchar', unique: true, nullable: true })
   email: string | null;
 
   @Column({ unique: true })
   username: string;
 
-  @Column({ nullable: true })
+  @Column({ type: 'varchar', nullable: true })
   displayName: string | null;
 
-  @Column({ nullable: true })
+  @Column({ type: 'varchar', nullable: true })
   avatarUrl: string | null;
 
   @Column({ type: 'simple-array', default: UserRole.CONTRIBUTOR })
@@ -35,7 +35,7 @@ export class User {
    * (their wallet, e.g. Freighter) — MergeFi never stores private keys for
    * end users, only for the platform treasury signer (see TREASURY_SECRET).
    */
-  @Column({ nullable: true })
+  @Column({ type: 'varchar', nullable: true })
   stellarAddress: string | null;
 
   @OneToOne(() => GithubAccount, (account) => account.user, {

@@ -20,10 +20,10 @@ export class GithubAccount {
   @Column()
   login: string;
 
-  @Column({ nullable: true })
+  @Column({ type: 'varchar', nullable: true })
   profileUrl: string | null;
 
-  @Column({ nullable: true })
+  @Column({ type: 'varchar', nullable: true })
   avatarUrl: string | null;
 
   /**
@@ -31,10 +31,10 @@ export class GithubAccount {
    * TODO: encrypt at rest (e.g. KMS envelope encryption) before production use.
    * Never returned via API responses — excluded at the DTO/serialization layer.
    */
-  @Column({ nullable: true, select: false })
+  @Column({ type: 'varchar', nullable: true, select: false })
   accessToken: string | null;
 
-  @Column({ nullable: true, select: false })
+  @Column({ type: 'varchar', nullable: true, select: false })
   refreshToken: string | null;
 
   @OneToOne(() => User, (user) => user.githubAccount, { onDelete: 'CASCADE' })

@@ -25,14 +25,14 @@ export class MaintenancePool {
   @JoinColumn()
   repository: Repository | null;
 
-  @Column({ nullable: true })
+  @Column({ type: 'varchar', nullable: true })
   repositoryId: string | null;
 
   @ManyToOne(() => User, { onDelete: 'SET NULL', nullable: true })
   @JoinColumn()
   createdBy: User | null;
 
-  @Column({ nullable: true })
+  @Column({ type: 'varchar', nullable: true })
   createdById: string | null;
 
   @Column({ type: 'decimal', precision: 20, scale: 7, default: 0 })
@@ -58,7 +58,7 @@ export class MaintenancePool {
   escrow: Escrow | null;
 
   /** Denormalized copy of escrow.id, set whenever `escrow` is assigned. */
-  @Column({ nullable: true })
+  @Column({ type: 'varchar', nullable: true })
   escrowId: string | null;
 
   @CreateDateColumn()

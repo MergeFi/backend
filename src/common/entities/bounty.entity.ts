@@ -30,14 +30,14 @@ export class Bounty {
   @JoinColumn()
   sponsor: User | null;
 
-  @Column({ nullable: true })
+  @Column({ type: 'varchar', nullable: true })
   sponsorId: string | null;
 
   @ManyToOne(() => User, { onDelete: 'SET NULL', nullable: true })
   @JoinColumn()
   claimedBy: User | null;
 
-  @Column({ nullable: true })
+  @Column({ type: 'varchar', nullable: true })
   claimedById: string | null;
 
   /** Set when the bounty payout is split across a team instead of one contributor. */
@@ -45,7 +45,7 @@ export class Bounty {
   @JoinColumn()
   team: Team | null;
 
-  @Column({ nullable: true })
+  @Column({ type: 'varchar', nullable: true })
   teamId: string | null;
 
   @Column({ type: 'decimal', precision: 20, scale: 7 })
@@ -77,10 +77,10 @@ export class Bounty {
    * Denormalized copy of escrow.id, set whenever `escrow` is assigned, so
    * services can check funding state without an extra join/relation load.
    */
-  @Column({ nullable: true })
+  @Column({ type: 'varchar', nullable: true })
   escrowId: string | null;
 
-  @Column({ nullable: true })
+  @Column({ type: 'varchar', nullable: true })
   prUrl: string | null;
 
   @Column({ nullable: true })

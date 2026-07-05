@@ -23,7 +23,7 @@ export class Team {
   @JoinColumn()
   createdBy: User | null;
 
-  @Column({ nullable: true })
+  @Column({ type: 'varchar', nullable: true })
   createdById: string | null;
 
   @OneToMany(() => TeamMemberSplit, (split) => split.team, { cascade: true })

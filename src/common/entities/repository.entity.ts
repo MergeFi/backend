@@ -39,7 +39,7 @@ export class Repository {
   @Column({ default: false })
   private: boolean;
 
-  @Column({ nullable: true })
+  @Column({ type: 'varchar', nullable: true })
   primaryLanguage: string | null;
 
   @Column({ default: 0 })
@@ -49,7 +49,7 @@ export class Repository {
   @JoinColumn()
   maintainer: User | null;
 
-  @Column({ nullable: true })
+  @Column({ type: 'varchar', nullable: true })
   maintainerId: string | null;
 
   @OneToMany(() => Issue, (issue) => issue.repository)

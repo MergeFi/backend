@@ -37,7 +37,7 @@ export class Milestone {
   @JoinColumn()
   sponsor: User | null;
 
-  @Column({ nullable: true })
+  @Column({ type: 'varchar', nullable: true })
   sponsorId: string | null;
 
   @Column({ type: 'decimal', precision: 20, scale: 7 })
@@ -64,7 +64,7 @@ export class Milestone {
   escrow: Escrow | null;
 
   /** Denormalized copy of escrow.id, set whenever `escrow` is assigned. */
-  @Column({ nullable: true })
+  @Column({ type: 'varchar', nullable: true })
   escrowId: string | null;
 
   @OneToMany(() => Issue, (issue) => issue.milestone)

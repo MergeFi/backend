@@ -18,7 +18,7 @@ export class WebhookEvent {
   @Column()
   eventType: string;
 
-  @Column({ nullable: true, unique: true })
+  @Column({ type: 'varchar', nullable: true, unique: true })
   deliveryId: string | null;
 
   @Column({ type: 'jsonb' })

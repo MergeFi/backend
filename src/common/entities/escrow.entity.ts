@@ -33,7 +33,7 @@ export class Escrow {
   @JoinColumn()
   bounty: Bounty | null;
 
-  @Column({ nullable: true })
+  @Column({ type: 'varchar', nullable: true })
   bountyId: string | null;
 
   @OneToOne(() => Milestone, (milestone) => milestone.escrow, {
@@ -43,7 +43,7 @@ export class Escrow {
   @JoinColumn()
   milestone: Milestone | null;
 
-  @Column({ nullable: true })
+  @Column({ type: 'varchar', nullable: true })
   milestoneId: string | null;
 
   @OneToOne(() => MaintenancePool, (pool) => pool.escrow, {
@@ -53,11 +53,11 @@ export class Escrow {
   @JoinColumn()
   maintenancePool: MaintenancePool | null;
 
-  @Column({ nullable: true })
+  @Column({ type: 'varchar', nullable: true })
   maintenancePoolId: string | null;
 
   /** Deployed Soroban contract ID this escrow instance is held by. */
-  @Column({ nullable: true })
+  @Column({ type: 'varchar', nullable: true })
   contractId: string | null;
 
   @Column({ type: 'decimal', precision: 20, scale: 7 })
@@ -69,19 +69,19 @@ export class Escrow {
   @Column({ type: 'enum', enum: EscrowStatus, default: EscrowStatus.PENDING })
   status: EscrowStatus;
 
-  @Column({ nullable: true })
+  @Column({ type: 'varchar', nullable: true })
   fundedByAddress: string | null;
 
   /** Stellar transaction hash of the fund/lock invocation. */
-  @Column({ nullable: true })
+  @Column({ type: 'varchar', nullable: true })
   fundTxHash: string | null;
 
   /** Stellar transaction hash of the release invocation (final release event). */
-  @Column({ nullable: true })
+  @Column({ type: 'varchar', nullable: true })
   releaseTxHash: string | null;
 
   /** Stellar transaction hash of the refund invocation, if refunded. */
-  @Column({ nullable: true })
+  @Column({ type: 'varchar', nullable: true })
   refundTxHash: string | null;
 
   /** Arbitrary metadata returned from the Soroban RPC call (sim results, ledger, etc). */

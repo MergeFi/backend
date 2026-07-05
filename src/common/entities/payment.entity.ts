@@ -28,10 +28,10 @@ export class Payment {
   @JoinColumn()
   recipient: User | null;
 
-  @Column({ nullable: true })
+  @Column({ type: 'varchar', nullable: true })
   recipientId: string | null;
 
-  @Column({ nullable: true })
+  @Column({ type: 'varchar', nullable: true })
   recipientAddress: string | null;
 
   @Column({ type: 'decimal', precision: 20, scale: 7 })
@@ -47,7 +47,7 @@ export class Payment {
   @Column({ type: 'enum', enum: PaymentStatus, default: PaymentStatus.PENDING })
   status: PaymentStatus;
 
-  @Column({ nullable: true })
+  @Column({ type: 'varchar', nullable: true })
   txHash: string | null;
 
   @CreateDateColumn()
