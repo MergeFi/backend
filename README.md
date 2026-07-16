@@ -184,39 +184,86 @@ Route groups: `/api/auth`, `/api/users`, `/api/github`,
 
 ## Setup, run, test
 
+You can run this project either natively on your host machine or completely containerized using Docker.
+
+### 1. Local Development via Docker Compose (Recommended)
+
+This is the easiest way to get up and running with a pre-configured, isolated PostgreSQL database.
+
 ```bash
-# 1. install
-npm install
-
-# 2. configure
+# A. Configure Environment Variables
 cp .env.example .env
-# fill in DATABASE_URL at minimum to run against a real Postgres instance
 
-# 3. run
-npm run start:dev      # watch mode
-npm run start:prod     # after `npm run build`
-
-# 4. build
-npm run build
-
-# 5. test
-npm test                # unit tests (Jest, src/**/*.spec.ts)
-npm run test:cov        # with coverage
-npm run test:e2e        # e2e (requires a running Postgres per DATABASE_URL)
+# B. Start App and Database services
+docker compose up --build
 ```
 
-Unit tests cover, among other things:
+- **Hot Reloading**: The codebase is mounted into the container using a bind mount. File changes on the host will automatically trigger application restarts.
+- **Node Modules Isolation**: The container uses an anonymous volume for `/usr/src/app/node_modules`. This prevents Windows/Host compiled node packages from contaminating the Linux-native container.
+- **Services**:
+  - The API is served at `http://localhost:3000/api` (Swagger docs at `http://localhost:3000/api/docs`).
+  - PostgreSQL is mapped to port `5432` on your localhost with credentials `postgres:postgres` and database name `mergefi`.
 
+### 2. Local Development Natively on Host
+
+If you prefer to run NestJS directly on your host machine:
+
+```bash
+# A. Install Dependencies
+npm install
+
+# B. Spin up only the Database service in Docker
+docker compose up -d db
+
+# C. Configure Environment Variables
+cp .env.example .env
+# Set DATABASE_URL=postgresql://postgres:postgres@localhost:5432/mergefi
+
+# D. Start NestJS in development mode
+npm run start:dev
+```
+
+### 3. Production Builds & Security
+
+The Dockerfile is structured as a secure, multi-stage build running on Alpine Linux.
+
+#### Build the production image:
+```bash
+docker build --target runner -t mergefi-backend:latest .
+```
+
+#### Production Guardrails (Important):
+- **Least Privilege**: The container runs under the non-root `node` user (`USER node`).
+- **Production Mode**: The final image forces `NODE_ENV=production`.
+- **JWT Secret Enforcer**: If the application boots in production with the default `JWT_SECRET=insecure-dev-secret` (or is missing entirely), the startup hook in `src/main.ts` will crash the container. You **must** provide a secure custom `JWT_SECRET` when running the production container:
+  ```bash
+  docker run -p 3000:3000 -e JWT_SECRET="your-highly-secure-random-jwt-key" mergefi-backend:latest
+  ```
+
+### 4. Running Tests
+
+Unit tests and end-to-end tests are fully supported:
+
+```bash
+# Run unit tests natively
+npm test
+
+# Run unit tests with code coverage
+npm run test:cov
+
+# Run End-to-End (E2E) tests (requires PostgreSQL to be running on DATABASE_URL)
+npm run test:e2e
+```
+
+Unit tests cover critical domains including:
 - `src/bounties/bounty-state-machine.spec.ts` — the bounty lifecycle state machine.
 - `src/teams/team-split.util.spec.ts` — team payout split percentage math.
-- `src/escrow/escrow.service.spec.ts` — escrow fund/release/split-release/refund orchestration, with the Soroban client mocked.
+- `src/escrow/escrow.service.spec.ts` — escrow fund/release/split-release/refund orchestration (Soroban client mocked).
 - `src/github/webhook-signature.util.spec.ts` — GitHub webhook HMAC-SHA256 signature verification.
-- `src/github/github-webhooks.service.spec.ts` — end-to-end webhook → bounty release wiring.
-- `src/bounties/bounties.service.spec.ts` — bounty service against mocked repositories/escrow.
+- `src/github/github-webhooks.service.spec.ts` — webhook-to-escrow release logic.
+- `src/bounties/bounties.service.spec.ts` — bounty core management.
 
-`DATABASE_SYNCHRONIZE=true` will auto-create tables from entities for quick
-local iteration; a real migration workflow (`typeorm migration:generate`) is
-recommended before this touches any shared/staging database — see Roadmap.
+`DATABASE_SYNCHRONIZE=true` (set in development) will auto-create tables from entities for fast local iteration. A real migration workflow (`typeorm migration:generate`) is recommended before deploying to production (see Roadmap).
 
 ## Roadmap
 

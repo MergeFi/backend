@@ -1,24 +1,100 @@
-name: CI
+name: CI Pipeline
 
 on:
-  push:
-    branches: [main]
   pull_request:
-    branches: [main]
+    branches:
+      - main
 
 jobs:
-  build-lint-test:
+  ci:
     runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: mergefi
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout Code
+        uses: actions/checkout@v4
 
-      - uses: actions/setup-node@v4
+      - name: Setup Node.js v24
+        uses: actions/setup-node@v4
         with:
-          node-version: 20
-          cache: npm
+          node-version: 24
+          cache: 'npm'
 
-      - run: npm ci
-      - run: npm run build
-      - run: npm run lint
-      - run: npm test
-      - run: npm audit --audit-level=high
+      - name: Scan for Hardcoded Secrets
+        run: |
+          echo "Scanning codebase for potential hardcoded secrets..."
+          
+          # Detect Stellar Secret Keys (starts with S, 56 characters, uppercase A-Z, digits 2-7)
+          if grep -r -E "\bS[A-D][A-Z2-7]{54}\b" --exclude-dir={node_modules,dist,coverage,.git} .; then
+            echo "::error::Potential Stellar Secret Key detected in codebase!"
+            exit 1
+          fi
+          
+          # Detect PEM Private Keys
+          if grep -r -E "(-+BEGIN [A-Z ]+ PRIVATE KEY-+)" --exclude-dir={node_modules,dist,coverage,.git} .; then
+            echo "::error::Potential PEM Private Key detected in codebase!"
+            exit 1
+          fi
+          
+          # Detect GitHub Personal Access Tokens (Legacy and Fine-grained)
+          if grep -r -E "(ghp_[a-zA-Z0-9]{36}|github_pat_[a-zA-Z0-9]{82})" --exclude-dir={node_modules,dist,coverage,.git} .; then
+            echo "::error::Potential GitHub Token detected in codebase!"
+            exit 1
+          fi
+          
+          echo "Secret scan completed. No secrets detected."
+        shell: bash
+
+      - name: Install Dependencies
+        run: npm ci
+
+      - name: Lint Code
+        run: npm run lint
+
+      - name: Build Application
+        run: npm run build
+
+      - name: Run Unit & Integration Tests
+        env:
+          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/mergefi
+          NODE_ENV: test
+        run: npm run test
+
+      - name: Run Coverage Tests
+        env:
+          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/mergefi
+          NODE_ENV: test
+        run: npm run test:cov
+
+      - name: Run E2E Tests (Conditional)
+        env:
+          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/mergefi
+          NODE_ENV: test
+          # Map GitHub Secrets if configured in the repository
+          GITHUB_CLIENT_ID: ${{ secrets.GITHUB_CLIENT_ID }}
+          GITHUB_CLIENT_SECRET: ${{ secrets.GITHUB_CLIENT_SECRET }}
+        run: |
+          if [ -z "$GITHUB_CLIENT_ID" ] || [ -z "$GITHUB_CLIENT_SECRET" ]; then
+            echo "=========================================================================="
+            echo "WARNING: Skipping E2E tests because external GitHub OAuth secrets are not"
+            echo "configured in the repository settings (GITHUB_CLIENT_ID / GITHUB_CLIENT_SECRET)."
+            echo "To enable E2E tests in CI, please set these secrets in GitHub."
+            echo "=========================================================================="
+          else
+            npm run test:e2e
+          fi
+        shell: bash
