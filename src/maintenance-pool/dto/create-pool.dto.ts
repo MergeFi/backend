@@ -1,6 +1,7 @@
 import { ApiProperty } from '@nestjs/swagger';
-import { IsEnum, IsOptional, IsString, IsUUID } from 'class-validator';
+import { IsOptional, IsString, IsUUID } from 'class-validator';
 import { AssetType } from '../../common/enums';
+import { IsSupportedEscrowAsset } from '../../common/validators/money.validator';
 
 export class CreatePoolDto {
   @ApiProperty()
@@ -18,6 +19,6 @@ export class CreatePoolDto {
   createdById?: string;
 
   @ApiProperty({ enum: AssetType, default: AssetType.USDC })
-  @IsEnum(AssetType)
+  @IsSupportedEscrowAsset()
   asset: AssetType;
 }

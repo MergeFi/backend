@@ -8,6 +8,11 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { Escrow, Payment } from '../common/entities';
 import { AssetType, EscrowStatus, PaymentStatus } from '../common/enums';
+import {
+  amountToStroops,
+  isSupportedEscrowAsset,
+  isValidMoneyAmount,
+} from '../common/validators/money.validator';
 import { SorobanClientService } from './soroban-client.service';
 
 export interface FundEscrowInput {
@@ -38,6 +43,8 @@ export class EscrowService {
 
   /** Locks funds for a bounty/milestone/pool by calling the escrow contract's `fund`. */
   async fund(input: FundEscrowInput): Promise<Escrow> {
+    this.assertValidFundInput(input);
+
     const escrow = this.escrowRepo.create({
       amount: input.amount,
       asset: input.asset,
@@ -58,7 +65,7 @@ export class EscrowService {
       const result = await this.soroban.invoke('fund', [
         input.funderAddress,
         referenceId,
-        BigInt(this.toStroops(input.amount)),
+        this.toStroops(input.amount),
       ]);
 
       escrow.status = EscrowStatus.LOCKED;
@@ -169,6 +176,7 @@ export class EscrowService {
   ): Promise<Payment> {
     const escrow = await this.getOrThrow(escrowId);
     this.assertLocked(escrow);
+    this.assertValidAmount(amount);
 
     const existingPayments = await this.paymentRepo.find({
       where: { escrowId: escrow.id },
@@ -187,7 +195,7 @@ export class EscrowService {
     const result = await this.soroban.invoke('release', [
       escrow.milestoneId ?? escrow.bountyId ?? escrow.id,
       recipientAddress,
-      BigInt(this.toStroops(amount)),
+      this.toStroops(amount),
     ]);
 
     const payment = await this.paymentRepo.save(
@@ -270,7 +278,24 @@ export class EscrowService {
     return Math.round(value * 1e7) / 1e7;
   }
 
-  private toStroops(amount: string): number {
-    return Math.round(Number(amount) * 1e7);
+  private assertValidFundInput(input: FundEscrowInput): void {
+    this.assertValidAmount(input.amount);
+    if (!isSupportedEscrowAsset(input.asset)) {
+      throw new BadRequestException(
+        `Unsupported escrow asset: ${String(input.asset)}`,
+      );
+    }
+  }
+
+  private assertValidAmount(amount: string): void {
+    if (!isValidMoneyAmount(amount)) {
+      throw new BadRequestException(
+        'Amount must be a positive decimal string with at most 7 fractional digits and no more than 100000000',
+      );
+    }
+  }
+
+  private toStroops(amount: string): bigint {
+    return amountToStroops(amount);
   }
 }

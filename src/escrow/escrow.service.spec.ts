@@ -81,6 +81,45 @@ describe('EscrowService', () => {
         true,
       );
     });
+
+    it.each([
+      '0',
+      '-1',
+      '1e3',
+      '1,000',
+      'not-a-number',
+      '1.00000001',
+      '100000000.0000001',
+    ])(
+      'rejects malformed amount %s before escrow creation or chain calls',
+      async (amount) => {
+        await expect(
+          service.fund({
+            amount,
+            asset: AssetType.USDC,
+            funderAddress: 'G...FUNDER',
+          }),
+        ).rejects.toThrow(BadRequestException);
+
+        expect(escrowRepo.create).not.toHaveBeenCalled();
+        expect(escrowRepo.save).not.toHaveBeenCalled();
+        expect(soroban.invoke).not.toHaveBeenCalled();
+      },
+    );
+
+    it('rejects unsupported assets before escrow creation or chain calls', async () => {
+      await expect(
+        service.fund({
+          amount: '10.0000000',
+          asset: 'BTC' as AssetType,
+          funderAddress: 'G...FUNDER',
+        }),
+      ).rejects.toThrow(BadRequestException);
+
+      expect(escrowRepo.create).not.toHaveBeenCalled();
+      expect(escrowRepo.save).not.toHaveBeenCalled();
+      expect(soroban.invoke).not.toHaveBeenCalled();
+    });
   });
 
   describe('release', () => {

@@ -1,11 +1,12 @@
 import { Body, Controller, Get, Param, Post } from '@nestjs/common';
 import { ApiTags } from '@nestjs/swagger';
-import { IsNumberString, IsOptional, IsString, IsUUID } from 'class-validator';
+import { IsOptional, IsString, IsUUID } from 'class-validator';
 import { MaintenancePoolService } from './maintenance-pool.service';
 import { CreatePoolDto } from './dto/create-pool.dto';
+import { IsMoneyAmount } from '../common/validators/money.validator';
 
 class DepositDto {
-  @IsNumberString()
+  @IsMoneyAmount()
   amount: string;
 
   @IsString()
@@ -13,7 +14,7 @@ class DepositDto {
 }
 
 class AssignRewardDto {
-  @IsNumberString()
+  @IsMoneyAmount()
   amount: string;
 
   @IsString()

@@ -1,20 +1,18 @@
 import { ApiProperty } from '@nestjs/swagger';
-import {
-  IsEnum,
-  IsNumberString,
-  IsOptional,
-  IsString,
-  IsUUID,
-} from 'class-validator';
+import { IsOptional, IsString, IsUUID } from 'class-validator';
 import { AssetType } from '../../common/enums';
+import {
+  IsMoneyAmount,
+  IsSupportedEscrowAsset,
+} from '../../common/validators/money.validator';
 
 export class FundEscrowDto {
   @ApiProperty({ description: 'Amount to lock in the escrow contract' })
-  @IsNumberString()
+  @IsMoneyAmount()
   amount: string;
 
   @ApiProperty({ enum: AssetType, default: AssetType.USDC })
-  @IsEnum(AssetType)
+  @IsSupportedEscrowAsset()
   asset: AssetType;
 
   @ApiProperty({ description: 'Stellar public key of the funding sponsor' })
