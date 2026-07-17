@@ -1,13 +1,10 @@
 import { ApiProperty } from '@nestjs/swagger';
-import {
-  IsEnum,
-  IsISO8601,
-  IsNumberString,
-  IsOptional,
-  IsString,
-  IsUUID,
-} from 'class-validator';
+import { IsISO8601, IsOptional, IsString, IsUUID } from 'class-validator';
 import { AssetType } from '../../common/enums';
+import {
+  IsMoneyAmount,
+  IsSupportedEscrowAsset,
+} from '../../common/validators/money.validator';
 
 export class CreateMilestoneDto {
   @ApiProperty()
@@ -29,11 +26,11 @@ export class CreateMilestoneDto {
   description?: string;
 
   @ApiProperty()
-  @IsNumberString()
+  @IsMoneyAmount()
   budget: string;
 
   @ApiProperty({ enum: AssetType, default: AssetType.USDC })
-  @IsEnum(AssetType)
+  @IsSupportedEscrowAsset()
   asset: AssetType;
 
   @ApiProperty({ required: false })
