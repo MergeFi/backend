@@ -5,6 +5,7 @@ import { BountiesService } from './bounties.service';
 import { CreateBountyDto } from './dto/create-bounty.dto';
 import { ClaimBountyDto } from './dto/claim-bounty.dto';
 import { BountyStatus } from '../common/enums';
+import { Idempotent } from '../common/idempotency/idempotent.decorator';
 
 class FundBountyDto {
   @IsString()
@@ -31,16 +32,19 @@ export class BountiesController {
     return this.bountiesService.findOne(id);
   }
 
+  @Idempotent('bounty.fund')
   @Post(':id/fund')
   fund(@Param('id') id: string, @Body() dto: FundBountyDto) {
     return this.bountiesService.fund(id, dto.funderAddress);
   }
 
+  @Idempotent('bounty.claim')
   @Post(':id/claim')
   claim(@Param('id') id: string, @Body() dto: ClaimBountyDto) {
     return this.bountiesService.claim(id, dto.contributorId);
   }
 
+  @Idempotent('bounty.refund')
   @Post(':id/refund')
   refund(@Param('id') id: string) {
     return this.bountiesService.refund(id);

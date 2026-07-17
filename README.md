@@ -182,6 +182,31 @@ Route groups: `/api/auth`, `/api/users`, `/api/github`,
 `/api/escrow`, `/api/teams`, `/api/milestones`, `/api/maintenance-pools`,
 `/api/sponsors`, `/api/reputation`, `/api/analytics`.
 
+### Idempotency
+
+Every fund/claim/release/refund mutation — `POST /bounties/:id/fund`,
+`/claim`, `/refund`; `/escrow/fund`, `/escrow/:id/release`,
+`/escrow/:id/split-release`, `/escrow/:id/refund`; `/milestones/:id/fund`,
+`/milestones/:id/issues/:issueId/resolve`; `/maintenance-pools/:id/deposit`,
+`/maintenance-pools/:id/assign-reward` — requires a client-supplied
+`Idempotency-Key` header (a UUID) so a retried request after a dropped
+connection can't double-execute:
+
+- A repeated request with the same key (scoped per endpoint and, once a
+  route requires auth, per caller) returns the original response without
+  re-running the mutation. 2xx and 4xx outcomes are cached and replayed
+  verbatim; a 5xx is not cached, so a retry after a genuine server error
+  runs cleanly rather than replaying the failure forever.
+- A second request reusing a key that's still mid-flight gets `409
+  Conflict` instead of racing into a duplicate execution. If the original
+  request crashed before completing, the key is reclaimed after 30s so it
+  doesn't 409 forever.
+- Cached keys are retained for 24h (`IDEMPOTENCY_KEY_TTL_MS` in
+  `IdempotencyInterceptor`) and swept hourly by `IdempotencyCleanupService`.
+
+See `src/common/idempotency/` for the interceptor, decorator, and cleanup
+job.
+
 ## Setup, run, test
 
 You can run this project either natively on your host machine or completely containerized using Docker.

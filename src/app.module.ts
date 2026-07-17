@@ -3,6 +3,7 @@ import { APP_GUARD } from '@nestjs/core';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { ThrottlerGuard, ThrottlerModule } from '@nestjs/throttler';
+import { ScheduleModule } from '@nestjs/schedule';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
 import configuration, { AppConfig } from './config/configuration';
@@ -18,11 +19,13 @@ import { SponsorsModule } from './sponsors/sponsors.module';
 import { MaintenancePoolModule } from './maintenance-pool/maintenance-pool.module';
 import { ReputationModule } from './reputation/reputation.module';
 import { AnalyticsModule } from './analytics/analytics.module';
+import { IdempotencyModule } from './common/idempotency/idempotency.module';
 
 @Module({
   imports: [
     ConfigModule.forRoot({ isGlobal: true, load: [configuration] }),
     ThrottlerModule.forRoot([{ ttl: 60_000, limit: 120 }]),
+    ScheduleModule.forRoot(),
     TypeOrmModule.forRootAsync({
       inject: [ConfigService],
       useFactory: (configService: ConfigService<AppConfig, true>) => {
@@ -47,6 +50,7 @@ import { AnalyticsModule } from './analytics/analytics.module';
     MaintenancePoolModule,
     ReputationModule,
     AnalyticsModule,
+    IdempotencyModule,
   ],
   controllers: [AppController],
   providers: [AppService, { provide: APP_GUARD, useClass: ThrottlerGuard }],

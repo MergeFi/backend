@@ -81,3 +81,18 @@ export enum WebhookEventStatus {
   IGNORED = 'ignored',
   FAILED = 'failed',
 }
+
+/**
+ * processing -> a request with this key is currently executing; a second
+ *               request with the same key while still processing is
+ *               rejected (409) rather than racing into a duplicate
+ *               execution.
+ * completed  -> the underlying mutation ran to completion (success or a
+ *               deterministic 4xx client error) and its outcome is cached;
+ *               a repeat request with the same key replays it verbatim
+ *               instead of re-executing.
+ */
+export enum IdempotencyKeyStatus {
+  PROCESSING = 'processing',
+  COMPLETED = 'completed',
+}

@@ -3,6 +3,7 @@ import { ApiTags } from '@nestjs/swagger';
 import { IsOptional, IsString, IsUUID } from 'class-validator';
 import { MilestonesService } from './milestones.service';
 import { CreateMilestoneDto } from './dto/create-milestone.dto';
+import { Idempotent } from '../common/idempotency/idempotent.decorator';
 
 class FundMilestoneDto {
   @IsString()
@@ -38,6 +39,7 @@ export class MilestonesController {
     return this.milestonesService.findOne(id);
   }
 
+  @Idempotent('milestone.fund')
   @Post(':id/fund')
   fund(@Param('id') id: string, @Body() dto: FundMilestoneDto) {
     return this.milestonesService.fund(id, dto.funderAddress);
@@ -48,6 +50,7 @@ export class MilestonesController {
     return this.milestonesService.addIssue(id, issueId);
   }
 
+  @Idempotent('milestone.resolveIssue')
   @Post(':id/issues/:issueId/resolve')
   resolveIssue(
     @Param('id') id: string,
