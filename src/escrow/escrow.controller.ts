@@ -4,6 +4,7 @@ import { EscrowService } from './escrow.service';
 import { FundEscrowDto } from './dto/fund-escrow.dto';
 import { ReleaseEscrowDto } from './dto/release-escrow.dto';
 import { SplitReleaseDto } from './dto/split-release.dto';
+import { toPublicEscrow } from './escrow-response.mapper';
 
 @ApiTags('escrow')
 @Controller('escrow')
@@ -11,21 +12,23 @@ export class EscrowController {
   constructor(private readonly escrowService: EscrowService) {}
 
   @Post('fund')
-  fund(@Body() dto: FundEscrowDto) {
-    return this.escrowService.fund(dto);
+  async fund(@Body() dto: FundEscrowDto) {
+    return toPublicEscrow(await this.escrowService.fund(dto));
   }
 
   @Get(':id')
-  findOne(@Param('id') id: string) {
-    return this.escrowService.findOne(id);
+  async findOne(@Param('id') id: string) {
+    return toPublicEscrow(await this.escrowService.findOne(id));
   }
 
   @Post(':id/release')
-  release(@Param('id') id: string, @Body() dto: ReleaseEscrowDto) {
-    return this.escrowService.release(
-      id,
-      dto.recipientAddress,
-      dto.recipientId,
+  async release(@Param('id') id: string, @Body() dto: ReleaseEscrowDto) {
+    return toPublicEscrow(
+      await this.escrowService.release(
+        id,
+        dto.recipientAddress,
+        dto.recipientId,
+      ),
     );
   }
 
@@ -35,7 +38,7 @@ export class EscrowController {
   }
 
   @Post(':id/refund')
-  refund(@Param('id') id: string) {
-    return this.escrowService.refund(id);
+  async refund(@Param('id') id: string) {
+    return toPublicEscrow(await this.escrowService.refund(id));
   }
 }

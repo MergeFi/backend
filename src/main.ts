@@ -5,6 +5,7 @@ import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
 import helmet from 'helmet';
 import { AppModule } from './app.module';
 import { AppConfig } from './config/configuration';
+import { GlobalExceptionFilter } from './common/filters/global-exception.filter';
 
 const INSECURE_DEFAULT_JWT_SECRET = 'insecure-dev-secret';
 
@@ -36,6 +37,7 @@ async function bootstrap() {
       forbidNonWhitelisted: false,
     }),
   );
+  app.useGlobalFilters(new GlobalExceptionFilter());
 
   const swaggerConfig = new DocumentBuilder()
     .setTitle('MergeFi API')
