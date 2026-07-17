@@ -17,7 +17,12 @@ export class Payment {
   @PrimaryGeneratedColumn('uuid')
   id: string;
 
-  @ManyToOne(() => Escrow, (escrow) => escrow.payments, { onDelete: 'CASCADE' })
+  // RESTRICT, not CASCADE: a Payment is a record of money that actually
+  // moved. Deleting its parent Escrow must never silently delete that
+  // payout record too — the database refuses the delete instead. See #27.
+  @ManyToOne(() => Escrow, (escrow) => escrow.payments, {
+    onDelete: 'RESTRICT',
+  })
   @JoinColumn()
   escrow: Escrow;
 
