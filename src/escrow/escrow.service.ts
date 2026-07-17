@@ -294,6 +294,29 @@ export class EscrowService {
         `Unsupported escrow asset: ${String(input.asset)}`,
       );
     }
+    this.assertExactlyOneParent(input);
+  }
+
+  /**
+   * A newly-created escrow must belong to exactly one of
+   * bounty/milestone/maintenancePool. This is deliberately an
+   * application-level check rather than a DB CHECK constraint: the
+   * database only enforces "at most one" (CHK_escrow_at_most_one_parent),
+   * because ON DELETE SET NULL legitimately drives an existing escrow's
+   * parent count to zero when its parent is deleted, and a stricter
+   * "exactly one" constraint would make that very SET NULL fail (#27).
+   */
+  private assertExactlyOneParent(input: FundEscrowInput): void {
+    const parentCount = [
+      input.bountyId,
+      input.milestoneId,
+      input.maintenancePoolId,
+    ].filter((id) => id != null).length;
+    if (parentCount !== 1) {
+      throw new BadRequestException(
+        'Exactly one of bountyId, milestoneId, or maintenancePoolId is required',
+      );
+    }
   }
 
   private assertValidAmount(amount: string): void {

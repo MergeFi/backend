@@ -99,6 +99,7 @@ describe('EscrowService', () => {
           amount: '10',
           asset: AssetType.XLM,
           funderAddress: 'G...',
+          bountyId: 'bounty-1',
         }),
       ).rejects.toThrow('simulation failed');
 
@@ -146,6 +147,38 @@ describe('EscrowService', () => {
 
       expect(escrowRepo.create).not.toHaveBeenCalled();
       expect(escrowRepo.save).not.toHaveBeenCalled();
+      expect(soroban.invoke).not.toHaveBeenCalled();
+    });
+
+    it('rejects funding with no parent (bounty/milestone/pool) set at all', async () => {
+      await expect(
+        service.fund({
+          amount: '10.0000000',
+          asset: AssetType.USDC,
+          funderAddress: 'G...FUNDER',
+        }),
+      ).rejects.toThrow(
+        'Exactly one of bountyId, milestoneId, or maintenancePoolId is required',
+      );
+
+      expect(escrowRepo.create).not.toHaveBeenCalled();
+      expect(soroban.invoke).not.toHaveBeenCalled();
+    });
+
+    it('rejects funding with more than one parent set', async () => {
+      await expect(
+        service.fund({
+          amount: '10.0000000',
+          asset: AssetType.USDC,
+          funderAddress: 'G...FUNDER',
+          bountyId: 'bounty-1',
+          milestoneId: 'milestone-1',
+        }),
+      ).rejects.toThrow(
+        'Exactly one of bountyId, milestoneId, or maintenancePoolId is required',
+      );
+
+      expect(escrowRepo.create).not.toHaveBeenCalled();
       expect(soroban.invoke).not.toHaveBeenCalled();
     });
   });
