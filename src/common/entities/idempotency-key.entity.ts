@@ -9,6 +9,17 @@ import {
 import { IdempotencyKeyStatus } from '../enums';
 
 /**
+ * Shape jsonb can actually hold — narrower than `unknown` so TypeORM's
+ * update()/insert() typings resolve cleanly. Deliberately not a fully
+ * recursive JSON type (nested values are `unknown`, not `JsonValue`) —
+ * combining self-referential types with TypeORM's own recursive
+ * QueryDeepPartialEntity<T> mapped type blows past TS's instantiation
+ * depth limit ("Type instantiation is excessively deep").
+ */
+export type JsonValue =
+  Record<string, unknown> | unknown[] | string | number | boolean | null;
+
+/**
  * One row per (Idempotency-Key header value, endpoint scope, caller) tuple
  * seen on an idempotency-guarded mutation endpoint (#16).
  *
@@ -57,7 +68,7 @@ export class IdempotencyKey {
 
   /** Response body of the cached outcome, set once status moves to COMPLETED. */
   @Column({ type: 'jsonb', nullable: true })
-  responseBody: unknown;
+  responseBody: JsonValue;
 
   @CreateDateColumn()
   createdAt: Date;
