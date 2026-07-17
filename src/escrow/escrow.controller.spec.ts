@@ -1,8 +1,12 @@
 import { Test, TestingModule } from '@nestjs/testing';
+import { Reflector } from '@nestjs/core';
+import { getRepositoryToken } from '@nestjs/typeorm';
 import { EscrowController } from './escrow.controller';
 import { EscrowService } from './escrow.service';
 import { AssetType, EscrowStatus } from '../common/enums';
 import { Escrow } from '../common/entities';
+import { IdempotencyKey } from '../common/entities/idempotency-key.entity';
+import { IdempotencyInterceptor } from '../common/idempotency/idempotency.interceptor';
 
 function makeEscrowWithLeakyMetadata(): Escrow {
   return {
@@ -56,7 +60,19 @@ describe('EscrowController (#19 metadata leak)', () => {
 
     const module: TestingModule = await Test.createTestingModule({
       controllers: [EscrowController],
-      providers: [{ provide: EscrowService, useValue: escrowService }],
+      providers: [
+        { provide: EscrowService, useValue: escrowService },
+        // These endpoints carry @Idempotent, which resolves
+        // IdempotencyInterceptor via DI even though this suite calls
+        // controller methods directly and never runs the interceptor
+        // itself (#16).
+        IdempotencyInterceptor,
+        Reflector,
+        {
+          provide: getRepositoryToken(IdempotencyKey),
+          useValue: {},
+        },
+      ],
     }).compile();
 
     controller = module.get(EscrowController);
