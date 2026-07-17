@@ -4,6 +4,7 @@ import { IsOptional, IsString, IsUUID } from 'class-validator';
 import { MaintenancePoolService } from './maintenance-pool.service';
 import { CreatePoolDto } from './dto/create-pool.dto';
 import { IsMoneyAmount } from '../common/validators/money.validator';
+import { Idempotent } from '../common/idempotency/idempotent.decorator';
 
 class DepositDto {
   @IsMoneyAmount()
@@ -45,11 +46,13 @@ export class MaintenancePoolController {
     return this.poolService.findOne(id);
   }
 
+  @Idempotent('pool.deposit')
   @Post(':id/deposit')
   deposit(@Param('id') id: string, @Body() dto: DepositDto) {
     return this.poolService.deposit(id, dto.amount, dto.funderAddress);
   }
 
+  @Idempotent('pool.assignReward')
   @Post(':id/assign-reward')
   assignReward(@Param('id') id: string, @Body() dto: AssignRewardDto) {
     return this.poolService.assignReward(
