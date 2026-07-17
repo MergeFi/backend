@@ -1,4 +1,5 @@
 import {
+  Check,
   Column,
   CreateDateColumn,
   Entity,
@@ -20,15 +21,31 @@ import { AssetType, EscrowStatus } from '../enums';
  * The actual funds custody lives in the deployed escrow contract on Stellar;
  * this table mirrors state so the API can serve fast reads and so we have an
  * audit trail independent of Horizon/RPC availability.
+ *
+ * The parent link (bounty/milestone/maintenancePool) is `onDelete: 'SET
+ * NULL'`, not CASCADE: deleting a bounty/milestone must never delete the
+ * escrow row (and, transitively, its payments) out from under real,
+ * possibly still-LOCKED, funds. See #27 — an escrow whose parent was
+ * deleted stays a first-class, still-queryable ledger row, orphaned but
+ * intact, attributable to its sponsor via the denormalized `sponsorId`
+ * below (which survives independently of the parent row).
  */
 @Entity('escrows')
+@Check(
+  'CHK_escrow_exactly_one_parent',
+  `(
+    (CASE WHEN "bountyId" IS NOT NULL THEN 1 ELSE 0 END) +
+    (CASE WHEN "milestoneId" IS NOT NULL THEN 1 ELSE 0 END) +
+    (CASE WHEN "maintenancePoolId" IS NOT NULL THEN 1 ELSE 0 END)
+  ) = 1`,
+)
 export class Escrow {
   @PrimaryGeneratedColumn('uuid')
   id: string;
 
   @OneToOne(() => Bounty, (bounty) => bounty.escrow, {
     nullable: true,
-    onDelete: 'CASCADE',
+    onDelete: 'SET NULL',
   })
   @JoinColumn()
   bounty: Bounty | null;
@@ -38,7 +55,7 @@ export class Escrow {
 
   @OneToOne(() => Milestone, (milestone) => milestone.escrow, {
     nullable: true,
-    onDelete: 'CASCADE',
+    onDelete: 'SET NULL',
   })
   @JoinColumn()
   milestone: Milestone | null;
@@ -48,13 +65,24 @@ export class Escrow {
 
   @OneToOne(() => MaintenancePool, (pool) => pool.escrow, {
     nullable: true,
-    onDelete: 'CASCADE',
+    onDelete: 'SET NULL',
   })
   @JoinColumn()
   maintenancePool: MaintenancePool | null;
 
   @Column({ type: 'varchar', nullable: true })
   maintenancePoolId: string | null;
+
+  /**
+   * Denormalized sponsor identity, captured from the parent bounty/milestone
+   * at fund time. Sponsor-dashboard aggregates (src/sponsors/sponsors.service.ts)
+   * read this column directly rather than joining through bounty/milestone,
+   * so a locked or spent escrow is still correctly attributed to its sponsor
+   * even after the parent record is deleted (#27). Null for
+   * maintenance-pool escrows, which aren't sponsor-attributed the same way.
+   */
+  @Column({ type: 'varchar', nullable: true })
+  sponsorId: string | null;
 
   /** Deployed Soroban contract ID this escrow instance is held by. */
   @Column({ type: 'varchar', nullable: true })
