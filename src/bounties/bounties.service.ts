@@ -45,6 +45,7 @@ export class BountiesService {
       asset: bounty.asset,
       funderAddress,
       bountyId: bounty.id,
+      sponsorId: bounty.sponsorId,
     });
 
     bounty.escrow = escrow;
