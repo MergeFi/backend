@@ -63,6 +63,34 @@ describe('EscrowService', () => {
       expect(escrow.fundTxHash).toBe('tx-hash-123');
     });
 
+    it('persists the denormalized sponsorId on the created escrow row', async () => {
+      const escrow = await service.fund({
+        amount: '100.0000000',
+        asset: AssetType.USDC,
+        funderAddress: 'GABC...FUNDER',
+        bountyId: 'bounty-1',
+        sponsorId: 'sponsor-1',
+      });
+
+      expect(escrowRepo.create).toHaveBeenCalledWith(
+        expect.objectContaining({ sponsorId: 'sponsor-1' }),
+      );
+      expect(escrow.sponsorId).toBe('sponsor-1');
+    });
+
+    it('defaults sponsorId to null when omitted (e.g. maintenance-pool escrows)', async () => {
+      await service.fund({
+        amount: '100.0000000',
+        asset: AssetType.USDC,
+        funderAddress: 'GABC...FUNDER',
+        maintenancePoolId: 'pool-1',
+      });
+
+      expect(escrowRepo.create).toHaveBeenCalledWith(
+        expect.objectContaining({ sponsorId: null }),
+      );
+    });
+
     it('marks the escrow FAILED and rethrows when the contract call fails', async () => {
       soroban.invoke.mockRejectedValueOnce(new Error('simulation failed'));
 

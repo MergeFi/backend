@@ -22,6 +22,14 @@ export interface FundEscrowInput {
   bountyId?: string;
   milestoneId?: string;
   maintenancePoolId?: string;
+  /**
+   * Denormalized sponsor identity, stored directly on the Escrow row rather
+   * than only reachable via a join to bounty/milestone. This is what lets
+   * sponsor-dashboard aggregates stay correct even after the parent
+   * bounty/milestone is deleted (#27) — omit for maintenance-pool escrows,
+   * which aren't sponsor-attributed.
+   */
+  sponsorId?: string | null;
 }
 
 export interface SplitRecipient {
@@ -53,6 +61,7 @@ export class EscrowService {
       bountyId: input.bountyId ?? null,
       milestoneId: input.milestoneId ?? null,
       maintenancePoolId: input.maintenancePoolId ?? null,
+      sponsorId: input.sponsorId ?? null,
     });
     await this.escrowRepo.save(escrow);
 
