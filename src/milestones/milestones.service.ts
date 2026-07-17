@@ -56,6 +56,7 @@ export class MilestonesService {
       asset: milestone.asset,
       funderAddress,
       milestoneId: milestone.id,
+      sponsorId: milestone.sponsorId,
     });
 
     milestone.escrow = escrow;
