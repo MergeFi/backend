@@ -11,3 +11,4 @@ export * from './milestone.entity';
 export * from './maintenance-pool.entity';
 export * from './reputation-snapshot.entity';
 export * from './webhook-event.entity';
+export * from './idempotency-key.entity';
