@@ -262,12 +262,29 @@ Unit tests cover critical domains including:
 - `src/github/webhook-signature.util.spec.ts` — GitHub webhook HMAC-SHA256 signature verification.
 - `src/github/github-webhooks.service.spec.ts` — webhook-to-escrow release logic.
 - `src/bounties/bounties.service.spec.ts` — bounty core management.
+- `src/sponsors/sponsors.service.spec.ts` — sponsor dashboard aggregate queries (budgetLocked/totalSpend read the Escrow/Payment ledger directly).
+- `src/database/escrow-fk-integrity.integration.spec.ts` — **integration** test against a real Postgres (requires `DATABASE_URL`, not mocked): the exactly-one-parent CHECK constraint on `escrows`, and that sponsor dashboard figures survive a parent bounty/milestone being deleted.
 
-`DATABASE_SYNCHRONIZE=true` (set in development) will auto-create tables from entities for fast local iteration. A real migration workflow (`typeorm migration:generate`) is recommended before deploying to production (see Roadmap).
+`DATABASE_SYNCHRONIZE=true` (set in development) will auto-create tables from entities for fast local iteration. Real deployments should run migrations instead — see `src/database/migrations/` and the `migration:*` npm scripts below.
+
+### Migrations
+
+Schema changes are tracked as TypeORM migrations under `src/database/migrations/`, driven by the `DataSource` in `src/database/data-source.ts`:
+
+```bash
+# Generate a migration from entity changes (requires DATABASE_URL pointed at a real DB to diff against)
+npm run migration:generate -- src/database/migrations/SomeChange
+
+# Run all pending migrations
+npm run migration:run
+
+# Revert the most recently applied migration
+npm run migration:revert
+```
 
 ## Roadmap
 
-- [ ] Wire up TypeORM migrations (currently relies on `synchronize` for local dev only).
+- [x] ~~Wire up TypeORM migrations (currently relies on `synchronize` for local dev only).~~ See `src/database/migrations/` and the Migrations section above.
 - [ ] Move GitHub sync from a static PAT to a GitHub App installation-token flow for multi-org, least-privilege access.
 - [ ] Deploy the real escrow contract from `mergefi-contracts` and drop the Soroban dry-run fallback.
 - [ ] Replace the single `TREASURY_SECRET` signer with a proper signing service (KMS / multi-sig) before handling real funds.
