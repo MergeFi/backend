@@ -143,15 +143,7 @@ describe('Escrow FK integrity + sponsor dashboard reconciliation (integration)',
     );
   }
 
-  describe('CHK_escrow_exactly_one_parent', () => {
-    it('rejects an escrow with no parent set at all', async () => {
-      await expect(
-        escrowRepo.query(
-          `INSERT INTO escrows (id, amount, asset, status) VALUES (gen_random_uuid(), '10', 'USDC', 'pending')`,
-        ),
-      ).rejects.toThrow(/CHK_escrow_exactly_one_parent/);
-    });
-
+  describe('CHK_escrow_at_most_one_parent', () => {
     it('rejects an escrow with more than one parent set', async () => {
       const sponsor = await makeSponsor();
       // Both parents reference genuinely existing rows, so the only way
@@ -166,7 +158,7 @@ describe('Escrow FK integrity + sponsor dashboard reconciliation (integration)',
            VALUES (gen_random_uuid(), $1, $2, '10', 'USDC', 'pending')`,
           [bounty.id, milestone.id],
         ),
-      ).rejects.toThrow(/CHK_escrow_exactly_one_parent/);
+      ).rejects.toThrow(/CHK_escrow_at_most_one_parent/);
     });
 
     it('allows an escrow with exactly one parent set', async () => {
@@ -177,6 +169,25 @@ describe('Escrow FK integrity + sponsor dashboard reconciliation (integration)',
         escrowRepo.create({
           bountyId: bounty.id,
           sponsorId: sponsor.id,
+          amount: '10',
+          asset: AssetType.USDC,
+          status: EscrowStatus.LOCKED,
+        }),
+      );
+
+      expect(escrow.id).toBeDefined();
+    });
+
+    it('allows an escrow with zero parents set (the orphaned-by-deletion state)', async () => {
+      // The DB-level constraint deliberately allows this — it's exactly
+      // the state ON DELETE SET NULL produces when an escrow's parent is
+      // deleted (see the next describe block). "Exactly one" is an
+      // application-level rule enforced at creation time in
+      // EscrowService.assertExactlyOneParent, not a DB invariant, because
+      // the DB has no way to distinguish "never had a parent" from
+      // "orphaned by a legitimate deletion".
+      const escrow = await escrowRepo.save(
+        escrowRepo.create({
           amount: '10',
           asset: AssetType.USDC,
           status: EscrowStatus.LOCKED,
