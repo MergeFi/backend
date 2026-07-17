@@ -17,8 +17,13 @@ import { MigrationInterface, QueryRunner } from 'typeorm';
  *     to `ON DELETE RESTRICT` — a Payment is a record of money that already
  *     moved; deleting its parent Escrow must never silently delete that
  *     record too.
- *  4. Adds a CHECK constraint enforcing that exactly one of `bountyId` /
+ *  4. Adds a CHECK constraint enforcing that *at most* one of `bountyId` /
  *     `milestoneId` / `maintenancePoolId` is non-null on every Escrow row.
+ *     Not "exactly one": `ON DELETE SET NULL` (see 2.) legitimately drives
+ *     an orphaned escrow's parent count to zero, and a stricter "exactly
+ *     one" CHECK would make that very SET NULL fail. "Exactly one at
+ *     creation" is enforced application-side instead, in
+ *     EscrowService.assertExactlyOneParent.
  */
 export class EscrowFkIntegrityAndSponsorId1784272650000 implements MigrationInterface {
   name = 'EscrowFkIntegrityAndSponsorId1784272650000';
@@ -72,20 +77,20 @@ export class EscrowFkIntegrityAndSponsorId1784272650000 implements MigrationInte
 
     await queryRunner.query(`
       ALTER TABLE "escrows"
-      ADD CONSTRAINT "CHK_escrow_exactly_one_parent"
+      ADD CONSTRAINT "CHK_escrow_at_most_one_parent"
       CHECK (
         (
           (CASE WHEN "bountyId" IS NOT NULL THEN 1 ELSE 0 END) +
           (CASE WHEN "milestoneId" IS NOT NULL THEN 1 ELSE 0 END) +
           (CASE WHEN "maintenancePoolId" IS NOT NULL THEN 1 ELSE 0 END)
-        ) = 1
+        ) <= 1
       )
     `);
   }
 
   public async down(queryRunner: QueryRunner): Promise<void> {
     await queryRunner.query(
-      `ALTER TABLE "escrows" DROP CONSTRAINT IF EXISTS "CHK_escrow_exactly_one_parent"`,
+      `ALTER TABLE "escrows" DROP CONSTRAINT IF EXISTS "CHK_escrow_at_most_one_parent"`,
     );
 
     await this.replaceForeignKeyOnDelete(
