@@ -232,18 +232,14 @@ export class IdempotencyInterceptor implements NestInterceptor {
     // id *and* the exact `updatedAt` we observed makes this an atomic
     // compare-and-swap, so if two retries race to reclaim the same stale
     // row, only one UPDATE matches and wins.
-    const reclaim = await this.repo
-      .createQueryBuilder()
-      .update(IdempotencyKey)
-      .set({ updatedAt: new Date() })
-      .where('id = :id', { id: existing.id })
-      .andWhere('status = :status', {
+    const reclaim = await this.repo.update(
+      {
+        id: existing.id,
         status: IdempotencyKeyStatus.PROCESSING,
-      })
-      .andWhere('"updatedAt" = :observedUpdatedAt', {
-        observedUpdatedAt: existing.updatedAt,
-      })
-      .execute();
+        updatedAt: existing.updatedAt,
+      },
+      { updatedAt: new Date() },
+    );
 
     if ((reclaim.affected ?? 0) > 0) {
       return null;
