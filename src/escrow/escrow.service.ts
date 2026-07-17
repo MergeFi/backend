@@ -22,6 +22,14 @@ export interface FundEscrowInput {
   bountyId?: string;
   milestoneId?: string;
   maintenancePoolId?: string;
+  /**
+   * Denormalized sponsor identity, stored directly on the Escrow row rather
+   * than only reachable via a join to bounty/milestone. This is what lets
+   * sponsor-dashboard aggregates stay correct even after the parent
+   * bounty/milestone is deleted (#27) — omit for maintenance-pool escrows,
+   * which aren't sponsor-attributed.
+   */
+  sponsorId?: string | null;
 }
 
 export interface SplitRecipient {
@@ -53,6 +61,7 @@ export class EscrowService {
       bountyId: input.bountyId ?? null,
       milestoneId: input.milestoneId ?? null,
       maintenancePoolId: input.maintenancePoolId ?? null,
+      sponsorId: input.sponsorId ?? null,
     });
     await this.escrowRepo.save(escrow);
 
@@ -283,6 +292,29 @@ export class EscrowService {
     if (!isSupportedEscrowAsset(input.asset)) {
       throw new BadRequestException(
         `Unsupported escrow asset: ${String(input.asset)}`,
+      );
+    }
+    this.assertExactlyOneParent(input);
+  }
+
+  /**
+   * A newly-created escrow must belong to exactly one of
+   * bounty/milestone/maintenancePool. This is deliberately an
+   * application-level check rather than a DB CHECK constraint: the
+   * database only enforces "at most one" (CHK_escrow_at_most_one_parent),
+   * because ON DELETE SET NULL legitimately drives an existing escrow's
+   * parent count to zero when its parent is deleted, and a stricter
+   * "exactly one" constraint would make that very SET NULL fail (#27).
+   */
+  private assertExactlyOneParent(input: FundEscrowInput): void {
+    const parentCount = [
+      input.bountyId,
+      input.milestoneId,
+      input.maintenancePoolId,
+    ].filter((id) => id != null).length;
+    if (parentCount !== 1) {
+      throw new BadRequestException(
+        'Exactly one of bountyId, milestoneId, or maintenancePoolId is required',
       );
     }
   }

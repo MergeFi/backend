@@ -61,12 +61,17 @@ describe('BountiesService', () => {
       status: BountyStatus.OPEN,
       amount: '100',
       asset: AssetType.USDC,
+      sponsorId: 'sponsor-1',
     });
 
     const bounty = await service.fund('b1', 'GFUNDER');
 
     expect(escrowService.fund).toHaveBeenCalledWith(
-      expect.objectContaining({ bountyId: 'b1', funderAddress: 'GFUNDER' }),
+      expect.objectContaining({
+        bountyId: 'b1',
+        funderAddress: 'GFUNDER',
+        sponsorId: 'sponsor-1',
+      }),
     );
     expect(bounty.status).toBe(BountyStatus.FUNDED);
   });

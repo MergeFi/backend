@@ -63,6 +63,34 @@ describe('EscrowService', () => {
       expect(escrow.fundTxHash).toBe('tx-hash-123');
     });
 
+    it('persists the denormalized sponsorId on the created escrow row', async () => {
+      const escrow = await service.fund({
+        amount: '100.0000000',
+        asset: AssetType.USDC,
+        funderAddress: 'GABC...FUNDER',
+        bountyId: 'bounty-1',
+        sponsorId: 'sponsor-1',
+      });
+
+      expect(escrowRepo.create).toHaveBeenCalledWith(
+        expect.objectContaining({ sponsorId: 'sponsor-1' }),
+      );
+      expect(escrow.sponsorId).toBe('sponsor-1');
+    });
+
+    it('defaults sponsorId to null when omitted (e.g. maintenance-pool escrows)', async () => {
+      await service.fund({
+        amount: '100.0000000',
+        asset: AssetType.USDC,
+        funderAddress: 'GABC...FUNDER',
+        maintenancePoolId: 'pool-1',
+      });
+
+      expect(escrowRepo.create).toHaveBeenCalledWith(
+        expect.objectContaining({ sponsorId: null }),
+      );
+    });
+
     it('marks the escrow FAILED and rethrows when the contract call fails', async () => {
       soroban.invoke.mockRejectedValueOnce(new Error('simulation failed'));
 
@@ -71,6 +99,7 @@ describe('EscrowService', () => {
           amount: '10',
           asset: AssetType.XLM,
           funderAddress: 'G...',
+          bountyId: 'bounty-1',
         }),
       ).rejects.toThrow('simulation failed');
 
@@ -118,6 +147,38 @@ describe('EscrowService', () => {
 
       expect(escrowRepo.create).not.toHaveBeenCalled();
       expect(escrowRepo.save).not.toHaveBeenCalled();
+      expect(soroban.invoke).not.toHaveBeenCalled();
+    });
+
+    it('rejects funding with no parent (bounty/milestone/pool) set at all', async () => {
+      await expect(
+        service.fund({
+          amount: '10.0000000',
+          asset: AssetType.USDC,
+          funderAddress: 'G...FUNDER',
+        }),
+      ).rejects.toThrow(
+        'Exactly one of bountyId, milestoneId, or maintenancePoolId is required',
+      );
+
+      expect(escrowRepo.create).not.toHaveBeenCalled();
+      expect(soroban.invoke).not.toHaveBeenCalled();
+    });
+
+    it('rejects funding with more than one parent set', async () => {
+      await expect(
+        service.fund({
+          amount: '10.0000000',
+          asset: AssetType.USDC,
+          funderAddress: 'G...FUNDER',
+          bountyId: 'bounty-1',
+          milestoneId: 'milestone-1',
+        }),
+      ).rejects.toThrow(
+        'Exactly one of bountyId, milestoneId, or maintenancePoolId is required',
+      );
+
+      expect(escrowRepo.create).not.toHaveBeenCalled();
       expect(soroban.invoke).not.toHaveBeenCalled();
     });
   });

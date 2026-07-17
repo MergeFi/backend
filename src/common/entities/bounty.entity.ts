@@ -67,9 +67,12 @@ export class Bounty {
   @Column({ type: 'timestamptz', nullable: true })
   deadline: Date | null;
 
+  // cascade excludes 'remove'/'soft-remove': removing a Bounty entity via the
+  // ORM must not also remove its Escrow — the escrow row (and the funds it
+  // represents) must outlive the bounty record. See #27.
   @OneToOne(() => Escrow, (escrow) => escrow.bounty, {
     nullable: true,
-    cascade: true,
+    cascade: ['insert', 'update'],
   })
   escrow: Escrow | null;
 
