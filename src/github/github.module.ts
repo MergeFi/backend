@@ -6,6 +6,7 @@ import { GithubController } from './github.controller';
 import { GithubWebhooksService } from './github-webhooks.service';
 import { GithubWebhooksController } from './github-webhooks.controller';
 import { BountiesModule } from '../bounties/bounties.module';
+import { githubOctokitProvider } from './octokit.provider';
 
 @Module({
   imports: [
@@ -13,7 +14,7 @@ import { BountiesModule } from '../bounties/bounties.module';
     BountiesModule,
   ],
   controllers: [GithubController, GithubWebhooksController],
-  providers: [GithubSyncService, GithubWebhooksService],
+  providers: [githubOctokitProvider, GithubSyncService, GithubWebhooksService],
   exports: [GithubSyncService],
 })
 export class GithubModule {}

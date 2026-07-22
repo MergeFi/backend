@@ -7,6 +7,7 @@ import { BountyStatus, WebhookEventStatus } from '../common/enums';
 import { AppConfig } from '../config/configuration';
 import { verifyGithubSignature } from './webhook-signature.util';
 import { BountiesService } from '../bounties/bounties.service';
+import { GithubSyncService, RawGithubIssue } from './github-sync.service';
 
 interface GithubPullRequestPayload {
   action: string;
@@ -18,6 +19,12 @@ interface GithubPullRequestPayload {
     body?: string | null;
     title?: string;
   };
+  repository: { id: number; full_name: string };
+}
+
+interface GithubIssuesEventPayload {
+  action: string;
+  issue: RawGithubIssue;
   repository: { id: number; full_name: string };
 }
 
@@ -36,6 +43,7 @@ export class GithubWebhooksService {
     @InjectRepository(Issue) private readonly issueRepo: Repository<Issue>,
     @InjectRepository(Bounty) private readonly bountyRepo: Repository<Bounty>,
     private readonly bountiesService: BountiesService,
+    private readonly syncService: GithubSyncService,
   ) {}
 
   verifySignature(
@@ -77,6 +85,10 @@ export class GithubWebhooksService {
       if (eventType === 'pull_request') {
         await this.handlePullRequest(
           payload as unknown as GithubPullRequestPayload,
+        );
+      } else if (eventType === 'issues') {
+        await this.handleIssueEvent(
+          payload as unknown as GithubIssuesEventPayload,
         );
       }
       event.status = WebhookEventStatus.PROCESSED;
@@ -133,6 +145,38 @@ export class GithubWebhooksService {
         );
       }
       await this.bountiesService.markMergedAndRelease(bounty.id);
+    }
+  }
+
+  /**
+   * Keeps a tracked issue's title/body/state/labels in sync with an
+   * `issues` webhook event (opened/edited/closed/reopened/...), through the
+   * same optimistic-concurrency-guarded upsert a full sync uses — see
+   * GithubSyncService.upsertIssueRecord's doc comment for why this is the
+   * one write path both sync and webhooks share (#24).
+   */
+  private async handleIssueEvent(
+    payload: GithubIssuesEventPayload,
+  ): Promise<void> {
+    const repository = await this.syncService.findRepositoryByGithubId(
+      String(payload.repository.id),
+    );
+    if (!repository) {
+      this.logger.warn(
+        `Ignoring "issues" webhook for untracked repository ${payload.repository.full_name}`,
+      );
+      return;
+    }
+
+    const { applied } = await this.syncService.upsertIssueRecord(
+      repository.id,
+      payload.issue,
+    );
+    if (!applied) {
+      this.logger.log(
+        `Webhook "issues" update for #${payload.issue.number} in ` +
+          `${payload.repository.full_name} was stale relative to stored data; ignored`,
+      );
     }
   }
 
