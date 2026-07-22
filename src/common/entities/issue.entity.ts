@@ -70,6 +70,18 @@ export class Issue {
   @Column({ type: 'timestamptz', nullable: true })
   closedAt: Date | null;
 
+  /**
+   * GitHub's own `updated_at` for this issue, as of the last write that
+   * touched it (from either sync or a webhook). Sync and the `issues`
+   * webhook handler both write through the same optimistic-concurrency
+   * guard in GithubSyncService: a write is only applied if its incoming
+   * `updated_at` is >= this value, so whichever source has the freshest
+   * GitHub-side data always wins regardless of which one happens to run
+   * or commit second — see #24.
+   */
+  @Column({ type: 'timestamptz', nullable: true })
+  githubUpdatedAt: Date | null;
+
   @CreateDateColumn()
   createdAt: Date;
 
