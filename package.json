@@ -36,6 +36,8 @@
     "@nestjs/swagger": "^11.4.5",
     "@nestjs/throttler": "^6.5.0",
     "@nestjs/typeorm": "^11.0.3",
+    "@octokit/plugin-retry": "^8.1.0",
+    "@octokit/plugin-throttling": "^11.0.3",
     "@octokit/rest": "^22.0.1",
     "@stellar/stellar-sdk": "^16.0.1",
     "class-transformer": "^0.5.1",
@@ -97,6 +99,9 @@
     "moduleNameMapper": {
       "^@stellar/stellar-sdk$": "<rootDir>/../test/mocks/stellar-sdk.mock.js"
     },
+    "transformIgnorePatterns": [
+      "/node_modules/(?!(@octokit|before-after-hook|universal-user-agent)/)"
+    ],
     "collectCoverageFrom": [
       "**/*.(t|j)s"
     ],
