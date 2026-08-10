@@ -5,15 +5,27 @@ import { EscrowService } from '../escrow/escrow.service';
 import { Bounty, Team, User } from '../common/entities';
 import { AssetType, BountyDifficulty, BountyStatus } from '../common/enums';
 import { InvalidBountyTransitionError } from './bounty-state-machine';
+import { DataSource, QueryRunner } from 'typeorm';
 
 describe('BountiesService', () => {
   let service: BountiesService;
-  let bountyRepo: { findOne: jest.Mock; save: jest.Mock; create: jest.Mock };
+  let bountyRepo: { findOne: jest.Mock; save: jest.Mock; create: jest.Mock; createQueryBuilder: jest.Mock };
   let escrowService: {
     fund: jest.Mock;
     release: jest.Mock;
     splitRelease: jest.Mock;
   };
+  let dataSource: { transaction: jest.Mock };
+
+  const createMockRunner = (bounty: Partial<Bounty>) => ({
+    createQueryBuilder: jest.fn().mockReturnValue({
+      where: jest.fn().mockReturnThis(),
+      setLock: jest.fn().mockReturnThis(),
+      getOne: jest.fn().mockResolvedValue(bounty),
+    }),
+    save: jest.fn((b: Partial<Bounty>) => Promise.resolve(b)),
+    findOne: jest.fn(),
+  });
 
   beforeEach(async () => {
     bountyRepo = {
@@ -24,12 +36,14 @@ describe('BountiesService', () => {
         status: BountyStatus.OPEN,
         ...data,
       })),
+      createQueryBuilder: jest.fn(),
     };
     escrowService = {
       fund: jest.fn().mockResolvedValue({ id: 'escrow-1', status: 'locked' }),
       release: jest.fn().mockResolvedValue(undefined),
       splitRelease: jest.fn().mockResolvedValue([]),
     };
+    dataSource = { transaction: jest.fn() };
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
@@ -38,6 +52,7 @@ describe('BountiesService', () => {
         { provide: getRepositoryToken(User), useValue: { findOne: jest.fn() } },
         { provide: getRepositoryToken(Team), useValue: { findOne: jest.fn() } },
         { provide: EscrowService, useValue: escrowService },
+        { provide: DataSource, useValue: dataSource },
       ],
     }).compile();
 
@@ -56,13 +71,15 @@ describe('BountiesService', () => {
   });
 
   it('funding an OPEN bounty locks escrow and moves it to FUNDED', async () => {
-    bountyRepo.findOne.mockResolvedValue({
+    const mockBounty = {
       id: 'b1',
       status: BountyStatus.OPEN,
       amount: '100',
       asset: AssetType.USDC,
       sponsorId: 'sponsor-1',
-    });
+    };
+    const runner = createMockRunner(mockBounty);
+    dataSource.transaction.mockImplementation((fn: Function) => fn(runner));
 
     const bounty = await service.fund('b1', 'GFUNDER');
 
@@ -77,62 +94,71 @@ describe('BountiesService', () => {
   });
 
   it('rejects funding a bounty that is already FUNDED', async () => {
-    bountyRepo.findOne.mockResolvedValue({
-      id: 'b1',
-      status: BountyStatus.FUNDED,
-    });
+    const mockBounty = { id: 'b1', status: BountyStatus.FUNDED };
+    const runner = createMockRunner(mockBounty);
+    dataSource.transaction.mockImplementation((fn: Function) => fn(runner));
+
     await expect(service.fund('b1', 'GFUNDER')).rejects.toThrow(
       InvalidBountyTransitionError,
     );
   });
 
   it('rejects claiming a bounty that is still OPEN (not yet funded)', async () => {
-    bountyRepo.findOne.mockResolvedValue({
-      id: 'b1',
-      status: BountyStatus.OPEN,
-    });
+    const mockBounty = { id: 'b1', status: BountyStatus.OPEN };
+    const runner = createMockRunner(mockBounty);
+    dataSource.transaction.mockImplementation((fn: Function) => fn(runner));
+
     await expect(service.claim('b1', 'contributor-1')).rejects.toThrow(
       InvalidBountyTransitionError,
     );
   });
 
   it('claim moves FUNDED -> CLAIMED and records the contributor', async () => {
-    bountyRepo.findOne.mockResolvedValue({
-      id: 'b1',
-      status: BountyStatus.FUNDED,
-    });
+    const mockBounty = { id: 'b1', status: BountyStatus.FUNDED };
+    const runner = createMockRunner(mockBounty);
+    dataSource.transaction.mockImplementation((fn: Function) => fn(runner));
+
     const bounty = await service.claim('b1', 'contributor-1');
     expect(bounty.status).toBe(BountyStatus.CLAIMED);
     expect(bounty.claimedById).toBe('contributor-1');
   });
 
+  it('concurrent claims for the same bounty are serialized by the pessimistic lock', async () => {
+    // Simulate: first claim succeeds, second claim sees CLAIMED status and fails
+    const mockBountyFunded = { id: 'b1', status: BountyStatus.FUNDED };
+    const mockBountyClaimed = { id: 'b1', status: BountyStatus.CLAIMED };
+
+    // First call: bounty is FUNDED -> claim succeeds
+    const runner1 = createMockRunner(mockBountyFunded);
+    // Second call: bounty is now CLAIMED -> claim fails
+    const runner2 = createMockRunner(mockBountyClaimed);
+
+    dataSource.transaction
+      .mockImplementationOnce((fn: Function) => fn(runner1))
+      .mockImplementationOnce((fn: Function) => fn(runner2));
+
+    const result1 = await service.claim('b1', 'contributor-1');
+    expect(result1.status).toBe(BountyStatus.CLAIMED);
+
+    await expect(service.claim('b1', 'contributor-2')).rejects.toThrow(
+      InvalidBountyTransitionError,
+    );
+  });
+
   it('markMergedAndRelease releases escrow to the contributor and moves to PAID', async () => {
-    bountyRepo.findOne.mockResolvedValue({
+    const mockBounty = {
       id: 'b1',
       status: BountyStatus.IN_REVIEW,
       escrowId: 'escrow-1',
       claimedById: 'contributor-1',
       teamId: null,
+    };
+    const runner = createMockRunner(mockBounty);
+    runner.findOne.mockResolvedValue({
+      id: 'contributor-1',
+      stellarAddress: 'GCONTRIB',
     });
-
-    const module: TestingModule = await Test.createTestingModule({
-      providers: [
-        BountiesService,
-        { provide: getRepositoryToken(Bounty), useValue: bountyRepo },
-        {
-          provide: getRepositoryToken(User),
-          useValue: {
-            findOne: jest.fn().mockResolvedValue({
-              id: 'contributor-1',
-              stellarAddress: 'GCONTRIB',
-            }),
-          },
-        },
-        { provide: getRepositoryToken(Team), useValue: { findOne: jest.fn() } },
-        { provide: EscrowService, useValue: escrowService },
-      ],
-    }).compile();
-    service = module.get(BountiesService);
+    dataSource.transaction.mockImplementation((fn: Function) => fn(runner));
 
     const bounty = await service.markMergedAndRelease('b1');
 
