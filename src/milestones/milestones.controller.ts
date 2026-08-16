@@ -1,17 +1,18 @@
 import { Body, Controller, Get, Param, Post } from '@nestjs/common';
 import { ApiTags } from '@nestjs/swagger';
-import { IsOptional, IsString, IsUUID } from 'class-validator';
+import { IsOptional, IsUUID } from 'class-validator';
 import { MilestonesService } from './milestones.service';
 import { CreateMilestoneDto } from './dto/create-milestone.dto';
+import { IsStellarAddress } from '../common/validators/stellar-address.validator';
 import { Idempotent } from '../common/idempotency/idempotent.decorator';
 
 class FundMilestoneDto {
-  @IsString()
+  @IsStellarAddress()
   funderAddress: string;
 }
 
 class ResolveIssueDto {
-  @IsString()
+  @IsStellarAddress()
   recipientAddress: string;
 
   @IsOptional()

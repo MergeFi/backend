@@ -1,16 +1,17 @@
 import { Body, Controller, Get, Param, Post } from '@nestjs/common';
 import { ApiTags } from '@nestjs/swagger';
-import { IsOptional, IsString, IsUUID } from 'class-validator';
+import { IsOptional, IsUUID } from 'class-validator';
 import { MaintenancePoolService } from './maintenance-pool.service';
 import { CreatePoolDto } from './dto/create-pool.dto';
 import { IsMoneyAmount } from '../common/validators/money.validator';
+import { IsStellarAddress } from '../common/validators/stellar-address.validator';
 import { Idempotent } from '../common/idempotency/idempotent.decorator';
 
 class DepositDto {
   @IsMoneyAmount()
   amount: string;
 
-  @IsString()
+  @IsStellarAddress()
   funderAddress: string;
 }
 
@@ -18,7 +19,7 @@ class AssignRewardDto {
   @IsMoneyAmount()
   amount: string;
 
-  @IsString()
+  @IsStellarAddress()
   recipientAddress: string;
 
   @IsOptional()
