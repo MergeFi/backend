@@ -13,6 +13,7 @@ import {
   isSupportedEscrowAsset,
   isValidMoneyAmount,
 } from '../common/validators/money.validator';
+import { isValidStellarAddress } from '../common/validators/stellar-address.validator';
 import { SorobanClientService } from './soroban-client.service';
 
 export interface FundEscrowInput {
@@ -98,6 +99,7 @@ export class EscrowService {
   ): Promise<Escrow> {
     const escrow = await this.getOrThrow(escrowId);
     this.assertLocked(escrow);
+    this.assertValidAddress(recipientAddress, 'recipientAddress');
 
     const result = await this.soroban.invoke('release', [
       escrow.bountyId ??
@@ -186,6 +188,7 @@ export class EscrowService {
     const escrow = await this.getOrThrow(escrowId);
     this.assertLocked(escrow);
     this.assertValidAmount(amount);
+    this.assertValidAddress(recipientAddress, 'recipientAddress');
 
     const existingPayments = await this.paymentRepo.find({
       where: { escrowId: escrow.id },
@@ -281,6 +284,9 @@ export class EscrowService {
     if (recipients.some((r) => r.percentage <= 0)) {
       throw new BadRequestException('Split percentages must be positive');
     }
+    for (const r of recipients) {
+      this.assertValidAddress(r.recipientAddress, 'recipientAddress');
+    }
   }
 
   private roundAmount(value: number): number {
@@ -294,7 +300,16 @@ export class EscrowService {
         `Unsupported escrow asset: ${String(input.asset)}`,
       );
     }
+    this.assertValidAddress(input.funderAddress, 'funderAddress');
     this.assertExactlyOneParent(input);
+  }
+
+  private assertValidAddress(address: string, fieldName = 'address'): void {
+    if (!isValidStellarAddress(address)) {
+      throw new BadRequestException(
+        `${fieldName} must be a valid Stellar public key (Ed25519 StrKey format starting with 'G')`,
+      );
+    }
   }
 
   /**

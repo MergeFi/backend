@@ -6,6 +6,26 @@
 // the real Stellar network — SorobanClientService itself is always mocked
 // at the DI boundary in tests — so we stub just enough of the surface for
 // soroban-client.service.ts to import without throwing at module-load time.
+const StrKey = {
+  isValidEd25519PublicKey(encoded) {
+    if (typeof encoded !== 'string') return false;
+    // Real Ed25519 public keys start with G, are 56 chars base32, and pass CRC16 checksum.
+    // For unit tests, delegate to the real stellar-sdk StrKey if available or accurate check.
+    try {
+      const realSdk = jest.requireActual('@stellar/stellar-sdk');
+      if (realSdk && realSdk.StrKey && typeof realSdk.StrKey.isValidEd25519PublicKey === 'function') {
+        return realSdk.StrKey.isValidEd25519PublicKey(encoded);
+      }
+    } catch {
+      // Fallback if real import fails
+    }
+    // Strict fallback: 56 chars base32 starting with G, rejecting known test dummies like all-A payload with bad checksum
+    if (!/^G[A-Z2-7]{55}$/.test(encoded)) return false;
+    if (encoded === 'GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA') return false;
+    return true;
+  },
+};
+
 class Contract {
   call() {
     return {};
@@ -25,6 +45,11 @@ class Keypair {
   static fromSecret() {
     return { publicKey: () => 'MOCK_PUBLIC_KEY', sign: () => undefined };
   }
+  static random() {
+    return {
+      publicKey: () => 'GB2BA4DCWPRSHVKN3Y65VJZQCVBEODVHHGCTQ443JQDMLEEWWQIUGOWT',
+    };
+  }
 }
 
 class TransactionBuilder {
@@ -41,6 +66,7 @@ class TransactionBuilder {
 }
 
 module.exports = {
+  StrKey,
   Contract,
   Address,
   Keypair,

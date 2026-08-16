@@ -6,6 +6,12 @@ import { SorobanClientService } from './soroban-client.service';
 import { Escrow, Payment } from '../common/entities';
 import { AssetType, EscrowStatus } from '../common/enums';
 
+const VALID_FUNDER = 'GAZRVG3HD4DYUK22IPELHZLMKLBUDUNILCL2OCDQPSVLRJSCCDD7OS5C';
+const VALID_RECIPIENT =
+  'GAR2PDKGEZXQP5X2EFMOSLJXI26HATS6VZVZATOMCWKXU26UASMJTCH5';
+const VALID_RECIPIENT_2 =
+  'GCCQQQ6AKEMWDJYEKEF2ON52AUARKBFP46D47OVSCHBCU3TXGO2Q4HH5';
+
 describe('EscrowService', () => {
   let service: EscrowService;
   let escrowRepo: { create: jest.Mock; save: jest.Mock; findOne: jest.Mock };
@@ -51,13 +57,13 @@ describe('EscrowService', () => {
       const escrow = await service.fund({
         amount: '100.0000000',
         asset: AssetType.USDC,
-        funderAddress: 'GABC...FUNDER',
+        funderAddress: VALID_FUNDER,
         bountyId: 'bounty-1',
       });
 
       expect(soroban.invoke).toHaveBeenCalledWith(
         'fund',
-        expect.arrayContaining(['GABC...FUNDER', 'bounty-1']),
+        expect.arrayContaining([VALID_FUNDER, 'bounty-1']),
       );
       expect(escrow.status).toBe(EscrowStatus.LOCKED);
       expect(escrow.fundTxHash).toBe('tx-hash-123');
@@ -67,7 +73,7 @@ describe('EscrowService', () => {
       const escrow = await service.fund({
         amount: '100.0000000',
         asset: AssetType.USDC,
-        funderAddress: 'GABC...FUNDER',
+        funderAddress: VALID_FUNDER,
         bountyId: 'bounty-1',
         sponsorId: 'sponsor-1',
       });
@@ -82,7 +88,7 @@ describe('EscrowService', () => {
       await service.fund({
         amount: '100.0000000',
         asset: AssetType.USDC,
-        funderAddress: 'GABC...FUNDER',
+        funderAddress: VALID_FUNDER,
         maintenancePoolId: 'pool-1',
       });
 
@@ -98,7 +104,7 @@ describe('EscrowService', () => {
         service.fund({
           amount: '10',
           asset: AssetType.XLM,
-          funderAddress: 'G...',
+          funderAddress: VALID_FUNDER,
           bountyId: 'bounty-1',
         }),
       ).rejects.toThrow('simulation failed');
@@ -126,7 +132,7 @@ describe('EscrowService', () => {
           service.fund({
             amount,
             asset: AssetType.USDC,
-            funderAddress: 'G...FUNDER',
+            funderAddress: VALID_FUNDER,
           }),
         ).rejects.toThrow(BadRequestException);
 
@@ -141,7 +147,7 @@ describe('EscrowService', () => {
         service.fund({
           amount: '10.0000000',
           asset: 'BTC' as AssetType,
-          funderAddress: 'G...FUNDER',
+          funderAddress: VALID_FUNDER,
         }),
       ).rejects.toThrow(BadRequestException);
 
@@ -150,12 +156,26 @@ describe('EscrowService', () => {
       expect(soroban.invoke).not.toHaveBeenCalled();
     });
 
+    it('rejects funding with an invalid Stellar funderAddress', async () => {
+      await expect(
+        service.fund({
+          amount: '10.0000000',
+          asset: AssetType.USDC,
+          funderAddress: 'invalid-stellar-address',
+          bountyId: 'bounty-1',
+        }),
+      ).rejects.toThrow(BadRequestException);
+
+      expect(escrowRepo.create).not.toHaveBeenCalled();
+      expect(soroban.invoke).not.toHaveBeenCalled();
+    });
+
     it('rejects funding with no parent (bounty/milestone/pool) set at all', async () => {
       await expect(
         service.fund({
           amount: '10.0000000',
           asset: AssetType.USDC,
-          funderAddress: 'G...FUNDER',
+          funderAddress: VALID_FUNDER,
         }),
       ).rejects.toThrow(
         'Exactly one of bountyId, milestoneId, or maintenancePoolId is required',
@@ -170,7 +190,7 @@ describe('EscrowService', () => {
         service.fund({
           amount: '10.0000000',
           asset: AssetType.USDC,
-          funderAddress: 'G...FUNDER',
+          funderAddress: VALID_FUNDER,
           bountyId: 'bounty-1',
           milestoneId: 'milestone-1',
         }),
@@ -192,9 +212,22 @@ describe('EscrowService', () => {
         asset: AssetType.USDC,
       });
 
-      await expect(service.release('escrow-2', 'GRECIPIENT')).rejects.toThrow(
-        BadRequestException,
-      );
+      await expect(
+        service.release('escrow-2', VALID_RECIPIENT),
+      ).rejects.toThrow(BadRequestException);
+    });
+
+    it('rejects releasing with an invalid Stellar recipientAddress', async () => {
+      escrowRepo.findOne.mockResolvedValue({
+        id: 'escrow-2',
+        status: EscrowStatus.LOCKED,
+        amount: '10',
+        asset: AssetType.USDC,
+      });
+
+      await expect(
+        service.release('escrow-2', 'not-a-stellar-key'),
+      ).rejects.toThrow(BadRequestException);
     });
 
     it('releases a LOCKED escrow and records a Payment', async () => {
@@ -206,12 +239,16 @@ describe('EscrowService', () => {
         bountyId: 'bounty-3',
       });
 
-      const escrow = await service.release('escrow-3', 'GRECIPIENT', 'user-1');
+      const escrow = await service.release(
+        'escrow-3',
+        VALID_RECIPIENT,
+        'user-1',
+      );
 
       expect(escrow.status).toBe(EscrowStatus.RELEASED);
       expect(paymentRepo.save).toHaveBeenCalledWith(
         expect.objectContaining({
-          recipientAddress: 'GRECIPIENT',
+          recipientAddress: VALID_RECIPIENT,
           amount: '50',
         }),
       );
@@ -222,8 +259,17 @@ describe('EscrowService', () => {
     it('throws when percentages do not sum to 100', () => {
       expect(() =>
         service.assertValidSplits([
-          { recipientAddress: 'G1', percentage: 40 },
-          { recipientAddress: 'G2', percentage: 40 },
+          { recipientAddress: VALID_RECIPIENT, percentage: 40 },
+          { recipientAddress: VALID_RECIPIENT_2, percentage: 40 },
+        ]),
+      ).toThrow(BadRequestException);
+    });
+
+    it('throws when any recipient has an invalid address', () => {
+      expect(() =>
+        service.assertValidSplits([
+          { recipientAddress: 'invalid-address', percentage: 50 },
+          { recipientAddress: VALID_RECIPIENT, percentage: 50 },
         ]),
       ).toThrow(BadRequestException);
     });
@@ -231,9 +277,9 @@ describe('EscrowService', () => {
     it('accepts percentages that sum to 100 within tolerance', () => {
       expect(() =>
         service.assertValidSplits([
-          { recipientAddress: 'G1', percentage: 40 },
-          { recipientAddress: 'G2', percentage: 40 },
-          { recipientAddress: 'G3', percentage: 20 },
+          { recipientAddress: VALID_FUNDER, percentage: 40 },
+          { recipientAddress: VALID_RECIPIENT, percentage: 40 },
+          { recipientAddress: VALID_RECIPIENT_2, percentage: 20 },
         ]),
       ).not.toThrow();
     });
@@ -248,9 +294,9 @@ describe('EscrowService', () => {
       });
 
       const payments = await service.splitRelease('escrow-4', [
-        { recipientAddress: 'GFRONTEND', percentage: 40 },
-        { recipientAddress: 'GBACKEND', percentage: 40 },
-        { recipientAddress: 'GTEST', percentage: 20 },
+        { recipientAddress: VALID_FUNDER, percentage: 40 },
+        { recipientAddress: VALID_RECIPIENT, percentage: 40 },
+        { recipientAddress: VALID_RECIPIENT_2, percentage: 20 },
       ]);
 
       expect(payments).toHaveLength(3);
