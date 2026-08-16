@@ -4,8 +4,10 @@ import { IsString } from 'class-validator';
 import { BountiesService } from './bounties.service';
 import { CreateBountyDto } from './dto/create-bounty.dto';
 import { ClaimBountyDto } from './dto/claim-bounty.dto';
-import { BountyStatus } from '../common/enums';
+import { ListBountiesDto } from './dto/list-bounties.dto';
 import { Idempotent } from '../common/idempotency/idempotent.decorator';
+import { PaginatedResponse } from '../common/dto/pagination.dto';
+import { Bounty } from '../common/entities';
 
 class FundBountyDto {
   @IsString()
@@ -23,8 +25,8 @@ export class BountiesController {
   }
 
   @Get()
-  list(@Query('status') status?: BountyStatus) {
-    return this.bountiesService.list(status);
+  list(@Query() query: ListBountiesDto): Promise<PaginatedResponse<Bounty>> {
+    return this.bountiesService.list(query);
   }
 
   @Get(':id')

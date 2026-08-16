@@ -3,6 +3,13 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { GithubAccount, User } from '../common/entities';
 import { UserRole } from '../common/enums';
+import {
+  DEFAULT_PAGE_LIMIT,
+  MAX_PAGE_LIMIT,
+  PaginationQueryDto,
+  PaginatedResponse,
+  buildPaginatedResponse,
+} from '../common/dto/pagination.dto';
 
 export interface UpsertFromGithubInput {
   githubId: string;
@@ -98,7 +105,19 @@ export class UsersService {
     return this.userRepo.save(user);
   }
 
-  async list(): Promise<User[]> {
-    return this.userRepo.find();
+  async list(query?: PaginationQueryDto): Promise<PaginatedResponse<User>> {
+    const limit = Math.min(
+      Math.max(Number(query?.limit) || DEFAULT_PAGE_LIMIT, 1),
+      MAX_PAGE_LIMIT,
+    );
+    const offset = Math.max(Number(query?.offset) || 0, 0);
+
+    const [data, total] = await this.userRepo.findAndCount({
+      take: limit,
+      skip: offset,
+      order: { createdAt: 'DESC' },
+    });
+
+    return buildPaginatedResponse(data, total, limit, offset);
   }
 }
