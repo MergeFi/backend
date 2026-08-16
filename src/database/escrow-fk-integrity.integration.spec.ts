@@ -221,29 +221,16 @@ describe('Escrow FK integrity + sponsor dashboard reconciliation (integration)',
       expect(Number(survived?.amount)).toBe(250);
     });
 
-    it('RESTRICTs deleting an escrow that still has payment records', async () => {
+    it('RESTRICTs deleting an issue that is attached to a bounty (#53)', async () => {
       const sponsor = await makeSponsor();
       const bounty = await makeBounty(sponsor.id);
-      const escrow = await escrowRepo.save(
-        escrowRepo.create({
-          bountyId: bounty.id,
-          sponsorId: sponsor.id,
-          amount: '250',
-          asset: AssetType.USDC,
-          status: EscrowStatus.RELEASED,
-        }),
-      );
-      await paymentRepo.save(
-        paymentRepo.create({
-          escrowId: escrow.id,
-          recipientAddress: 'GRECIPIENT',
-          amount: '250',
-          asset: AssetType.USDC,
-          status: PaymentStatus.CONFIRMED,
-        }),
-      );
 
-      await expect(escrowRepo.delete(escrow.id)).rejects.toThrow();
+      // Deleting the underlying issue directly should be rejected by the RESTRICT foreign key
+      await expect(issueRepo.delete(bounty.issueId)).rejects.toThrow();
+
+      const bountyRow = await bountyRepo.findOne({ where: { id: bounty.id } });
+      expect(bountyRow).not.toBeNull();
+      expect(bountyRow?.id).toBe(bounty.id);
     });
   });
 

@@ -19,7 +19,10 @@ export class Bounty {
   @PrimaryGeneratedColumn('uuid')
   id: string;
 
-  @OneToOne(() => Issue, (issue) => issue.bounty, { onDelete: 'CASCADE' })
+  // RESTRICT, not CASCADE: a Bounty is a financial-state-bearing entity
+  // (tracking funding, claim, PR, and payout state). Deleting the linked Issue
+  // must never cascade-delete the Bounty record. See #53.
+  @OneToOne(() => Issue, (issue) => issue.bounty, { onDelete: 'RESTRICT' })
   @JoinColumn()
   issue: Issue;
 
