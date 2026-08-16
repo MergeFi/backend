@@ -22,6 +22,7 @@ export enum BountyStatus {
   CLAIMED = 'claimed',
   IN_REVIEW = 'in_review',
   MERGED = 'merged',
+  RELEASE_PENDING = 'release_pending',
   PAID = 'paid',
   REFUNDED = 'refunded',
   EXPIRED = 'expired',

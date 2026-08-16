@@ -1,4 +1,4 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { Bounty, Team, User } from '../common/entities';
@@ -9,6 +9,8 @@ import { CreateBountyDto } from './dto/create-bounty.dto';
 
 @Injectable()
 export class BountiesService {
+  private readonly logger = new Logger(BountiesService.name);
+
   constructor(
     @InjectRepository(Bounty) private readonly bountyRepo: Repository<Bounty>,
     @InjectRepository(User) private readonly userRepo: Repository<User>,
@@ -81,12 +83,21 @@ export class BountiesService {
   }
 
   /**
-   * The linked PR was merged on GitHub. Transitions to MERGED and immediately
-   * triggers the escrow release (single recipient or team split), moving to
-   * PAID once the on-chain release call succeeds.
+   * The linked PR was merged on GitHub. Transitions to MERGED, then immediately
+   * attempts the escrow release (single recipient or team split).
+   *
+   * If the escrow release succeeds, moves to PAID.
+   * If the escrow release fails, moves to RELEASE_PENDING so that a retry
+   * can be attempted later — the bounty is no longer permanently stuck.
    */
   async markMergedAndRelease(id: string): Promise<Bounty> {
     const bounty = await this.findOne(id);
+
+    // Allow retry from RELEASE_PENDING (escrow release previously failed)
+    if (bounty.status === BountyStatus.RELEASE_PENDING) {
+      return this.attemptEscrowRelease(bounty);
+    }
+
     assertTransition(bounty.status, BountyStatus.MERGED);
 
     bounty.status = BountyStatus.MERGED;
@@ -95,44 +106,68 @@ export class BountiesService {
 
     if (!bounty.escrowId) {
       // No escrow was ever funded (e.g. informally tracked bounty) — nothing to release.
+      assertTransition(bounty.status, BountyStatus.PAID);
+      bounty.status = BountyStatus.PAID;
+      bounty.paidAt = new Date();
+      return this.bountyRepo.save(bounty);
+    }
+
+    return this.attemptEscrowRelease(bounty);
+  }
+
+  /**
+   * Attempts to release escrow funds. On success, moves to PAID.
+   * On failure, moves to RELEASE_PENDING so the release can be retried.
+   */
+  private async attemptEscrowRelease(bounty: Bounty): Promise<Bounty> {
+    assertTransition(bounty.status, BountyStatus.RELEASE_PENDING);
+    bounty.status = BountyStatus.RELEASE_PENDING;
+    await this.bountyRepo.save(bounty);
+
+    try {
+      if (bounty.teamId) {
+        const team = await this.teamRepo.findOne({
+          where: { id: bounty.teamId },
+          relations: { splits: true },
+        });
+        if (team && team.splits.length > 0) {
+          const recipients = await Promise.all(
+            team.splits.map(async (split) => {
+              const user = await this.userRepo.findOne({
+                where: { id: split.userId },
+              });
+              return {
+                recipientId: split.userId,
+                recipientAddress: user?.stellarAddress ?? '',
+                percentage: Number(split.percentage),
+              };
+            }),
+          );
+          await this.escrowService.splitRelease(bounty.escrowId!, recipients);
+        }
+      } else if (bounty.claimedById) {
+        const contributor = await this.userRepo.findOne({
+          where: { id: bounty.claimedById },
+        });
+        await this.escrowService.release(
+          bounty.escrowId!,
+          contributor?.stellarAddress ?? '',
+          bounty.claimedById,
+        );
+      }
+
+      assertTransition(bounty.status, BountyStatus.PAID);
+      bounty.status = BountyStatus.PAID;
+      bounty.paidAt = new Date();
+      return this.bountyRepo.save(bounty);
+    } catch (err) {
+      this.logger.error(
+        `Escrow release failed for bounty ${bounty.id}: ${(err as Error).message}. ` +
+        `Bounty is now in RELEASE_PENDING state and can be retried.`,
+      );
+      // Bounty stays in RELEASE_PENDING — caller can retry later
       return bounty;
     }
-
-    if (bounty.teamId) {
-      const team = await this.teamRepo.findOne({
-        where: { id: bounty.teamId },
-        relations: { splits: true },
-      });
-      if (team && team.splits.length > 0) {
-        const recipients = await Promise.all(
-          team.splits.map(async (split) => {
-            const user = await this.userRepo.findOne({
-              where: { id: split.userId },
-            });
-            return {
-              recipientId: split.userId,
-              recipientAddress: user?.stellarAddress ?? '',
-              percentage: Number(split.percentage),
-            };
-          }),
-        );
-        await this.escrowService.splitRelease(bounty.escrowId, recipients);
-      }
-    } else if (bounty.claimedById) {
-      const contributor = await this.userRepo.findOne({
-        where: { id: bounty.claimedById },
-      });
-      await this.escrowService.release(
-        bounty.escrowId,
-        contributor?.stellarAddress ?? '',
-        bounty.claimedById,
-      );
-    }
-
-    assertTransition(bounty.status, BountyStatus.PAID);
-    bounty.status = BountyStatus.PAID;
-    bounty.paidAt = new Date();
-    return this.bountyRepo.save(bounty);
   }
 
   /** Sponsor (or admin/expiry job) reclaims escrowed funds. */

@@ -13,6 +13,7 @@ describe('BountiesService', () => {
     fund: jest.Mock;
     release: jest.Mock;
     splitRelease: jest.Mock;
+    refund: jest.Mock;
   };
 
   beforeEach(async () => {
@@ -29,6 +30,7 @@ describe('BountiesService', () => {
       fund: jest.fn().mockResolvedValue({ id: 'escrow-1', status: 'locked' }),
       release: jest.fn().mockResolvedValue(undefined),
       splitRelease: jest.fn().mockResolvedValue([]),
+      refund: jest.fn().mockResolvedValue(undefined),
     };
 
     const module: TestingModule = await Test.createTestingModule({
@@ -142,5 +144,92 @@ describe('BountiesService', () => {
       'contributor-1',
     );
     expect(bounty.status).toBe(BountyStatus.PAID);
+  });
+
+  it('markMergedAndRelease moves to RELEASE_PENDING when escrow fails, allowing retry', async () => {
+    bountyRepo.findOne.mockResolvedValue({
+      id: 'b1',
+      status: BountyStatus.IN_REVIEW,
+      escrowId: 'escrow-1',
+      claimedById: 'contributor-1',
+      teamId: null,
+    });
+
+    escrowService.release.mockRejectedValue(new Error('Soroban RPC timeout'));
+
+    const module: TestingModule = await Test.createTestingModule({
+      providers: [
+        BountiesService,
+        { provide: getRepositoryToken(Bounty), useValue: bountyRepo },
+        {
+          provide: getRepositoryToken(User),
+          useValue: {
+            findOne: jest.fn().mockResolvedValue({
+              id: 'contributor-1',
+              stellarAddress: 'GCONTRIB',
+            }),
+          },
+        },
+        { provide: getRepositoryToken(Team), useValue: { findOne: jest.fn() } },
+        { provide: EscrowService, useValue: escrowService },
+      ],
+    }).compile();
+    service = module.get(BountiesService);
+
+    const bounty = await service.markMergedAndRelease('b1');
+
+    expect(bounty.status).toBe(BountyStatus.RELEASE_PENDING);
+    expect(escrowService.release).toHaveBeenCalled();
+  });
+
+  it('allows retrying escrow release from RELEASE_PENDING state', async () => {
+    bountyRepo.findOne.mockResolvedValue({
+      id: 'b1',
+      status: BountyStatus.RELEASE_PENDING,
+      escrowId: 'escrow-1',
+      claimedById: 'contributor-1',
+      teamId: null,
+    });
+
+    escrowService.release.mockResolvedValue(undefined);
+
+    const module: TestingModule = await Test.createTestingModule({
+      providers: [
+        BountiesService,
+        { provide: getRepositoryToken(Bounty), useValue: bountyRepo },
+        {
+          provide: getRepositoryToken(User),
+          useValue: {
+            findOne: jest.fn().mockResolvedValue({
+              id: 'contributor-1',
+              stellarAddress: 'GCONTRIB',
+            }),
+          },
+        },
+        { provide: getRepositoryToken(Team), useValue: { findOne: jest.fn() } },
+        { provide: EscrowService, useValue: escrowService },
+      },
+    }).compile();
+    service = module.get(BountiesService);
+
+    const bounty = await service.markMergedAndRelease('b1');
+
+    expect(bounty.status).toBe(BountyStatus.PAID);
+    expect(escrowService.release).toHaveBeenCalled();
+  });
+
+  it('moves unfunded bounty directly to PAID when merged', async () => {
+    bountyRepo.findOne.mockResolvedValue({
+      id: 'b1',
+      status: BountyStatus.IN_REVIEW,
+      escrowId: null,
+      claimedById: null,
+      teamId: null,
+    });
+
+    const bounty = await service.markMergedAndRelease('b1');
+
+    expect(bounty.status).toBe(BountyStatus.PAID);
+    expect(escrowService.release).not.toHaveBeenCalled();
   });
 });
