@@ -1,36 +1,68 @@
-import { Body, Controller, Get, Param, Patch, UseGuards } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Get,
+  Param,
+  Patch,
+  Req,
+  UseGuards,
+} from '@nestjs/common';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { IsString } from 'class-validator';
+import type { Request } from 'express';
 import { UsersService } from './users.service';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
+import { toPublicUser, PublicUser } from './user-response.mapper';
+import { UserRole } from '../common/enums';
 
 class SetStellarAddressDto {
   @IsString()
   stellarAddress: string;
 }
 
+interface AuthenticatedUserPayload {
+  userId: string;
+  username: string;
+  roles?: UserRole[];
+}
+
 @ApiTags('users')
+@ApiBearerAuth()
+@UseGuards(JwtAuthGuard)
 @Controller('users')
 export class UsersController {
   constructor(private readonly usersService: UsersService) {}
 
   @Get()
-  list() {
-    return this.usersService.list();
+  async list(@Req() req: Request): Promise<PublicUser[]> {
+    const userPayload = req.user as AuthenticatedUserPayload | undefined;
+    const users = await this.usersService.list();
+    return users.map((user) =>
+      toPublicUser(user, { currentUser: userPayload }),
+    );
   }
 
   @Get(':id')
-  findOne(@Param('id') id: string) {
-    return this.usersService.findById(id);
+  async findOne(
+    @Param('id') id: string,
+    @Req() req: Request,
+  ): Promise<PublicUser> {
+    const userPayload = req.user as AuthenticatedUserPayload | undefined;
+    const user = await this.usersService.findById(id);
+    return toPublicUser(user, { currentUser: userPayload });
   }
 
-  @ApiBearerAuth()
-  @UseGuards(JwtAuthGuard)
   @Patch(':id/stellar-address')
-  setStellarAddress(
+  async setStellarAddress(
     @Param('id') id: string,
     @Body() dto: SetStellarAddressDto,
-  ) {
-    return this.usersService.setStellarAddress(id, dto.stellarAddress);
+    @Req() req: Request,
+  ): Promise<PublicUser> {
+    const userPayload = req.user as AuthenticatedUserPayload | undefined;
+    const user = await this.usersService.setStellarAddress(
+      id,
+      dto.stellarAddress,
+    );
+    return toPublicUser(user, { currentUser: userPayload });
   }
 }
