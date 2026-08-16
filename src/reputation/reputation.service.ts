@@ -1,14 +1,16 @@
 import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
-import { Bounty, Issue, ReputationSnapshot } from '../common/entities';
+import { Bounty, Issue, Payment, ReputationSnapshot } from '../common/entities';
 import { BountyStatus } from '../common/enums';
+import { computeContributorTotalEarnings } from './contributor-earnings.util';
 
 @Injectable()
 export class ReputationService {
   constructor(
     @InjectRepository(Bounty) private readonly bountyRepo: Repository<Bounty>,
     @InjectRepository(Issue) private readonly issueRepo: Repository<Issue>,
+    @InjectRepository(Payment) private readonly paymentRepo: Repository<Payment>,
     @InjectRepository(ReputationSnapshot)
     private readonly snapshotRepo: Repository<ReputationSnapshot>,
   ) {}
@@ -16,6 +18,9 @@ export class ReputationService {
   /**
    * Recomputes a contributor's reputation stats from their historical bounty
    * activity and appends a new snapshot row.
+   *
+   * Lifetime earnings are summed from confirmed Payment ledger rows rather than
+   * full Bounty.amount values, ensuring split-team payouts are accurately reflected.
    */
   async computeAndSave(userId: string): Promise<ReputationSnapshot> {
     const claimedBounties = await this.bountyRepo.find({
@@ -24,9 +29,12 @@ export class ReputationService {
     const merged = claimedBounties.filter((b) =>
       [BountyStatus.MERGED, BountyStatus.PAID].includes(b.status),
     );
-    const paid = claimedBounties.filter((b) => b.status === BountyStatus.PAID);
 
-    const totalEarnings = paid.reduce((sum, b) => sum + Number(b.amount), 0);
+    const totalEarnings = await computeContributorTotalEarnings(
+      this.paymentRepo,
+      userId,
+    );
+
     const completionRate =
       claimedBounties.length > 0
         ? (merged.length / claimedBounties.length) * 100
