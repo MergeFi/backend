@@ -1,7 +1,12 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import {
+  BadRequestException,
+  Injectable,
+  NotFoundException,
+} from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { Bounty, Team, TeamMemberSplit } from '../common/entities';
+import { BountyStatus } from '../common/enums';
 import { CreateTeamDto } from './dto/create-team.dto';
 import { validateSplitPercentages } from './team-split.util';
 
@@ -54,6 +59,22 @@ export class TeamsService {
     await this.findOne(teamId); // ensures team exists
     const bounty = await this.bountyRepo.findOne({ where: { id: bountyId } });
     if (!bounty) throw new NotFoundException(`Bounty ${bountyId} not found`);
+
+    if (
+      bounty.status !== BountyStatus.OPEN &&
+      bounty.status !== BountyStatus.FUNDED
+    ) {
+      throw new BadRequestException(
+        `Cannot assign a team to a bounty in ${bounty.status} status. Assignment is only allowed in OPEN or FUNDED state before claiming.`,
+      );
+    }
+
+    if (bounty.claimedById) {
+      throw new BadRequestException(
+        `Cannot assign a team to a bounty that has already been claimed by contributor ${bounty.claimedById}.`,
+      );
+    }
+
     bounty.teamId = teamId;
     return this.bountyRepo.save(bounty);
   }
