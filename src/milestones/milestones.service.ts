@@ -9,6 +9,13 @@ import { Issue, Milestone } from '../common/entities';
 import { MilestoneStatus } from '../common/enums';
 import { EscrowService } from '../escrow/escrow.service';
 import { CreateMilestoneDto } from './dto/create-milestone.dto';
+import {
+  DEFAULT_PAGE_LIMIT,
+  MAX_PAGE_LIMIT,
+  PaginationQueryDto,
+  PaginatedResponse,
+  buildPaginatedResponse,
+} from '../common/dto/pagination.dto';
 
 @Injectable()
 export class MilestonesService {
@@ -128,7 +135,19 @@ export class MilestonesService {
     return payment;
   }
 
-  async list(): Promise<Milestone[]> {
-    return this.milestoneRepo.find();
+  async list(query?: PaginationQueryDto): Promise<PaginatedResponse<Milestone>> {
+    const limit = Math.min(
+      Math.max(Number(query?.limit) || DEFAULT_PAGE_LIMIT, 1),
+      MAX_PAGE_LIMIT,
+    );
+    const offset = Math.max(Number(query?.offset) || 0, 0);
+
+    const [data, total] = await this.milestoneRepo.findAndCount({
+      take: limit,
+      skip: offset,
+      order: { createdAt: 'DESC' },
+    });
+
+    return buildPaginatedResponse(data, total, limit, offset);
   }
 }

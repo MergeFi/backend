@@ -1,9 +1,11 @@
-import { Body, Controller, Get, Param, Post } from '@nestjs/common';
+import { Body, Controller, Get, Param, Post, Query } from '@nestjs/common';
 import { ApiTags } from '@nestjs/swagger';
 import { IsOptional, IsString, IsUUID } from 'class-validator';
 import { MilestonesService } from './milestones.service';
 import { CreateMilestoneDto } from './dto/create-milestone.dto';
 import { Idempotent } from '../common/idempotency/idempotent.decorator';
+import { PaginationQueryDto, PaginatedResponse } from '../common/dto/pagination.dto';
+import { Milestone } from '../common/entities';
 
 class FundMilestoneDto {
   @IsString()
@@ -30,8 +32,8 @@ export class MilestonesController {
   }
 
   @Get()
-  list() {
-    return this.milestonesService.list();
+  list(@Query() query: PaginationQueryDto): Promise<PaginatedResponse<Milestone>> {
+    return this.milestonesService.list(query);
   }
 
   @Get(':id')

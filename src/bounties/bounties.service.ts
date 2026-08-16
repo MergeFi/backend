@@ -1,11 +1,18 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { FindOptionsWhere, Repository } from 'typeorm';
 import { Bounty, Team, User } from '../common/entities';
 import { BountyStatus } from '../common/enums';
 import { assertTransition } from './bounty-state-machine';
 import { EscrowService } from '../escrow/escrow.service';
 import { CreateBountyDto } from './dto/create-bounty.dto';
+import { ListBountiesDto } from './dto/list-bounties.dto';
+import {
+  DEFAULT_PAGE_LIMIT,
+  MAX_PAGE_LIMIT,
+  PaginatedResponse,
+  buildPaginatedResponse,
+} from '../common/dto/pagination.dto';
 
 @Injectable()
 export class BountiesService {
@@ -171,7 +178,23 @@ export class BountiesService {
     return overdue.length;
   }
 
-  async list(status?: BountyStatus): Promise<Bounty[]> {
-    return this.bountyRepo.find({ where: status ? { status } : {} });
+  async list(query?: ListBountiesDto): Promise<PaginatedResponse<Bounty>> {
+    const limit = Math.min(
+      Math.max(Number(query?.limit) || DEFAULT_PAGE_LIMIT, 1),
+      MAX_PAGE_LIMIT,
+    );
+    const offset = Math.max(Number(query?.offset) || 0, 0);
+    const where: FindOptionsWhere<Bounty> = query?.status
+      ? { status: query.status }
+      : {};
+
+    const [data, total] = await this.bountyRepo.findAndCount({
+      where,
+      take: limit,
+      skip: offset,
+      order: { createdAt: 'DESC' },
+    });
+
+    return buildPaginatedResponse(data, total, limit, offset);
   }
 }

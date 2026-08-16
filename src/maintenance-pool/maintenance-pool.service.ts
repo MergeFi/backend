@@ -9,6 +9,13 @@ import { MaintenancePool } from '../common/entities';
 import { MaintenancePoolStatus } from '../common/enums';
 import { EscrowService } from '../escrow/escrow.service';
 import { CreatePoolDto } from './dto/create-pool.dto';
+import {
+  DEFAULT_PAGE_LIMIT,
+  MAX_PAGE_LIMIT,
+  PaginationQueryDto,
+  PaginatedResponse,
+  buildPaginatedResponse,
+} from '../common/dto/pagination.dto';
 
 /**
  * Recurring maintenance pool: sponsors make monthly deposits into a shared
@@ -106,7 +113,21 @@ export class MaintenancePoolService {
     return payment;
   }
 
-  async list(): Promise<MaintenancePool[]> {
-    return this.poolRepo.find();
+  async list(
+    query?: PaginationQueryDto,
+  ): Promise<PaginatedResponse<MaintenancePool>> {
+    const limit = Math.min(
+      Math.max(Number(query?.limit) || DEFAULT_PAGE_LIMIT, 1),
+      MAX_PAGE_LIMIT,
+    );
+    const offset = Math.max(Number(query?.offset) || 0, 0);
+
+    const [data, total] = await this.poolRepo.findAndCount({
+      take: limit,
+      skip: offset,
+      order: { createdAt: 'DESC' },
+    });
+
+    return buildPaginatedResponse(data, total, limit, offset);
   }
 }

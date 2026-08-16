@@ -1,8 +1,10 @@
-import { Body, Controller, Get, Param, Patch, UseGuards } from '@nestjs/common';
+import { Body, Controller, Get, Param, Patch, Query, UseGuards } from '@nestjs/common';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { IsString } from 'class-validator';
 import { UsersService } from './users.service';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
+import { PaginationQueryDto, PaginatedResponse } from '../common/dto/pagination.dto';
+import { User } from '../common/entities';
 
 class SetStellarAddressDto {
   @IsString()
@@ -15,8 +17,8 @@ export class UsersController {
   constructor(private readonly usersService: UsersService) {}
 
   @Get()
-  list() {
-    return this.usersService.list();
+  list(@Query() query: PaginationQueryDto): Promise<PaginatedResponse<User>> {
+    return this.usersService.list(query);
   }
 
   @Get(':id')

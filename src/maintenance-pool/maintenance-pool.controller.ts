@@ -1,10 +1,12 @@
-import { Body, Controller, Get, Param, Post } from '@nestjs/common';
+import { Body, Controller, Get, Param, Post, Query } from '@nestjs/common';
 import { ApiTags } from '@nestjs/swagger';
 import { IsOptional, IsString, IsUUID } from 'class-validator';
 import { MaintenancePoolService } from './maintenance-pool.service';
 import { CreatePoolDto } from './dto/create-pool.dto';
 import { IsMoneyAmount } from '../common/validators/money.validator';
 import { Idempotent } from '../common/idempotency/idempotent.decorator';
+import { PaginationQueryDto, PaginatedResponse } from '../common/dto/pagination.dto';
+import { MaintenancePool } from '../common/entities';
 
 class DepositDto {
   @IsMoneyAmount()
@@ -37,8 +39,8 @@ export class MaintenancePoolController {
   }
 
   @Get()
-  list() {
-    return this.poolService.list();
+  list(@Query() query: PaginationQueryDto): Promise<PaginatedResponse<MaintenancePool>> {
+    return this.poolService.list(query);
   }
 
   @Get(':id')
