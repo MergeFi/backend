@@ -3,10 +3,11 @@ import { BountyStatus } from '../common/enums';
 /**
  * Valid forward transitions for a bounty's lifecycle:
  *
- *   open -> funded -> claimed -> in_review -> merged -> paid
+ *   open -> funded -> claimed -> in_review -> merged -> release_pending -> paid
  *                                                    \-> refunded
  *   (open|funded|claimed) -> expired
  *   (open|funded) -> refunded
+ *   release_pending -> release_pending (retry on escrow failure)
  */
 export const BOUNTY_TRANSITIONS: Record<BountyStatus, BountyStatus[]> = {
   [BountyStatus.OPEN]: [
@@ -29,7 +30,12 @@ export const BOUNTY_TRANSITIONS: Record<BountyStatus, BountyStatus[]> = {
     BountyStatus.CLAIMED,
     BountyStatus.REFUNDED,
   ],
-  [BountyStatus.MERGED]: [BountyStatus.PAID, BountyStatus.REFUNDED],
+  [BountyStatus.MERGED]: [BountyStatus.RELEASE_PENDING],
+  [BountyStatus.RELEASE_PENDING]: [
+    BountyStatus.PAID,
+    BountyStatus.RELEASE_PENDING, // Allow retry on escrow failure
+    BountyStatus.REFUNDED,
+  ],
   [BountyStatus.PAID]: [],
   [BountyStatus.REFUNDED]: [],
   [BountyStatus.EXPIRED]: [BountyStatus.REFUNDED],

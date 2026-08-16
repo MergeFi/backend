@@ -34,7 +34,7 @@ export class AnalyticsService {
     });
     const paid = claimed.filter((b) => b.status === BountyStatus.PAID);
     const merged = claimed.filter((b) =>
-      [BountyStatus.MERGED, BountyStatus.PAID].includes(b.status),
+      [BountyStatus.MERGED, BountyStatus.RELEASE_PENDING, BountyStatus.PAID].includes(b.status),
     );
 
     const lifetimeEarnings = paid.reduce((sum, b) => sum + Number(b.amount), 0);

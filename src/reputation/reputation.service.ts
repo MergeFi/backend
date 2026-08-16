@@ -22,7 +22,7 @@ export class ReputationService {
       where: { claimedById: userId },
     });
     const merged = claimedBounties.filter((b) =>
-      [BountyStatus.MERGED, BountyStatus.PAID].includes(b.status),
+      [BountyStatus.MERGED, BountyStatus.RELEASE_PENDING, BountyStatus.PAID].includes(b.status),
     );
     const paid = claimedBounties.filter((b) => b.status === BountyStatus.PAID);
 
