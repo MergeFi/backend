@@ -106,7 +106,18 @@ export class MaintenancePoolService {
     return payment;
   }
 
-  async list(): Promise<MaintenancePool[]> {
-    return this.poolRepo.find();
+  async list(
+    page: number = 1,
+    limit: number = 50,
+  ): Promise<{ data: MaintenancePool[]; total: number }> {
+    const skip = (page - 1) * limit;
+
+    const [data, total] = await this.poolRepo.findAndCount({
+      take: limit,
+      skip,
+      order: { createdAt: 'DESC' },
+    });
+
+    return { data, total };
   }
 }

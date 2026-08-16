@@ -98,7 +98,18 @@ export class UsersService {
     return this.userRepo.save(user);
   }
 
-  async list(): Promise<User[]> {
-    return this.userRepo.find();
+  async list(
+    page: number = 1,
+    limit: number = 50,
+  ): Promise<{ data: User[]; total: number }> {
+    const skip = (page - 1) * limit;
+
+    const [data, total] = await this.userRepo.findAndCount({
+      take: limit,
+      skip,
+      order: { createdAt: 'DESC' },
+    });
+
+    return { data, total };
   }
 }

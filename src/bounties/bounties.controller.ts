@@ -1,11 +1,14 @@
 import { Body, Controller, Get, Param, Post, Query } from '@nestjs/common';
-import { ApiTags } from '@nestjs/swagger';
+import { ApiTags, ApiQuery } from '@nestjs/swagger';
 import { IsString } from 'class-validator';
 import { BountiesService } from './bounties.service';
 import { CreateBountyDto } from './dto/create-bounty.dto';
 import { ClaimBountyDto } from './dto/claim-bounty.dto';
 import { BountyStatus } from '../common/enums';
 import { Idempotent } from '../common/idempotency/idempotent.decorator';
+import { PaginationQueryDto } from '../common/dto/pagination-query.dto';
+import { PaginatedResponseDto } from '../common/dto/paginated-response.dto';
+import { Bounty } from '../common/entities';
 
 class FundBountyDto {
   @IsString()
@@ -23,8 +26,17 @@ export class BountiesController {
   }
 
   @Get()
-  list(@Query('status') status?: BountyStatus) {
-    return this.bountiesService.list(status);
+  @ApiQuery({ name: 'status', required: false, enum: BountyStatus })
+  @ApiQuery({ name: 'page', required: false, type: Number })
+  @ApiQuery({ name: 'limit', required: false, type: Number })
+  async list(
+    @Query('status') status?: BountyStatus,
+    @Query() paginationQuery?: PaginationQueryDto,
+  ): Promise<PaginatedResponseDto<Bounty>> {
+    const page = paginationQuery?.page || 1;
+    const limit = paginationQuery?.limit || 50;
+    const { data, total } = await this.bountiesService.list(status, page, limit);
+    return new PaginatedResponseDto(data, page, limit, total);
   }
 
   @Get(':id')

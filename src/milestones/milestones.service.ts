@@ -128,7 +128,18 @@ export class MilestonesService {
     return payment;
   }
 
-  async list(): Promise<Milestone[]> {
-    return this.milestoneRepo.find();
+  async list(
+    page: number = 1,
+    limit: number = 50,
+  ): Promise<{ data: Milestone[]; total: number }> {
+    const skip = (page - 1) * limit;
+
+    const [data, total] = await this.milestoneRepo.findAndCount({
+      take: limit,
+      skip,
+      order: { createdAt: 'DESC' },
+    });
+
+    return { data, total };
   }
 }
