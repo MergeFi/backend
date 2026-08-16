@@ -1,10 +1,13 @@
-import { Body, Controller, Get, Param, Post } from '@nestjs/common';
-import { ApiTags } from '@nestjs/swagger';
+import { Body, Controller, Get, Param, Post, Query } from '@nestjs/common';
+import { ApiTags, ApiQuery } from '@nestjs/swagger';
 import { IsOptional, IsString, IsUUID } from 'class-validator';
 import { MaintenancePoolService } from './maintenance-pool.service';
 import { CreatePoolDto } from './dto/create-pool.dto';
 import { IsMoneyAmount } from '../common/validators/money.validator';
 import { Idempotent } from '../common/idempotency/idempotent.decorator';
+import { PaginationQueryDto } from '../common/dto/pagination-query.dto';
+import { PaginatedResponseDto } from '../common/dto/paginated-response.dto';
+import { MaintenancePool } from '../common/entities';
 
 class DepositDto {
   @IsMoneyAmount()
@@ -37,8 +40,15 @@ export class MaintenancePoolController {
   }
 
   @Get()
-  list() {
-    return this.poolService.list();
+  @ApiQuery({ name: 'page', required: false, type: Number })
+  @ApiQuery({ name: 'limit', required: false, type: Number })
+  async list(
+    @Query() paginationQuery?: PaginationQueryDto,
+  ): Promise<PaginatedResponseDto<MaintenancePool>> {
+    const page = paginationQuery?.page || 1;
+    const limit = paginationQuery?.limit || 50;
+    const { data, total } = await this.poolService.list(page, limit);
+    return new PaginatedResponseDto(data, page, limit, total);
   }
 
   @Get(':id')

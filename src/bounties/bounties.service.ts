@@ -171,7 +171,21 @@ export class BountiesService {
     return overdue.length;
   }
 
-  async list(status?: BountyStatus): Promise<Bounty[]> {
-    return this.bountyRepo.find({ where: status ? { status } : {} });
+  async list(
+    status?: BountyStatus,
+    page: number = 1,
+    limit: number = 50,
+  ): Promise<{ data: Bounty[]; total: number }> {
+    const skip = (page - 1) * limit;
+    const where = status ? { status } : {};
+
+    const [data, total] = await this.bountyRepo.findAndCount({
+      where,
+      take: limit,
+      skip,
+      order: { createdAt: 'DESC' },
+    });
+
+    return { data, total };
   }
 }

@@ -1,9 +1,12 @@
-import { Body, Controller, Get, Param, Post } from '@nestjs/common';
-import { ApiTags } from '@nestjs/swagger';
+import { Body, Controller, Get, Param, Post, Query } from '@nestjs/common';
+import { ApiTags, ApiQuery } from '@nestjs/swagger';
 import { IsOptional, IsString, IsUUID } from 'class-validator';
 import { MilestonesService } from './milestones.service';
 import { CreateMilestoneDto } from './dto/create-milestone.dto';
 import { Idempotent } from '../common/idempotency/idempotent.decorator';
+import { PaginationQueryDto } from '../common/dto/pagination-query.dto';
+import { PaginatedResponseDto } from '../common/dto/paginated-response.dto';
+import { Milestone } from '../common/entities';
 
 class FundMilestoneDto {
   @IsString()
@@ -30,8 +33,15 @@ export class MilestonesController {
   }
 
   @Get()
-  list() {
-    return this.milestonesService.list();
+  @ApiQuery({ name: 'page', required: false, type: Number })
+  @ApiQuery({ name: 'limit', required: false, type: Number })
+  async list(
+    @Query() paginationQuery?: PaginationQueryDto,
+  ): Promise<PaginatedResponseDto<Milestone>> {
+    const page = paginationQuery?.page || 1;
+    const limit = paginationQuery?.limit || 50;
+    const { data, total } = await this.milestonesService.list(page, limit);
+    return new PaginatedResponseDto(data, page, limit, total);
   }
 
   @Get(':id')
