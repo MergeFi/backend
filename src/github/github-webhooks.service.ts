@@ -111,40 +111,56 @@ export class GithubWebhooksService {
       return;
     }
 
-    const issueNumbers = this.extractLinkedIssueNumbers(
+    const rawIssueNumbers = this.extractLinkedIssueNumbers(
       payload.pull_request.body ?? '',
     );
-    if (issueNumbers.length === 0) {
+    if (rawIssueNumbers.length === 0) {
       this.logger.warn(
         `PR #${payload.number} in ${payload.repository.full_name} merged but references no issue`,
       );
       return;
     }
 
+    // Deduplicate issue numbers so PR bodies repeating the same issue don't trigger duplicate processing
+    const issueNumbers = [...new Set(rawIssueNumbers)];
+    const errors: string[] = [];
+
     for (const number of issueNumbers) {
-      const issue = await this.issueRepo.findOne({
-        where: {
-          number,
-          repository: { githubRepoId: String(payload.repository.id) },
-        },
-        relations: { repository: true, bounty: true },
-      });
-      if (!issue?.bounty) continue;
+      try {
+        const issue = await this.issueRepo.findOne({
+          where: {
+            number,
+            repository: { githubRepoId: String(payload.repository.id) },
+          },
+          relations: { repository: true, bounty: true },
+        });
+        if (!issue?.bounty) continue;
 
-      // Mark in_review first if it hadn't been (idempotent no-op if already there).
-      const bounty = await this.bountyRepo.findOne({
-        where: { id: issue.bounty.id },
-      });
-      if (!bounty) continue;
+        // Mark in_review first if it hadn't been (idempotent no-op if already there).
+        const bounty = await this.bountyRepo.findOne({
+          where: { id: issue.bounty.id },
+        });
+        if (!bounty) continue;
 
-      if (bounty.status === BountyStatus.CLAIMED) {
-        await this.bountiesService.markInReview(
-          bounty.id,
-          payload.pull_request.html_url,
-          payload.pull_request.number,
+        if (bounty.status === BountyStatus.CLAIMED) {
+          await this.bountiesService.markInReview(
+            bounty.id,
+            payload.pull_request.html_url,
+            payload.pull_request.number,
+          );
+        }
+        await this.bountiesService.markMergedAndRelease(bounty.id);
+      } catch (err) {
+        const msg = `Issue #${number}: ${(err as Error).message}`;
+        this.logger.error(
+          `Failed processing linked bounty for ${msg} in PR #${payload.number}: ${(err as Error).stack}`,
         );
+        errors.push(msg);
       }
-      await this.bountiesService.markMergedAndRelease(bounty.id);
+    }
+
+    if (errors.length > 0) {
+      throw new Error(`Failed processing some linked bounties: ${errors.join('; ')}`);
     }
   }
 

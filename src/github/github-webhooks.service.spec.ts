@@ -136,6 +136,82 @@ describe('GithubWebhooksService', () => {
     expect(bountiesService.markMergedAndRelease).not.toHaveBeenCalled();
   });
 
+  it('deduplicates issue numbers in PR body and processes bounty once (#47)', async () => {
+    issueRepo.findOne.mockResolvedValue({
+      id: 'issue-1',
+      bounty: { id: 'bounty-1' },
+    });
+    bountyRepo.findOne.mockResolvedValue({ id: 'bounty-1', status: 'claimed' });
+
+    const payload = {
+      action: 'closed',
+      number: 10,
+      pull_request: {
+        html_url: 'https://github.com/acme/repo/pull/10',
+        number: 10,
+        merged: true,
+        body: 'Fixes #12. This also resolves #12 as discussed in review.',
+      },
+      repository: { id: 999, full_name: 'acme/repo' },
+    };
+
+    const event = await service.handleEvent(
+      'pull_request',
+      'delivery-dedup',
+      payload,
+      true,
+    );
+
+    expect(bountiesService.markInReview).toHaveBeenCalledTimes(1);
+    expect(bountiesService.markMergedAndRelease).toHaveBeenCalledTimes(1);
+    expect(event.status).toBe(WebhookEventStatus.PROCESSED);
+  });
+
+  it('isolates per-issue errors and processes subsequent bounties when one fails (#47)', async () => {
+    issueRepo.findOne.mockImplementation(({ where }) => {
+      const num = where.number;
+      return Promise.resolve({
+        id: `issue-${num}`,
+        bounty: { id: `bounty-${num}` },
+      });
+    });
+    bountyRepo.findOne.mockImplementation(({ where }) => {
+      return Promise.resolve({ id: where.id, status: 'claimed' });
+    });
+
+    bountiesService.markMergedAndRelease.mockImplementation((bountyId: string) => {
+      if (bountyId === 'bounty-12') {
+        return Promise.reject(new Error('escrow release failed'));
+      }
+      return Promise.resolve({ id: bountyId, status: 'paid' });
+    });
+
+    const payload = {
+      action: 'closed',
+      number: 15,
+      pull_request: {
+        html_url: 'https://github.com/acme/repo/pull/15',
+        number: 15,
+        merged: true,
+        body: 'Fixes #12, Closes #34, Resolves #56',
+      },
+      repository: { id: 999, full_name: 'acme/repo' },
+    };
+
+    const event = await service.handleEvent(
+      'pull_request',
+      'delivery-multi',
+      payload,
+      true,
+    );
+
+    expect(bountiesService.markMergedAndRelease).toHaveBeenCalledWith('bounty-12');
+    expect(bountiesService.markMergedAndRelease).toHaveBeenCalledWith('bounty-34');
+    expect(bountiesService.markMergedAndRelease).toHaveBeenCalledWith('bounty-56');
+    expect(event.status).toBe(WebhookEventStatus.FAILED);
+    expect(event.error).toContain('Issue #12: escrow release failed');
+  });
+
   describe('"issues" webhook events (#24)', () => {
     const payload = {
       action: 'edited',
