@@ -13,9 +13,7 @@ import { MigrationInterface, QueryRunner } from 'typeorm';
  * those rows rather than rejecting an in-flight legitimate retry during
  * the deploy transition — see resolveExisting's doc comment.
  */
-export class AddIdempotencyKeyRequestFingerprint1784500000000
-  implements MigrationInterface
-{
+export class AddIdempotencyKeyRequestFingerprint1784500000000 implements MigrationInterface {
   name = 'AddIdempotencyKeyRequestFingerprint1784500000000';
 
   public async up(queryRunner: QueryRunner): Promise<void> {
