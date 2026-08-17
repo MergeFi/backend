@@ -70,6 +70,10 @@ class FakeIdempotencyRepo {
       key: data.key,
       scope: data.scope,
       callerId: data.callerId,
+      // Mirrors Postgres: an unspecified nullable column is NULL, not
+      // undefined — matters for rows seeded directly via repo.insert() in
+      // tests that simulate a pre-#54 row with no fingerprint on record.
+      requestFingerprint: data.requestFingerprint ?? null,
       status: IdempotencyKeyStatus.PROCESSING,
       responseStatus: null,
       responseBody: null,
@@ -109,12 +113,16 @@ function createContext(
     headers?: Record<string, string>;
     method?: string;
     user?: { userId: string };
+    params?: Record<string, string>;
+    body?: unknown;
   } = {},
 ): ExecutionContext {
   const request = {
     headers: overrides.headers ?? {},
     method: overrides.method ?? 'POST',
     user: overrides.user,
+    params: overrides.params ?? {},
+    body: overrides.body ?? {},
   };
   return {
     switchToHttp: () => ({
