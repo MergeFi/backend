@@ -21,7 +21,10 @@ export class TeamMemberSplit {
   @Column()
   teamId: string;
 
-  @ManyToOne(() => User, { onDelete: 'CASCADE' })
+  // RESTRICT, not CASCADE: a TeamMemberSplit is a financial commitment (a promised
+  // percentage of a bounty payout). Deleting a User row must never silently delete
+  // their TeamMemberSplit row and desync the team's split percentage sum from 100%. See #58.
+  @ManyToOne(() => User, { onDelete: 'RESTRICT' })
   @JoinColumn()
   user: User;
 
