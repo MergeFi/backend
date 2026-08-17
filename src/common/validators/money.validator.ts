@@ -33,6 +33,16 @@ export function amountToStroops(amount: string): bigint {
   return BigInt(whole) * STROOP_SCALE + BigInt(fraction.padEnd(7, '0'));
 }
 
+/** Inverse of {@link amountToStroops}: formats a stroop total back to a 7-decimal-place string. */
+export function stroopsToAmount(stroops: bigint): string {
+  if (stroops < 0n) {
+    throw new Error('Stroops amount must be non-negative');
+  }
+  const whole = stroops / STROOP_SCALE;
+  const fraction = stroops % STROOP_SCALE;
+  return `${whole.toString()}.${fraction.toString().padStart(7, '0')}`;
+}
+
 export function isSupportedEscrowAsset(value: unknown): value is AssetType {
   return SUPPORTED_ESCROW_ASSETS.includes(value as AssetType);
 }
