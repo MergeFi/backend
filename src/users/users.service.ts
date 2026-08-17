@@ -3,6 +3,8 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { GithubAccount, User } from '../common/entities';
 import { UserRole } from '../common/enums';
+import { PublicUserDto } from './dto/public-user.dto';
+import { toPublicUser } from './users.mapper';
 
 export interface UpsertFromGithubInput {
   githubId: string;
@@ -23,13 +25,18 @@ export class UsersService {
     private readonly githubAccountRepo: Repository<GithubAccount>,
   ) {}
 
-  async findById(id: string): Promise<User> {
+  async findOneRaw(id: string): Promise<User> {
     const user = await this.userRepo.findOne({
       where: { id },
       relations: { githubAccount: true },
     });
     if (!user) throw new NotFoundException(`User ${id} not found`);
     return user;
+  }
+
+  async findById(id: string): Promise<PublicUserDto> {
+    const user = await this.findOneRaw(id);
+    return toPublicUser(user);
   }
 
   async findByUsername(username: string): Promise<User | null> {
@@ -49,7 +56,7 @@ export class UsersService {
       account.avatarUrl = input.avatarUrl;
       account.profileUrl = input.profileUrl;
       await this.githubAccountRepo.save(account);
-      return this.findById(account.userId);
+      return this.findOneRaw(account.userId);
     }
 
     let user = await this.userRepo.findOne({
@@ -77,11 +84,11 @@ export class UsersService {
     });
     await this.githubAccountRepo.save(account);
 
-    return this.findById(user.id);
+    return this.findOneRaw(user.id);
   }
 
   async addRole(userId: string, role: UserRole): Promise<User> {
-    const user = await this.findById(userId);
+    const user = await this.findOneRaw(userId);
     if (!user.roles.includes(role)) {
       user.roles = [...user.roles, role];
       await this.userRepo.save(user);
@@ -93,12 +100,13 @@ export class UsersService {
     userId: string,
     stellarAddress: string,
   ): Promise<User> {
-    const user = await this.findById(userId);
+    const user = await this.findOneRaw(userId);
     user.stellarAddress = stellarAddress;
     return this.userRepo.save(user);
   }
 
-  async list(): Promise<User[]> {
-    return this.userRepo.find();
+  async list(): Promise<PublicUserDto[]> {
+    const users = await this.userRepo.find();
+    return users.map(toPublicUser);
   }
 }

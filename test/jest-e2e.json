@@ -5,5 +5,8 @@
   "testRegex": ".e2e-spec.ts$",
   "transform": {
     "^.+\\.(t|j)s$": "ts-jest"
-  }
+  },
+  "transformIgnorePatterns": [
+    "/node_modules/(?!(@octokit|before-after-hook|universal-user-agent|@stellar/stellar-sdk|@noble/hashes|@noble/ed25519|uint8array-extras)/)"
+  ]
 }
