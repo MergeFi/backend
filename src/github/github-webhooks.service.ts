@@ -95,16 +95,19 @@ export class GithubWebhooksService {
 
     try {
       if (eventType === 'pull_request') {
-        await this.handlePullRequest(
+        const outcomes = await this.handlePullRequest(
           payload as unknown as GithubPullRequestPayload,
         );
-      } else if (eventType === 'issues') {
-        await this.handleIssueEvent(
-          payload as unknown as GithubIssuesEventPayload,
-        );
+        this.applyPullRequestOutcomes(event, outcomes);
+      } else {
+        if (eventType === 'issues') {
+          await this.handleIssueEvent(
+            payload as unknown as GithubIssuesEventPayload,
+          );
+        }
+        event.status = WebhookEventStatus.PROCESSED;
+        event.processedAt = new Date();
       }
-      event.status = WebhookEventStatus.PROCESSED;
-      event.processedAt = new Date();
     } catch (err) {
       event.status = WebhookEventStatus.FAILED;
       event.error = (err as Error).message;
@@ -114,6 +117,43 @@ export class GithubWebhooksService {
     }
 
     return this.webhookEventRepo.save(event);
+  }
+
+  /**
+   * Decides `event.status`/`event.error` from a merged PR's per-linked-
+   * issue outcomes (#47) — a deliberate choice among the three the issue
+   * names as options:
+   *
+   * `event.status` stays FAILED whenever at least one linked issue's
+   * bounty processing failed, even if others succeeded. FAILED already
+   * means "an operator should look at this," so keeping it doesn't lose
+   * that signal — but `event.error` now lists every failure by issue
+   * number (`#12: <message>; #56: <message>`) instead of only whichever
+   * one happened to throw first and abort the old unguarded loop, so an
+   * operator can see exactly which of the PR's several linked bounties
+   * actually need attention without re-deriving it from the PR body and
+   * bounty statuses by hand. A PR where every linked issue either
+   * succeeded or had no bounty to process (skipped) is PROCESSED, same
+   * as before this fix.
+   */
+  private applyPullRequestOutcomes(
+    event: WebhookEvent,
+    outcomes: LinkedIssueOutcome[],
+  ): void {
+    const failures = outcomes.filter((o) => o.outcome === 'failed');
+    if (failures.length === 0) {
+      event.status = WebhookEventStatus.PROCESSED;
+      event.processedAt = new Date();
+      return;
+    }
+
+    event.status = WebhookEventStatus.FAILED;
+    event.error = failures
+      .map((f) => `#${f.issueNumber}: ${f.error}`)
+      .join('; ');
+    this.logger.error(
+      `Partial failure processing linked issues for a merged PR: ${event.error}`,
+    );
   }
 
   private async handlePullRequest(
