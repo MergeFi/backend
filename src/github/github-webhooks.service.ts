@@ -118,9 +118,9 @@ export class GithubWebhooksService {
 
   private async handlePullRequest(
     payload: GithubPullRequestPayload,
-  ): Promise<void> {
+  ): Promise<LinkedIssueOutcome[]> {
     if (payload.action !== 'closed' || !payload.pull_request.merged) {
-      return;
+      return [];
     }
 
     // De-duplicated so a PR body referencing the same issue twice (e.g.
@@ -138,34 +138,55 @@ export class GithubWebhooksService {
       this.logger.warn(
         `PR #${payload.number} in ${payload.repository.full_name} merged but references no issue`,
       );
-      return;
+      return [];
     }
 
+    // Each linked issue is processed in its own try/catch so one bounty's
+    // failure — an invalid state transition, an escrow release failure,
+    // a Soroban error — doesn't abort processing of every other bounty
+    // linked from the same merged PR (#47).
+    const outcomes: LinkedIssueOutcome[] = [];
     for (const number of issueNumbers) {
-      const issue = await this.issueRepo.findOne({
-        where: {
-          number,
-          repository: { githubRepoId: String(payload.repository.id) },
-        },
-        relations: { repository: true, bounty: true },
-      });
-      if (!issue?.bounty) continue;
+      try {
+        const issue = await this.issueRepo.findOne({
+          where: {
+            number,
+            repository: { githubRepoId: String(payload.repository.id) },
+          },
+          relations: { repository: true, bounty: true },
+        });
+        if (!issue?.bounty) {
+          outcomes.push({ issueNumber: number, outcome: 'skipped' });
+          continue;
+        }
 
-      // Mark in_review first if it hadn't been (idempotent no-op if already there).
-      const bounty = await this.bountyRepo.findOne({
-        where: { id: issue.bounty.id },
-      });
-      if (!bounty) continue;
+        // Mark in_review first if it hadn't been (idempotent no-op if already there).
+        const bounty = await this.bountyRepo.findOne({
+          where: { id: issue.bounty.id },
+        });
+        if (!bounty) {
+          outcomes.push({ issueNumber: number, outcome: 'skipped' });
+          continue;
+        }
 
-      if (bounty.status === BountyStatus.CLAIMED) {
-        await this.bountiesService.markInReview(
-          bounty.id,
-          payload.pull_request.html_url,
-          payload.pull_request.number,
-        );
+        if (bounty.status === BountyStatus.CLAIMED) {
+          await this.bountiesService.markInReview(
+            bounty.id,
+            payload.pull_request.html_url,
+            payload.pull_request.number,
+          );
+        }
+        await this.bountiesService.markMergedAndRelease(bounty.id);
+        outcomes.push({ issueNumber: number, outcome: 'succeeded' });
+      } catch (err) {
+        outcomes.push({
+          issueNumber: number,
+          outcome: 'failed',
+          error: (err as Error).message,
+        });
       }
-      await this.bountiesService.markMergedAndRelease(bounty.id);
     }
+    return outcomes;
   }
 
   /**
