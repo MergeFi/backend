@@ -201,6 +201,15 @@ connection can't double-execute:
   Conflict` instead of racing into a duplicate execution. If the original
   request crashed before completing, the key is reclaimed after 30s so it
   doesn't 409 forever.
+- A key's identity is bound to the actual request, not just the route: a
+  SHA-256 fingerprint of the path params and body is stored alongside the
+  key, and a retry whose fingerprint doesn't match gets `422 Unprocessable
+  Entity` instead of replaying the original request's response. Without
+  this, reusing a key across two different resources on the same route
+  (e.g. `Idempotency-Key: K` sent to both `/escrow/A/release` and
+  `/escrow/B/release`) would silently replay A's cached response for B,
+  which looks like a successful release to the client while B's funds
+  never actually moved (#54).
 - Cached keys are retained for 24h (`IDEMPOTENCY_KEY_TTL_MS` in
   `IdempotencyInterceptor`) and swept hourly by `IdempotencyCleanupService`.
 

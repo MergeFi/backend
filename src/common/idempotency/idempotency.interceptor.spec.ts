@@ -4,6 +4,7 @@ import {
   ConflictException,
   ExecutionContext,
   InternalServerErrorException,
+  UnprocessableEntityException,
 } from '@nestjs/common';
 import { firstValueFrom, lastValueFrom, of, throwError } from 'rxjs';
 import { IdempotencyKey } from '../entities/idempotency-key.entity';
@@ -70,6 +71,10 @@ class FakeIdempotencyRepo {
       key: data.key,
       scope: data.scope,
       callerId: data.callerId,
+      // Mirrors Postgres: an unspecified nullable column is NULL, not
+      // undefined — matters for rows seeded directly via repo.insert() in
+      // tests that simulate a pre-#54 row with no fingerprint on record.
+      requestFingerprint: data.requestFingerprint ?? null,
       status: IdempotencyKeyStatus.PROCESSING,
       responseStatus: null,
       responseBody: null,
@@ -109,12 +114,16 @@ function createContext(
     headers?: Record<string, string>;
     method?: string;
     user?: { userId: string };
+    params?: Record<string, string>;
+    body?: unknown;
   } = {},
 ): ExecutionContext {
   const request = {
     headers: overrides.headers ?? {},
     method: overrides.method ?? 'POST',
     user: overrides.user,
+    params: overrides.params ?? {},
+    body: overrides.body ?? {},
   };
   return {
     switchToHttp: () => ({
@@ -355,5 +364,103 @@ describe('IdempotencyInterceptor', () => {
       'user-1',
       'user-2',
     ]);
+  });
+
+  describe('request fingerprint (#54)', () => {
+    it('replays correctly when the retried request has identical params and body', async () => {
+      const next = createNext(() => of({ id: 'escrow-A', status: 'released' }));
+      const context = createContext({
+        headers: { 'idempotency-key': KEY_A },
+        params: { id: 'escrow-A' },
+        body: { recipientAddress: 'GADDRESSA' },
+      });
+
+      await lastValueFrom(await interceptor.intercept(context, next));
+      const secondResult = await lastValueFrom(
+        await interceptor.intercept(context, next),
+      );
+
+      expect(secondResult).toEqual({ id: 'escrow-A', status: 'released' });
+      expect(next.handle).toHaveBeenCalledTimes(1);
+    });
+
+    it('rejects reusing a key across two different resources on the same scope instead of replaying the first (#54)', async () => {
+      const contextA = createContext({
+        headers: { 'idempotency-key': KEY_A },
+        params: { id: 'escrow-A' },
+        body: { recipientAddress: 'GADDRESSA' },
+      });
+      const contextB = createContext({
+        headers: { 'idempotency-key': KEY_A }, // same key
+        params: { id: 'escrow-B' }, // different resource
+        body: { recipientAddress: 'GADDRESSB' },
+      });
+
+      const nextA = createNext(() => of({ id: 'escrow-A', released: true }));
+      await lastValueFrom(await interceptor.intercept(contextA, nextA));
+
+      const nextB = createNext(() => of({ id: 'escrow-B', released: true }));
+      await expect(
+        interceptor.intercept(contextB, nextB),
+      ).rejects.toBeInstanceOf(UnprocessableEntityException);
+
+      // The second (different) resource's handler must never run — this is
+      // exactly the "escrow B was never actually released" failure mode.
+      expect(nextB.handle).not.toHaveBeenCalled();
+      expect(repo.rows).toHaveLength(1);
+      expect(repo.rows[0].responseBody).toEqual({
+        id: 'escrow-A',
+        released: true,
+      });
+    });
+
+    it('rejects reusing a key with the same resource but a different body', async () => {
+      const contextFirst = createContext({
+        headers: { 'idempotency-key': KEY_A },
+        params: { id: 'escrow-A' },
+        body: { recipientAddress: 'GADDRESSA' },
+      });
+      const contextDifferentBody = createContext({
+        headers: { 'idempotency-key': KEY_A },
+        params: { id: 'escrow-A' },
+        body: { recipientAddress: 'GADDRESSC' }, // different recipient
+      });
+
+      const next = createNext(() => of({ ok: true }));
+      await lastValueFrom(await interceptor.intercept(contextFirst, next));
+
+      await expect(
+        interceptor.intercept(contextDifferentBody, next),
+      ).rejects.toBeInstanceOf(UnprocessableEntityException);
+      expect(next.handle).toHaveBeenCalledTimes(1);
+    });
+
+    it('does not reject a pre-#54 row with no stored fingerprint, even if the incoming fingerprint differs', async () => {
+      // Simulates a row created before this migration/column existed.
+      await repo.insert({
+        key: KEY_A,
+        scope: 'test.scope',
+        callerId: 'anonymous',
+        expiresAt: new Date(Date.now() + 60_000),
+      });
+      repo.rows[0].status = IdempotencyKeyStatus.COMPLETED;
+      repo.rows[0].responseStatus = 200;
+      repo.rows[0].responseBody = { legacy: true };
+      expect(repo.rows[0].requestFingerprint).toBeNull();
+
+      const context = createContext({
+        headers: { 'idempotency-key': KEY_A },
+        params: { id: 'escrow-A' },
+        body: { recipientAddress: 'GADDRESSA' },
+      });
+      const next = createNext(() => of({ ok: true }));
+
+      const result = await lastValueFrom(
+        await interceptor.intercept(context, next),
+      );
+
+      expect(result).toEqual({ legacy: true });
+      expect(next.handle).not.toHaveBeenCalled();
+    });
   });
 });

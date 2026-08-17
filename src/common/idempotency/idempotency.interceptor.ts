@@ -7,10 +7,12 @@ import {
   HttpStatus,
   Injectable,
   NestInterceptor,
+  UnprocessableEntityException,
 } from '@nestjs/common';
 import { HTTP_CODE_METADATA } from '@nestjs/common/constants';
 import { Reflector } from '@nestjs/core';
 import { InjectRepository } from '@nestjs/typeorm';
+import { createHash } from 'crypto';
 import type { Request } from 'express';
 import { from, Observable, of, throwError } from 'rxjs';
 import { catchError, map, mergeMap } from 'rxjs/operators';
@@ -47,6 +49,41 @@ function isUniqueViolation(error: unknown): boolean {
   return driverError?.code === PG_UNIQUE_VIOLATION;
 }
 
+/**
+ * Deterministic JSON serialization with object keys sorted recursively, so
+ * two logically-identical bodies that merely arrived with different key
+ * order (a real possibility across HTTP clients/serializers, including a
+ * client's own legitimate retry) hash identically rather than being
+ * mistaken for a mismatch.
+ */
+function stableStringify(value: unknown): string {
+  if (Array.isArray(value)) {
+    return `[${value.map(stableStringify).join(',')}]`;
+  }
+  if (value !== null && typeof value === 'object') {
+    const record = value as Record<string, unknown>;
+    const keys = Object.keys(record).sort();
+    return `{${keys
+      .map((k) => `${JSON.stringify(k)}:${stableStringify(record[k])}`)
+      .join(',')}}`;
+  }
+  return JSON.stringify(value);
+}
+
+/**
+ * Fingerprints "what request is this" — path params plus body — so it can
+ * be bound to an idempotency key's identity alongside (key, scope,
+ * callerId) (#54). Query params are deliberately excluded: none of the
+ * routes this guards read identity-relevant data from the query string.
+ */
+function computeRequestFingerprint(request: Request): string {
+  const payload = stableStringify({
+    params: request.params ?? {},
+    body: (request.body as Record<string, unknown> | undefined) ?? {},
+  });
+  return createHash('sha256').update(payload).digest('hex');
+}
+
 interface KeyIdentity {
   key: string;
   scope: string;
@@ -81,6 +118,19 @@ interface CachedOutcome {
  * is no authenticated caller to scope by yet. `resolveCallerId` falls back
  * to a shared 'anonymous' bucket per scope in that case — see its doc
  * comment for what that does and doesn't protect against.
+ *
+ * Request identity: `scope` is a static string per route (e.g.
+ * 'escrow.release'), the same for every request to that route regardless
+ * of path params or body — so (key, scope, callerId) alone can't tell two
+ * different resources (or two different payloads) apart. `resolveExisting`
+ * additionally compares a SHA-256 fingerprint of path params + body
+ * (`computeRequestFingerprint`) against the fingerprint stored on the
+ * existing row, and rejects with 422 on a mismatch rather than replaying
+ * the wrong cached response (#54). This binds identity via the body-hash
+ * comparison rather than folding path params into `scope` itself — scope
+ * stays a purely route-level concept (matches its existing "unique per
+ * scope, not globally" contract), and one mechanism covers both path
+ * params and body instead of two.
  */
 @Injectable()
 export class IdempotencyInterceptor implements NestInterceptor {
@@ -117,8 +167,9 @@ export class IdempotencyInterceptor implements NestInterceptor {
       scope,
       callerId: this.resolveCallerId(request),
     };
+    const fingerprint = computeRequestFingerprint(request);
 
-    const cached = await this.claim(identity);
+    const cached = await this.claim(identity, fingerprint);
     if (cached) {
       const badRequestStatus: number = HttpStatus.BAD_REQUEST;
       if (cached.responseStatus >= badRequestStatus) {
@@ -178,17 +229,23 @@ export class IdempotencyInterceptor implements NestInterceptor {
   /**
    * Returns a cached outcome to replay, or null if this call has become
    * the owner of the key and should proceed with the real handler.
-   * Throws ConflictException (409) if another request currently owns it.
+   * Throws ConflictException (409) if another request currently owns it,
+   * or UnprocessableEntityException (422) if it's owned by a request that
+   * targeted a different resource/body under the same key (#54).
    */
-  private async claim(identity: KeyIdentity): Promise<CachedOutcome | null> {
+  private async claim(
+    identity: KeyIdentity,
+    fingerprint: string,
+  ): Promise<CachedOutcome | null> {
     const existing = await this.repo.findOneBy(identity);
     if (existing) {
-      return this.resolveExisting(existing, identity);
+      return this.resolveExisting(existing, identity, fingerprint);
     }
 
     try {
       await this.repo.insert({
         ...identity,
+        requestFingerprint: fingerprint,
         expiresAt: new Date(Date.now() + IDEMPOTENCY_KEY_TTL_MS),
       });
       return null;
@@ -206,14 +263,30 @@ export class IdempotencyInterceptor implements NestInterceptor {
         // read) — safe to treat this as a fresh attempt.
         return null;
       }
-      return this.resolveExisting(winner, identity);
+      return this.resolveExisting(winner, identity, fingerprint);
     }
   }
 
   private async resolveExisting(
     existing: IdempotencyKey,
     identity: KeyIdentity,
+    fingerprint: string,
   ): Promise<CachedOutcome | null> {
+    // A null stored fingerprint means this row predates the column
+    // (migration deploy transition) — nothing to compare against, so it's
+    // exempt rather than treated as a guaranteed mismatch. Checked before
+    // status/staleness: a fingerprint mismatch means this was never "the
+    // same operation" in the first place, regardless of what state the
+    // true owner's row is in.
+    if (
+      existing.requestFingerprint !== null &&
+      existing.requestFingerprint !== fingerprint
+    ) {
+      throw new UnprocessableEntityException(
+        'This Idempotency-Key has already been used with a different request (different resource or body). Use a new Idempotency-Key for a different operation.',
+      );
+    }
+
     if (existing.status === IdempotencyKeyStatus.COMPLETED) {
       return {
         responseStatus: existing.responseStatus ?? HttpStatus.OK,
@@ -251,7 +324,7 @@ export class IdempotencyInterceptor implements NestInterceptor {
     if (!current) {
       return null;
     }
-    return this.resolveExisting(current, identity);
+    return this.resolveExisting(current, identity, fingerprint);
   }
 
   private async complete(
