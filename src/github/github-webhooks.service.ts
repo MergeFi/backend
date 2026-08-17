@@ -32,6 +32,18 @@ interface GithubIssuesEventPayload {
 const CLOSING_KEYWORD_RE =
   /\b(close[sd]?|fix(e[sd])?|resolve[sd]?)\b\s*:?\s*(?:[\w.-]+\/[\w.-]+)?#(\d+)/gi;
 
+/**
+ * The outcome of processing one issue number linked from a merged PR's
+ * body — tracked per-issue rather than collapsing a whole PR's several
+ * linked bounties into one pass/fail, so a failure on one doesn't hide
+ * what happened to the others (#47).
+ */
+interface LinkedIssueOutcome {
+  issueNumber: number;
+  outcome: 'succeeded' | 'skipped' | 'failed';
+  error?: string;
+}
+
 @Injectable()
 export class GithubWebhooksService {
   private readonly logger = new Logger(GithubWebhooksService.name);
@@ -83,16 +95,19 @@ export class GithubWebhooksService {
 
     try {
       if (eventType === 'pull_request') {
-        await this.handlePullRequest(
+        const outcomes = await this.handlePullRequest(
           payload as unknown as GithubPullRequestPayload,
         );
-      } else if (eventType === 'issues') {
-        await this.handleIssueEvent(
-          payload as unknown as GithubIssuesEventPayload,
-        );
+        this.applyPullRequestOutcomes(event, outcomes);
+      } else {
+        if (eventType === 'issues') {
+          await this.handleIssueEvent(
+            payload as unknown as GithubIssuesEventPayload,
+          );
+        }
+        event.status = WebhookEventStatus.PROCESSED;
+        event.processedAt = new Date();
       }
-      event.status = WebhookEventStatus.PROCESSED;
-      event.processedAt = new Date();
     } catch (err) {
       event.status = WebhookEventStatus.FAILED;
       event.error = (err as Error).message;
@@ -104,48 +119,114 @@ export class GithubWebhooksService {
     return this.webhookEventRepo.save(event);
   }
 
-  private async handlePullRequest(
-    payload: GithubPullRequestPayload,
-  ): Promise<void> {
-    if (payload.action !== 'closed' || !payload.pull_request.merged) {
+  /**
+   * Decides `event.status`/`event.error` from a merged PR's per-linked-
+   * issue outcomes (#47) — a deliberate choice among the three the issue
+   * names as options:
+   *
+   * `event.status` stays FAILED whenever at least one linked issue's
+   * bounty processing failed, even if others succeeded. FAILED already
+   * means "an operator should look at this," so keeping it doesn't lose
+   * that signal — but `event.error` now lists every failure by issue
+   * number (`#12: <message>; #56: <message>`) instead of only whichever
+   * one happened to throw first and abort the old unguarded loop, so an
+   * operator can see exactly which of the PR's several linked bounties
+   * actually need attention without re-deriving it from the PR body and
+   * bounty statuses by hand. A PR where every linked issue either
+   * succeeded or had no bounty to process (skipped) is PROCESSED, same
+   * as before this fix.
+   */
+  private applyPullRequestOutcomes(
+    event: WebhookEvent,
+    outcomes: LinkedIssueOutcome[],
+  ): void {
+    const failures = outcomes.filter((o) => o.outcome === 'failed');
+    if (failures.length === 0) {
+      event.status = WebhookEventStatus.PROCESSED;
+      event.processedAt = new Date();
       return;
     }
 
-    const issueNumbers = this.extractLinkedIssueNumbers(
-      payload.pull_request.body ?? '',
+    event.status = WebhookEventStatus.FAILED;
+    event.error = failures
+      .map((f) => `#${f.issueNumber}: ${f.error}`)
+      .join('; ');
+    this.logger.error(
+      `Partial failure processing linked issues for a merged PR: ${event.error}`,
     );
+  }
+
+  private async handlePullRequest(
+    payload: GithubPullRequestPayload,
+  ): Promise<LinkedIssueOutcome[]> {
+    if (payload.action !== 'closed' || !payload.pull_request.merged) {
+      return [];
+    }
+
+    // De-duplicated so a PR body referencing the same issue twice (e.g.
+    // "Fixes #12. Also resolves #12 as discussed.") doesn't attempt to
+    // process the same bounty twice in one event — the second call would
+    // otherwise throw InvalidBountyTransitionError against the state the
+    // first call just left it in, which is a benign, false-alarm failure
+    // rather than a real one (#47).
+    const issueNumbers = [
+      ...new Set(
+        this.extractLinkedIssueNumbers(payload.pull_request.body ?? ''),
+      ),
+    ];
     if (issueNumbers.length === 0) {
       this.logger.warn(
         `PR #${payload.number} in ${payload.repository.full_name} merged but references no issue`,
       );
-      return;
+      return [];
     }
 
+    // Each linked issue is processed in its own try/catch so one bounty's
+    // failure — an invalid state transition, an escrow release failure,
+    // a Soroban error — doesn't abort processing of every other bounty
+    // linked from the same merged PR (#47).
+    const outcomes: LinkedIssueOutcome[] = [];
     for (const number of issueNumbers) {
-      const issue = await this.issueRepo.findOne({
-        where: {
-          number,
-          repository: { githubRepoId: String(payload.repository.id) },
-        },
-        relations: { repository: true, bounty: true },
-      });
-      if (!issue?.bounty) continue;
+      try {
+        const issue = await this.issueRepo.findOne({
+          where: {
+            number,
+            repository: { githubRepoId: String(payload.repository.id) },
+          },
+          relations: { repository: true, bounty: true },
+        });
+        if (!issue?.bounty) {
+          outcomes.push({ issueNumber: number, outcome: 'skipped' });
+          continue;
+        }
 
-      // Mark in_review first if it hadn't been (idempotent no-op if already there).
-      const bounty = await this.bountyRepo.findOne({
-        where: { id: issue.bounty.id },
-      });
-      if (!bounty) continue;
+        // Mark in_review first if it hadn't been (idempotent no-op if already there).
+        const bounty = await this.bountyRepo.findOne({
+          where: { id: issue.bounty.id },
+        });
+        if (!bounty) {
+          outcomes.push({ issueNumber: number, outcome: 'skipped' });
+          continue;
+        }
 
-      if (bounty.status === BountyStatus.CLAIMED) {
-        await this.bountiesService.markInReview(
-          bounty.id,
-          payload.pull_request.html_url,
-          payload.pull_request.number,
-        );
+        if (bounty.status === BountyStatus.CLAIMED) {
+          await this.bountiesService.markInReview(
+            bounty.id,
+            payload.pull_request.html_url,
+            payload.pull_request.number,
+          );
+        }
+        await this.bountiesService.markMergedAndRelease(bounty.id);
+        outcomes.push({ issueNumber: number, outcome: 'succeeded' });
+      } catch (err) {
+        outcomes.push({
+          issueNumber: number,
+          outcome: 'failed',
+          error: (err as Error).message,
+        });
       }
-      await this.bountiesService.markMergedAndRelease(bounty.id);
     }
+    return outcomes;
   }
 
   /**
