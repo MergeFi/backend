@@ -12,8 +12,10 @@ import {
   amountToStroops,
   isSupportedEscrowAsset,
   isValidMoneyAmount,
+  stroopsToAmount,
 } from '../common/validators/money.validator';
 import { SorobanClientService } from './soroban-client.service';
+import { apportionBasisPoints, splitStroops } from './split-math.util';
 
 export interface FundEscrowInput {
   amount: string;
@@ -129,6 +131,13 @@ export class EscrowService {
   /**
    * Splits the escrowed amount across multiple recipients by percentage
    * (team bounties). Percentages must sum to exactly 100.
+   *
+   * The recorded `Payment.amount` values are derived from the same
+   * basis-point integers sent on-chain — not recomputed independently from the
+   * raw percentages — so the local ledger can never drift from what was
+   * instructed to the contract. Shares are allocated in whole stroops via a
+   * largest-remainder method, guaranteeing `sum(payments.amount) ===
+   * escrow.amount` exactly (#43).
    */
   async splitRelease(
     escrowId: string,
@@ -138,30 +147,36 @@ export class EscrowService {
     this.assertLocked(escrow);
     this.assertValidSplits(recipients);
 
+    const totalStroops = amountToStroops(escrow.amount);
+    // Single source of truth for the split: integer basis points summing to
+    // exactly 10,000 (100.00%), used both on-chain and to derive the ledger.
+    const bps = apportionBasisPoints(recipients.map((r) => r.percentage));
+
     const result = await this.soroban.invoke('split_release', [
       escrow.bountyId ?? escrow.milestoneId ?? escrow.id,
       recipients.map((r) => r.recipientAddress),
-      recipients.map((r) => Math.round(r.percentage * 100)), // basis points-ish, 2dp -> integer
+      bps,
     ]);
+
+    const shares = splitStroops(totalStroops, bps);
+    this.reconcileSplitResult(escrow.id, totalStroops, result.returnValue);
 
     escrow.status = EscrowStatus.RELEASED;
     escrow.releaseTxHash = result.txHash;
     escrow.releasedAt = new Date();
+    escrow.metadata = { ...(escrow.metadata ?? {}), splitRelease: result };
     await this.escrowRepo.save(escrow);
 
-    const totalAmount = Number(escrow.amount);
     const payments: Payment[] = [];
-    for (const recipient of recipients) {
-      const share = this.roundAmount(
-        (totalAmount * recipient.percentage) / 100,
-      );
+    for (let i = 0; i < recipients.length; i++) {
+      const recipient = recipients[i];
       const payment = this.paymentRepo.create({
         escrowId: escrow.id,
         recipientId: recipient.recipientId ?? null,
         recipientAddress: recipient.recipientAddress,
-        amount: share.toFixed(7),
+        amount: stroopsToAmount(shares[i]),
         asset: escrow.asset,
-        splitPercentage: recipient.percentage.toFixed(2),
+        splitPercentage: (bps[i] / 100).toFixed(2),
         status: PaymentStatus.CONFIRMED,
         txHash: result.txHash,
       });
@@ -283,8 +298,41 @@ export class EscrowService {
     }
   }
 
-  private roundAmount(value: number): number {
-    return Math.round(value * 1e7) / 1e7;
+  /**
+   * The illustrative split_release contract returns a single i128 (the total
+   * released, in stroops) rather than a per-recipient breakdown, so the
+   * recorded Payment rows cannot yet be derived from `result.returnValue`
+   * (see the interface TODO in soroban-client.service.ts). Until the deployed
+   * contract returns per-recipient amounts, reconcile the scalar total against
+   * the locally computed total and surface any divergence as a warning for the
+   * reconciliation job, rather than silently discarding it (#43).
+   */
+  private reconcileSplitResult(
+    escrowId: string,
+    totalStroops: bigint,
+    returnValue: unknown,
+  ): void {
+    const returned = this.toStroopsFromReturnValue(returnValue);
+    if (returned === null) return;
+    if (returned !== totalStroops) {
+      this.logger.warn(
+        `split_release returnValue (${returned} stroops) diverges from the ` +
+          `recorded total (${totalStroops} stroops) for escrow ${escrowId}`,
+      );
+    }
+  }
+
+  /** Best-effort conversion of a contract return value to a stroop total. */
+  private toStroopsFromReturnValue(value: unknown): bigint | null {
+    if (value == null) return null;
+    if (typeof value === 'bigint') return value;
+    if (typeof value === 'number' && Number.isFinite(value)) {
+      return BigInt(Math.trunc(value));
+    }
+    if (typeof value === 'string' && /^-?\d+$/.test(value.trim())) {
+      return BigInt(value.trim());
+    }
+    return null;
   }
 
   private assertValidFundInput(input: FundEscrowInput): void {

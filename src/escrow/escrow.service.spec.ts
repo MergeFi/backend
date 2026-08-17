@@ -258,5 +258,48 @@ describe('EscrowService', () => {
       expect(payments[1].amount).toBe('40.0000000');
       expect(payments[2].amount).toBe('20.0000000');
     });
+
+    it('records split amounts that sum to exactly escrow.amount in stroops (#43)', async () => {
+      escrowRepo.findOne.mockResolvedValue({
+        id: 'escrow-uneven',
+        status: EscrowStatus.LOCKED,
+        amount: '100.0000000',
+        asset: AssetType.USDC,
+        bountyId: 'bounty-uneven',
+      });
+
+      const payments = await service.splitRelease('escrow-uneven', [
+        { recipientAddress: 'GA', percentage: 33.33 },
+        { recipientAddress: 'GB', percentage: 33.33 },
+        { recipientAddress: 'GC', percentage: 33.34 },
+      ]);
+
+      const totalStroops = payments.reduce(
+        (sum, p) => sum + BigInt(Math.round(Number(p.amount) * 1e7)),
+        0n,
+      );
+      expect(totalStroops).toBe(1_000_000_000n);
+    });
+
+    it('sends basis points on-chain that sum to exactly 10,000', async () => {
+      escrowRepo.findOne.mockResolvedValue({
+        id: 'escrow-bps',
+        status: EscrowStatus.LOCKED,
+        amount: '100.0000000',
+        asset: AssetType.USDC,
+        bountyId: 'bounty-bps',
+      });
+
+      await service.splitRelease('escrow-bps', [
+        { recipientAddress: 'GA', percentage: 33.333 },
+        { recipientAddress: 'GB', percentage: 33.333 },
+        { recipientAddress: 'GC', percentage: 33.334 },
+      ]);
+
+      const invokeCall = soroban.invoke.mock.calls[0] as unknown[];
+      const splitArgs = invokeCall[1] as unknown[];
+      const bps = splitArgs[2] as number[];
+      expect(bps.reduce((a, b) => a + b, 0)).toBe(10_000);
+    });
   });
 });
