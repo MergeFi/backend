@@ -136,6 +136,84 @@ describe('GithubWebhooksService', () => {
     expect(bountiesService.markMergedAndRelease).not.toHaveBeenCalled();
   });
 
+  describe('per-linked-issue isolation on a merged PR (#47)', () => {
+    function mockIssueAndBounty(
+      byNumber: Record<number, { bountyId: string; status: string }>,
+    ) {
+      issueRepo.findOne.mockImplementation(
+        ({ where }: { where: { number: number } }) => {
+          const entry = byNumber[where.number];
+          return Promise.resolve(
+            entry
+              ? { id: `issue-${where.number}`, bounty: { id: entry.bountyId } }
+              : null,
+          );
+        },
+      );
+      bountyRepo.findOne.mockImplementation(
+        ({ where }: { where: { id: string } }) => {
+          const entry = Object.values(byNumber).find(
+            (e) => e.bountyId === where.id,
+          );
+          return Promise.resolve(
+            entry ? { id: where.id, status: entry.status } : null,
+          );
+        },
+      );
+    }
+
+    it("processes the first and third linked issues even when the middle one's bounty processing throws", async () => {
+      mockIssueAndBounty({
+        12: { bountyId: 'bounty-12', status: 'claimed' },
+        34: { bountyId: 'bounty-34', status: 'claimed' },
+        56: { bountyId: 'bounty-56', status: 'claimed' },
+      });
+      bountiesService.markMergedAndRelease.mockImplementation((id: string) => {
+        if (id === 'bounty-34') {
+          return Promise.reject(new Error('escrow release failed'));
+        }
+        return Promise.resolve(undefined);
+      });
+
+      const payload = {
+        action: 'closed',
+        number: 9,
+        pull_request: {
+          html_url: 'https://github.com/acme/repo/pull/9',
+          number: 9,
+          merged: true,
+          body: 'Fixes #12. Also fixes #34. Also fixes #56.',
+        },
+        repository: { id: 999, full_name: 'acme/repo' },
+      };
+
+      const event = await service.handleEvent(
+        'pull_request',
+        'delivery-partial-failure',
+        payload,
+        true,
+      );
+
+      // Both the working bounties were still released — #34's failure
+      // didn't abort the loop before reaching #56.
+      expect(bountiesService.markMergedAndRelease).toHaveBeenCalledWith(
+        'bounty-12',
+      );
+      expect(bountiesService.markMergedAndRelease).toHaveBeenCalledWith(
+        'bounty-34',
+      );
+      expect(bountiesService.markMergedAndRelease).toHaveBeenCalledWith(
+        'bounty-56',
+      );
+      expect(event.status).toBe(WebhookEventStatus.FAILED);
+      expect(event.error).toContain('#34');
+      expect(event.error).toContain('escrow release failed');
+      // The successful ones aren't mentioned as failures.
+      expect(event.error).not.toContain('#12');
+      expect(event.error).not.toContain('#56');
+    });
+  });
+
   describe('"issues" webhook events (#24)', () => {
     const payload = {
       action: 'edited',
