@@ -16,7 +16,15 @@ export class SplitRecipientDto {
   @IsStellarAddress()
   recipientAddress: string;
 
-  @ApiProperty({ required: false })
+  /**
+   * Cross-checked against `recipientAddress` per entry in `EscrowService`
+   * before any chain call — see `ReleaseEscrowDto.recipientId` (#40).
+   */
+  @ApiProperty({
+    required: false,
+    description:
+      'Attributed recipient. Must match the linked Stellar address of this user; a mismatched pair is rejected.',
+  })
   @IsOptional()
   @IsUUID()
   recipientId?: string;

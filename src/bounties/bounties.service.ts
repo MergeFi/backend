@@ -1,4 +1,8 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import {
+  BadRequestException,
+  Injectable,
+  NotFoundException,
+} from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { Bounty, Team, User } from '../common/entities';
@@ -111,7 +115,10 @@ export class BountiesService {
             });
             return {
               recipientId: split.userId,
-              recipientAddress: user?.stellarAddress ?? '',
+              recipientAddress: this.payoutAddressOrThrow(
+                user?.stellarAddress,
+                split.userId,
+              ),
               percentage: Number(split.percentage),
             };
           }),
@@ -124,7 +131,10 @@ export class BountiesService {
       });
       await this.escrowService.release(
         bounty.escrowId,
-        contributor?.stellarAddress ?? '',
+        this.payoutAddressOrThrow(
+          contributor?.stellarAddress,
+          bounty.claimedById,
+        ),
         bounty.claimedById,
       );
     }
@@ -133,6 +143,28 @@ export class BountiesService {
     bounty.status = BountyStatus.PAID;
     bounty.paidAt = new Date();
     return this.bountyRepo.save(bounty);
+  }
+
+  /**
+   * Resolves a payee's on-chain address, refusing to proceed without one.
+   *
+   * This used to fall back to `''`, which meant a merged PR by a contributor
+   * who had never linked a wallet would call the escrow contract with an empty
+   * recipient — paying nobody while still marching the bounty on to PAID. The
+   * escrow layer now rejects that pair outright (#40), so the only thing left to
+   * decide is which error the operator sees; a missing wallet deserves to say so
+   * rather than surfacing as a recipient-mismatch further down.
+   */
+  private payoutAddressOrThrow(
+    stellarAddress: string | null | undefined,
+    userId: string,
+  ): string {
+    if (!stellarAddress) {
+      throw new BadRequestException(
+        `Cannot release funds: user ${userId} has no linked Stellar address`,
+      );
+    }
+    return stellarAddress;
   }
 
   /** Sponsor (or admin/expiry job) reclaims escrowed funds. */

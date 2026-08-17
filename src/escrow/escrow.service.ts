@@ -16,6 +16,7 @@ import {
 } from '../common/validators/money.validator';
 import { SorobanClientService } from './soroban-client.service';
 import { apportionBasisPoints, splitStroops } from './split-math.util';
+import { UsersService } from '../users/users.service';
 
 export interface FundEscrowInput {
   amount: string;
@@ -49,6 +50,7 @@ export class EscrowService {
     @InjectRepository(Payment)
     private readonly paymentRepo: Repository<Payment>,
     private readonly soroban: SorobanClientService,
+    private readonly usersService: UsersService,
   ) {}
 
   /** Locks funds for a bounty/milestone/pool by calling the escrow contract's `fund`. */
@@ -98,6 +100,8 @@ export class EscrowService {
     recipientAddress: string,
     recipientId?: string,
   ): Promise<Escrow> {
+    await this.assertRecipientAddressMatchesUser(recipientId, recipientAddress);
+
     const escrow = await this.getOrThrow(escrowId);
     this.assertLocked(escrow);
 
@@ -143,6 +147,13 @@ export class EscrowService {
     escrowId: string,
     recipients: SplitRecipient[],
   ): Promise<Payment[]> {
+    for (const recipient of recipients) {
+      await this.assertRecipientAddressMatchesUser(
+        recipient.recipientId,
+        recipient.recipientAddress,
+      );
+    }
+
     const escrow = await this.getOrThrow(escrowId);
     this.assertLocked(escrow);
     this.assertValidSplits(recipients);
@@ -198,6 +209,8 @@ export class EscrowService {
     recipientAddress: string,
     recipientId?: string,
   ): Promise<Payment> {
+    await this.assertRecipientAddressMatchesUser(recipientId, recipientAddress);
+
     const escrow = await this.getOrThrow(escrowId);
     this.assertLocked(escrow);
     this.assertValidAmount(amount);
@@ -276,6 +289,44 @@ export class EscrowService {
     if (escrow.status !== EscrowStatus.LOCKED) {
       throw new BadRequestException(
         `Escrow ${escrow.id} is not in LOCKED state (current: ${escrow.status})`,
+      );
+    }
+  }
+
+  /**
+   * Rejects a `recipientId`/`recipientAddress` pair that the user record does
+   * not agree with.
+   *
+   * `recipientAddress` decides who is actually paid on-chain; `recipientId`
+   * decides who the resulting `Payment` row is attributed to. Nothing tied the
+   * two together, so a caller could name one party in the ledger and pay a
+   * different address entirely (#40). Both are supplied together only by the
+   * HTTP surface — the internal callers
+   * (`BountiesService.markMergedAndRelease`) already derive the address from
+   * the user record, so for them this is a no-op restatement of an invariant
+   * they hold anyway.
+   *
+   * This lives in the service rather than the controller on purpose: it is the
+   * last common point every release path passes through, so no future route,
+   * job, or event handler can reach the chain around it.
+   *
+   * A `recipientId` that names no user, or one whose record has no linked
+   * address, is rejected with the same message as a genuine mismatch — the
+   * distinction is not useful to a caller and spelling it out would turn the
+   * endpoint into an oracle for which user ids exist.
+   */
+  private async assertRecipientAddressMatchesUser(
+    recipientId: string | undefined,
+    recipientAddress: string,
+  ): Promise<void> {
+    // Attribution is optional; when it's absent there is no claimed pairing to
+    // disprove, and the address stands on its own as it did before.
+    if (!recipientId) return;
+
+    const user = await this.usersService.findRawOrNull(recipientId);
+    if (!user?.stellarAddress || user.stellarAddress !== recipientAddress) {
+      throw new BadRequestException(
+        'recipientAddress does not match the address on file for recipientId',
       );
     }
   }

@@ -1,12 +1,22 @@
 import { Test, TestingModule } from '@nestjs/testing';
+import { ForbiddenException } from '@nestjs/common';
 import { Reflector } from '@nestjs/core';
 import { getRepositoryToken } from '@nestjs/typeorm';
 import { EscrowController } from './escrow.controller';
 import { EscrowService } from './escrow.service';
+import { UsersService } from '../users/users.service';
 import { AssetType, EscrowStatus } from '../common/enums';
 import { Escrow } from '../common/entities';
 import { IdempotencyKey } from '../common/entities/idempotency-key.entity';
 import { IdempotencyInterceptor } from '../common/idempotency/idempotency.interceptor';
+import type { AuthenticatedRequest } from '../auth/authenticated-request';
+
+/**
+ * Minimal stand-in for the request object a JwtAuthGuard-protected handler
+ * receives. Only `user` is read by these handlers.
+ */
+const requestAs = (userId: string): AuthenticatedRequest =>
+  ({ user: { userId, username: userId } }) as AuthenticatedRequest;
 
 function makeEscrowWithLeakyMetadata(): Escrow {
   return {
@@ -48,8 +58,12 @@ describe('EscrowController (#19 metadata leak)', () => {
     refund: jest.Mock;
     splitRelease: jest.Mock;
   };
+  let usersService: { assertOwnsStellarAddress: jest.Mock };
 
   beforeEach(async () => {
+    usersService = {
+      assertOwnsStellarAddress: jest.fn().mockResolvedValue(undefined),
+    };
     escrowService = {
       fund: jest.fn().mockResolvedValue(makeEscrowWithLeakyMetadata()),
       findOne: jest.fn().mockResolvedValue(makeEscrowWithLeakyMetadata()),
@@ -62,6 +76,7 @@ describe('EscrowController (#19 metadata leak)', () => {
       controllers: [EscrowController],
       providers: [
         { provide: EscrowService, useValue: escrowService },
+        { provide: UsersService, useValue: usersService },
         // These endpoints carry @Idempotent, which resolves
         // IdempotencyInterceptor via DI even though this suite calls
         // controller methods directly and never runs the interceptor
@@ -79,12 +94,15 @@ describe('EscrowController (#19 metadata leak)', () => {
   });
 
   it('fund() never returns metadata to the client', async () => {
-    const result = await controller.fund({
-      amount: '100',
-      asset: AssetType.USDC,
-      funderAddress: 'GFUNDER',
-      bountyId: 'bounty_1',
-    });
+    const result = await controller.fund(
+      {
+        amount: '100',
+        asset: AssetType.USDC,
+        funderAddress: 'GFUNDER',
+        bountyId: 'bounty_1',
+      },
+      requestAs('user_1'),
+    );
 
     expect(result).not.toHaveProperty('metadata');
     expect(JSON.stringify(result)).not.toContain('internal RPC detail');
@@ -109,5 +127,46 @@ describe('EscrowController (#19 metadata leak)', () => {
     const result = await controller.refund('esc_1');
 
     expect(result).not.toHaveProperty('metadata');
+  });
+
+  describe('#40 funderAddress is bound to the caller', () => {
+    it('checks funderAddress against the caller before funding anything', async () => {
+      await controller.fund(
+        {
+          amount: '100',
+          asset: AssetType.USDC,
+          funderAddress: 'GFUNDER',
+          bountyId: 'bounty_1',
+        },
+        requestAs('user_a'),
+      );
+
+      expect(usersService.assertOwnsStellarAddress).toHaveBeenCalledWith(
+        'user_a',
+        'GFUNDER',
+      );
+    });
+
+    it("does not fund when the address is not the caller's own", async () => {
+      usersService.assertOwnsStellarAddress.mockRejectedValue(
+        new ForbiddenException(
+          'funderAddress must match your linked Stellar address',
+        ),
+      );
+
+      await expect(
+        controller.fund(
+          {
+            amount: '100',
+            asset: AssetType.USDC,
+            funderAddress: 'GSOMEONE_ELSE',
+            bountyId: 'bounty_1',
+          },
+          requestAs('user_a'),
+        ),
+      ).rejects.toThrow(ForbiddenException);
+
+      expect(escrowService.fund).not.toHaveBeenCalled();
+    });
   });
 });

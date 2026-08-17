@@ -5,6 +5,7 @@ import { getRepositoryToken } from '@nestjs/typeorm';
 import request from 'supertest';
 import { EscrowController } from '../src/escrow/escrow.controller';
 import { EscrowService } from '../src/escrow/escrow.service';
+import { UsersService } from '../src/users/users.service';
 import { IdempotencyKey } from '../src/common/entities/idempotency-key.entity';
 import { IdempotencyInterceptor } from '../src/common/idempotency/idempotency.interceptor';
 import { IdempotencyKeyStatus } from '../src/common/enums';
@@ -101,6 +102,13 @@ describe('Escrow idempotency: cross-resource key reuse (#54)', () => {
       controllers: [EscrowController],
       providers: [
         { provide: EscrowService, useValue: escrowService },
+        // EscrowController resolves UsersService for the funderAddress
+        // ownership check on POST /escrow/fund (#40). This suite only exercises
+        // the release route, so a bare stub is enough to satisfy DI.
+        {
+          provide: UsersService,
+          useValue: { assertOwnsStellarAddress: jest.fn() },
+        },
         IdempotencyInterceptor,
         Reflector,
         {
