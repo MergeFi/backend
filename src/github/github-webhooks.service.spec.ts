@@ -212,6 +212,37 @@ describe('GithubWebhooksService', () => {
       expect(event.error).not.toContain('#12');
       expect(event.error).not.toContain('#56');
     });
+
+    it('does not mark the event FAILED for a benign duplicate issue reference in the PR body', async () => {
+      mockIssueAndBounty({
+        42: { bountyId: 'bounty-42', status: 'claimed' },
+      });
+      bountiesService.markMergedAndRelease.mockResolvedValue(undefined);
+
+      const payload = {
+        action: 'closed',
+        number: 10,
+        pull_request: {
+          html_url: 'https://github.com/acme/repo/pull/10',
+          number: 10,
+          merged: true,
+          body: 'Fixes #42. This also resolves #42 as discussed in review.',
+        },
+        repository: { id: 999, full_name: 'acme/repo' },
+      };
+
+      const event = await service.handleEvent(
+        'pull_request',
+        'delivery-duplicate-ref',
+        payload,
+        true,
+      );
+
+      // De-duplicated before processing — only attempted once, not twice.
+      expect(bountiesService.markMergedAndRelease).toHaveBeenCalledTimes(1);
+      expect(event.status).toBe(WebhookEventStatus.PROCESSED);
+      expect(event.error).toBeUndefined();
+    });
   });
 
   describe('"issues" webhook events (#24)', () => {
