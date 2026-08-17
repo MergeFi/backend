@@ -62,6 +62,17 @@ export class IdempotencyKey {
   })
   status: IdempotencyKeyStatus;
 
+  /**
+   * SHA-256 hex digest of the request's path params + body, set at insert
+   * time and never changed afterward. Lets a replay be distinguished from
+   * a different operation that happens to reuse the same
+   * (key, scope, callerId) — see IdempotencyInterceptor (#54). Null on
+   * rows created before this column existed; those are exempt from the
+   * mismatch check rather than treated as a guaranteed mismatch.
+   */
+  @Column({ type: 'varchar', length: 64, nullable: true })
+  requestFingerprint: string | null;
+
   /** HTTP status of the cached outcome, set once status moves to COMPLETED. */
   @Column({ type: 'int', nullable: true })
   responseStatus: number | null;
