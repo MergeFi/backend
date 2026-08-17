@@ -1,4 +1,8 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import {
+  ForbiddenException,
+  Injectable,
+  NotFoundException,
+} from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { GithubAccount, User } from '../common/entities';
@@ -99,7 +103,20 @@ export class UsersService {
   async setStellarAddress(
     userId: string,
     stellarAddress: string,
+    callerId?: string,
   ): Promise<User> {
+    // A valid token is authentication, not authorization: only the owner
+    // of the payout address — or a maintainer acting explicitly — may
+    // change where a user's bounties get paid. Checked before any write.
+    if (callerId && callerId !== userId) {
+      const caller = await this.findOneRaw(callerId);
+      if (!caller.roles?.includes(UserRole.MAINTAINER)) {
+        throw new ForbiddenException(
+          'Only the account owner or a maintainer can change a payout address',
+        );
+      }
+    }
+
     const user = await this.findOneRaw(userId);
     user.stellarAddress = stellarAddress;
     return this.userRepo.save(user);
