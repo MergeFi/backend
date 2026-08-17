@@ -21,7 +21,7 @@ export class TeamMemberSplit {
   @Column()
   teamId: string;
 
-  @ManyToOne(() => User, { onDelete: 'CASCADE' })
+  @ManyToOne(() => User, { onDelete: 'RESTRICT' })
   @JoinColumn()
   user: User;
 
