@@ -32,6 +32,18 @@ interface GithubIssuesEventPayload {
 const CLOSING_KEYWORD_RE =
   /\b(close[sd]?|fix(e[sd])?|resolve[sd]?)\b\s*:?\s*(?:[\w.-]+\/[\w.-]+)?#(\d+)/gi;
 
+/**
+ * The outcome of processing one issue number linked from a merged PR's
+ * body — tracked per-issue rather than collapsing a whole PR's several
+ * linked bounties into one pass/fail, so a failure on one doesn't hide
+ * what happened to the others (#47).
+ */
+interface LinkedIssueOutcome {
+  issueNumber: number;
+  outcome: 'succeeded' | 'skipped' | 'failed';
+  error?: string;
+}
+
 @Injectable()
 export class GithubWebhooksService {
   private readonly logger = new Logger(GithubWebhooksService.name);
@@ -111,9 +123,17 @@ export class GithubWebhooksService {
       return;
     }
 
-    const issueNumbers = this.extractLinkedIssueNumbers(
-      payload.pull_request.body ?? '',
-    );
+    // De-duplicated so a PR body referencing the same issue twice (e.g.
+    // "Fixes #12. Also resolves #12 as discussed.") doesn't attempt to
+    // process the same bounty twice in one event — the second call would
+    // otherwise throw InvalidBountyTransitionError against the state the
+    // first call just left it in, which is a benign, false-alarm failure
+    // rather than a real one (#47).
+    const issueNumbers = [
+      ...new Set(
+        this.extractLinkedIssueNumbers(payload.pull_request.body ?? ''),
+      ),
+    ];
     if (issueNumbers.length === 0) {
       this.logger.warn(
         `PR #${payload.number} in ${payload.repository.full_name} merged but references no issue`,
