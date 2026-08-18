@@ -310,7 +310,8 @@ describe('IdempotencyInterceptor', () => {
     await repo.insert({
       key: KEY_A,
       scope: 'test.scope',
-      callerId: 'anonymous:e23f6172b50e494eff16b72587df70f0a5675bfd02d8d5d4d4148c8544944dd1',
+      callerId:
+        'anonymous:e23f6172b50e494eff16b72587df70f0a5675bfd02d8d5d4d4148c8544944dd1',
       expiresAt: new Date(Date.now() + 60_000),
     });
     // Simulate the original request having crashed mid-handler: back-date
@@ -333,7 +334,8 @@ describe('IdempotencyInterceptor', () => {
     await repo.insert({
       key: KEY_A,
       scope: 'test.scope',
-      callerId: 'anonymous:e23f6172b50e494eff16b72587df70f0a5675bfd02d8d5d4d4148c8544944dd1',
+      callerId:
+        'anonymous:e23f6172b50e494eff16b72587df70f0a5675bfd02d8d5d4d4148c8544944dd1',
       expiresAt: new Date(Date.now() + 60_000),
     });
 
@@ -347,18 +349,34 @@ describe('IdempotencyInterceptor', () => {
 
   it('isolates keys per authenticated caller and fingerprints unauthenticated callers by IP+UA', async () => {
     const next = createNext(() => of({ ok: true }));
-    
+
     // Auth users (different IDs)
-    const ctxAuth1 = createContext({ headers: { 'idempotency-key': KEY_A }, user: { userId: 'user-1' } });
-    const ctxAuth2 = createContext({ headers: { 'idempotency-key': KEY_A }, user: { userId: 'user-2' } });
-    
+    const ctxAuth1 = createContext({
+      headers: { 'idempotency-key': KEY_A },
+      user: { userId: 'user-1' },
+    });
+    const ctxAuth2 = createContext({
+      headers: { 'idempotency-key': KEY_A },
+      user: { userId: 'user-2' },
+    });
+
     // Anon users (different IPs)
-    const ctxAnon1 = createContext({ headers: { 'idempotency-key': KEY_A, 'user-agent': 'ua-1' }, method: 'POST' });
-    const req1 = ctxAnon1.switchToHttp().getRequest() as { ip: string; headers: Record<string, string> };
+    const ctxAnon1 = createContext({
+      headers: { 'idempotency-key': KEY_A, 'user-agent': 'ua-1' },
+      method: 'POST',
+    });
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+    const req1 = ctxAnon1.switchToHttp().getRequest();
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
     req1.ip = '1.1.1.1';
-    
-    const ctxAnon2 = createContext({ headers: { 'idempotency-key': KEY_A, 'user-agent': 'ua-2' }, method: 'POST' });
-    const req2 = ctxAnon2.switchToHttp().getRequest() as { ip: string; headers: Record<string, string> };
+
+    const ctxAnon2 = createContext({
+      headers: { 'idempotency-key': KEY_A, 'user-agent': 'ua-2' },
+      method: 'POST',
+    });
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+    const req2 = ctxAnon2.switchToHttp().getRequest();
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
     req2.ip = '2.2.2.2';
 
     await lastValueFrom(await interceptor.intercept(ctxAuth1, next));
@@ -367,12 +385,12 @@ describe('IdempotencyInterceptor', () => {
     await lastValueFrom(await interceptor.intercept(ctxAnon2, next));
 
     expect(next.handle).toHaveBeenCalledTimes(4);
-    
+
     const callerIds = repo.rows.map((r) => r.callerId);
     expect(callerIds).toContain('user-1');
     expect(callerIds).toContain('user-2');
     // Ensure anonymous callers have unique hashed IDs
-    const anonIds = callerIds.filter(id => id.startsWith('anonymous:'));
+    const anonIds = callerIds.filter((id) => id.startsWith('anonymous:'));
     expect(new Set(anonIds).size).toBe(2);
   });
 
@@ -447,12 +465,13 @@ describe('IdempotencyInterceptor', () => {
 
     it('does not reject a pre-#54 row with no stored fingerprint, even if the incoming fingerprint differs', async () => {
       // Simulates a row created before this migration/column existed.
-    await repo.insert({
-      key: KEY_A,
-      scope: 'test.scope',
-      callerId: 'anonymous:e23f6172b50e494eff16b72587df70f0a5675bfd02d8d5d4d4148c8544944dd1',
-      expiresAt: new Date(Date.now() + 60_000),
-    });
+      await repo.insert({
+        key: KEY_A,
+        scope: 'test.scope',
+        callerId:
+          'anonymous:e23f6172b50e494eff16b72587df70f0a5675bfd02d8d5d4d4148c8544944dd1',
+        expiresAt: new Date(Date.now() + 60_000),
+      });
       repo.rows[0].status = IdempotencyKeyStatus.COMPLETED;
       repo.rows[0].responseStatus = 200;
       repo.rows[0].responseBody = { legacy: true };
