@@ -354,11 +354,11 @@ describe('IdempotencyInterceptor', () => {
     
     // Anon users (different IPs)
     const ctxAnon1 = createContext({ headers: { 'idempotency-key': KEY_A, 'user-agent': 'ua-1' }, method: 'POST' });
-    const req1 = ctxAnon1.switchToHttp().getRequest() as Record<string, any>;
+    const req1 = ctxAnon1.switchToHttp().getRequest() as { ip: string; headers: Record<string, string> };
     req1.ip = '1.1.1.1';
     
     const ctxAnon2 = createContext({ headers: { 'idempotency-key': KEY_A, 'user-agent': 'ua-2' }, method: 'POST' });
-    const req2 = ctxAnon2.switchToHttp().getRequest() as Record<string, any>;
+    const req2 = ctxAnon2.switchToHttp().getRequest() as { ip: string; headers: Record<string, string> };
     req2.ip = '2.2.2.2';
 
     await lastValueFrom(await interceptor.intercept(ctxAuth1, next));
