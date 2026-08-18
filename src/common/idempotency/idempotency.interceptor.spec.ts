@@ -310,7 +310,7 @@ describe('IdempotencyInterceptor', () => {
     await repo.insert({
       key: KEY_A,
       scope: 'test.scope',
-      callerId: 'anonymous',
+      callerId: 'anonymous:e23f6172b50e494eff16b72587df70f0a5675bfd02d8d5d4d4148c8544944dd1',
       expiresAt: new Date(Date.now() + 60_000),
     });
     // Simulate the original request having crashed mid-handler: back-date
@@ -333,7 +333,7 @@ describe('IdempotencyInterceptor', () => {
     await repo.insert({
       key: KEY_A,
       scope: 'test.scope',
-      callerId: 'anonymous',
+      callerId: 'anonymous:e23f6172b50e494eff16b72587df70f0a5675bfd02d8d5d4d4148c8544944dd1',
       expiresAt: new Date(Date.now() + 60_000),
     });
 
@@ -345,25 +345,33 @@ describe('IdempotencyInterceptor', () => {
     expect(next.handle).not.toHaveBeenCalled();
   });
 
-  it('scopes keys per authenticated caller when req.user is present', async () => {
+  it('isolates keys per authenticated caller and fingerprints unauthenticated callers by IP+UA', async () => {
     const next = createNext(() => of({ ok: true }));
-    const contextUser1 = createContext({
-      headers: { 'idempotency-key': KEY_A },
-      user: { userId: 'user-1' },
-    });
-    const contextUser2 = createContext({
-      headers: { 'idempotency-key': KEY_A },
-      user: { userId: 'user-2' },
-    });
+    
+    // Auth users (different IDs)
+    const ctxAuth1 = createContext({ headers: { 'idempotency-key': KEY_A }, user: { userId: 'user-1' } });
+    const ctxAuth2 = createContext({ headers: { 'idempotency-key': KEY_A }, user: { userId: 'user-2' } });
+    
+    // Anon users (different IPs)
+    const ctxAnon1 = createContext({ headers: { 'idempotency-key': KEY_A, 'user-agent': 'ua-1' }, method: 'POST' });
+    (ctxAnon1.switchToHttp().getRequest() as any).ip = '1.1.1.1';
+    
+    const ctxAnon2 = createContext({ headers: { 'idempotency-key': KEY_A, 'user-agent': 'ua-2' }, method: 'POST' });
+    (ctxAnon2.switchToHttp().getRequest() as any).ip = '2.2.2.2';
 
-    await lastValueFrom(await interceptor.intercept(contextUser1, next));
-    await lastValueFrom(await interceptor.intercept(contextUser2, next));
+    await lastValueFrom(await interceptor.intercept(ctxAuth1, next));
+    await lastValueFrom(await interceptor.intercept(ctxAuth2, next));
+    await lastValueFrom(await interceptor.intercept(ctxAnon1, next));
+    await lastValueFrom(await interceptor.intercept(ctxAnon2, next));
 
-    expect(next.handle).toHaveBeenCalledTimes(2);
-    expect(repo.rows.map((r) => r.callerId).sort()).toEqual([
-      'user-1',
-      'user-2',
-    ]);
+    expect(next.handle).toHaveBeenCalledTimes(4);
+    
+    const callerIds = repo.rows.map((r) => r.callerId);
+    expect(callerIds).toContain('user-1');
+    expect(callerIds).toContain('user-2');
+    // Ensure anonymous callers have unique hashed IDs
+    const anonIds = callerIds.filter(id => id.startsWith('anonymous:'));
+    expect(new Set(anonIds).size).toBe(2);
   });
 
   describe('request fingerprint (#54)', () => {
@@ -437,12 +445,12 @@ describe('IdempotencyInterceptor', () => {
 
     it('does not reject a pre-#54 row with no stored fingerprint, even if the incoming fingerprint differs', async () => {
       // Simulates a row created before this migration/column existed.
-      await repo.insert({
-        key: KEY_A,
-        scope: 'test.scope',
-        callerId: 'anonymous',
-        expiresAt: new Date(Date.now() + 60_000),
-      });
+    await repo.insert({
+      key: KEY_A,
+      scope: 'test.scope',
+      callerId: 'anonymous:e23f6172b50e494eff16b72587df70f0a5675bfd02d8d5d4d4148c8544944dd1',
+      expiresAt: new Date(Date.now() + 60_000),
+    });
       repo.rows[0].status = IdempotencyKeyStatus.COMPLETED;
       repo.rows[0].responseStatus = 200;
       repo.rows[0].responseBody = { legacy: true };
