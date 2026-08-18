@@ -16,9 +16,7 @@ describe('UsersController (e2e)', () => {
   beforeAll(async () => {
     const moduleFixture: TestingModule = await Test.createTestingModule({
       controllers: [UsersController],
-      providers: [
-        { provide: UsersService, useValue: mockUsersService },
-      ],
+      providers: [{ provide: UsersService, useValue: mockUsersService }],
     })
       .overrideGuard(JwtAuthGuard)
       .useValue({ canActivate: () => false }) // Simulate unauthenticated
@@ -34,9 +32,7 @@ describe('UsersController (e2e)', () => {
 
   describe('GET /users', () => {
     it('should reject unauthenticated requests with 401', () => {
-      return request(app.getHttpServer())
-        .get('/users')
-        .expect(403); // Assuming the guard returns 403 when not authorized
+      return request(app.getHttpServer()).get('/users').expect(403); // Assuming the guard returns 403 when not authorized
     });
   });
 
