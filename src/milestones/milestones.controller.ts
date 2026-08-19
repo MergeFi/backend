@@ -4,9 +4,10 @@ import { IsOptional, IsString, IsUUID } from 'class-validator';
 import { MilestonesService } from './milestones.service';
 import { CreateMilestoneDto } from './dto/create-milestone.dto';
 import { Idempotent } from '../common/idempotency/idempotent.decorator';
+import { IsStellarAddress } from '../common/validators/stellar-address.validator';
 
 class FundMilestoneDto {
-  @IsString()
+  @IsStellarAddress()
   funderAddress: string;
 }
 
