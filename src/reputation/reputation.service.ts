@@ -1,8 +1,9 @@
 import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
-import { Bounty, Issue, ReputationSnapshot } from '../common/entities';
+import { Bounty, Issue, ReputationSnapshot, Payment } from '../common/entities';
 import { BountyStatus } from '../common/enums';
+import { calculateContributorEarnings } from '../common/utils/earnings.util';
 
 @Injectable()
 export class ReputationService {
@@ -11,6 +12,7 @@ export class ReputationService {
     @InjectRepository(Issue) private readonly issueRepo: Repository<Issue>,
     @InjectRepository(ReputationSnapshot)
     private readonly snapshotRepo: Repository<ReputationSnapshot>,
+    @InjectRepository(Payment) private readonly paymentRepo: Repository<Payment>,
   ) {}
 
   /**
@@ -26,7 +28,10 @@ export class ReputationService {
     );
     const paid = claimedBounties.filter((b) => b.status === BountyStatus.PAID);
 
-    const totalEarnings = paid.reduce((sum, b) => sum + Number(b.amount), 0);
+    const { totalEarnings } = await calculateContributorEarnings(
+      this.paymentRepo,
+      userId,
+    );
     const completionRate =
       claimedBounties.length > 0
         ? (merged.length / claimedBounties.length) * 100
