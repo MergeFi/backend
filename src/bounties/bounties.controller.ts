@@ -1,14 +1,14 @@
 import { Body, Controller, Get, Param, Post, Query } from '@nestjs/common';
 import { ApiTags } from '@nestjs/swagger';
-import { IsString } from 'class-validator';
 import { BountiesService } from './bounties.service';
 import { CreateBountyDto } from './dto/create-bounty.dto';
 import { ClaimBountyDto } from './dto/claim-bounty.dto';
 import { BountyStatus } from '../common/enums';
 import { Idempotent } from '../common/idempotency/idempotent.decorator';
+import { IsStellarAddress } from '../common/validators/stellar-address.validator';
 
 class FundBountyDto {
-  @IsString()
+  @IsStellarAddress()
   funderAddress: string;
 }
 
