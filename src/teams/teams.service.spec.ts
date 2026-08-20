@@ -3,6 +3,7 @@ import { getRepositoryToken } from '@nestjs/typeorm';
 import { NotFoundException } from '@nestjs/common';
 import { TeamsService } from './teams.service';
 import { Bounty, Team, TeamMemberSplit } from '../common/entities';
+import { BountyStatus } from '../common/enums';
 
 describe('TeamsService', () => {
   let service: TeamsService;
@@ -116,6 +117,78 @@ describe('TeamsService', () => {
       await expect(service.findOne('missing')).rejects.toThrow(
         NotFoundException,
       );
+    });
+  });
+
+  describe('assignToBounty', () => {
+    it('throws NotFoundException when the team does not exist', async () => {
+      teamRepo.findOne.mockResolvedValue(null);
+
+      await expect(
+        service.assignToBounty('missing-team', 'b1'),
+      ).rejects.toThrow(NotFoundException);
+      expect(bountyRepo.findOne).not.toHaveBeenCalled();
+    });
+
+    it('throws NotFoundException when the bounty does not exist', async () => {
+      teamRepo.findOne.mockResolvedValue({ id: 't1', splits: [] });
+      bountyRepo.findOne.mockResolvedValue(null);
+
+      await expect(
+        service.assignToBounty('t1', 'missing-bounty'),
+      ).rejects.toThrow(NotFoundException);
+    });
+
+    it('sets the bounty.teamId and persists it when both exist', async () => {
+      teamRepo.findOne.mockResolvedValue({ id: 't1', splits: [] });
+      bountyRepo.findOne.mockResolvedValue({
+        id: 'b1',
+        status: BountyStatus.OPEN,
+        teamId: null,
+      });
+
+      const bounty = await service.assignToBounty('t1', 'b1');
+
+      expect(bounty.teamId).toBe('t1');
+      expect(bountyRepo.save).toHaveBeenCalledWith(
+        expect.objectContaining({ id: 'b1', teamId: 't1' }),
+      );
+    });
+
+    // Baseline/regression coverage for #41 (TeamsService.assignToBounty has
+    // no bounty-status or ownership guard, allowing payout hijack via
+    // last-second team assignment): this documents assignToBounty's current,
+    // unguarded behavior — reassignment succeeds regardless of the bounty's
+    // status or who currently claims it. Once #41 lands a guard, these two
+    // cases are expected to start throwing instead; update them alongside
+    // that fix rather than leaving this test silently describing stale
+    // behavior.
+    it('[current behavior, see #41] reassigns a bounty regardless of its status', async () => {
+      teamRepo.findOne.mockResolvedValue({ id: 't1', splits: [] });
+      bountyRepo.findOne.mockResolvedValue({
+        id: 'b1',
+        status: BountyStatus.MERGED,
+        claimedById: 'original-contributor',
+        teamId: null,
+      });
+
+      const bounty = await service.assignToBounty('t1', 'b1');
+
+      expect(bounty.teamId).toBe('t1');
+      expect(bounty.status).toBe(BountyStatus.MERGED);
+    });
+
+    it('[current behavior, see #41] reassigns a bounty that is already assigned to a different team', async () => {
+      teamRepo.findOne.mockResolvedValue({ id: 't2', splits: [] });
+      bountyRepo.findOne.mockResolvedValue({
+        id: 'b1',
+        status: BountyStatus.CLAIMED,
+        teamId: 't1',
+      });
+
+      const bounty = await service.assignToBounty('t2', 'b1');
+
+      expect(bounty.teamId).toBe('t2');
     });
   });
 });
