@@ -70,6 +70,13 @@ export class MilestonesService {
     const milestone = await this.findOne(milestoneId);
     const issue = await this.issueRepo.findOne({ where: { id: issueId } });
     if (!issue) throw new NotFoundException(`Issue ${issueId} not found`);
+
+    if (issue.repositoryId !== milestone.repositoryId) {
+      throw new BadRequestException(
+        `Issue ${issueId} (repository: ${issue.repositoryId}) does not belong to Milestone ${milestoneId} repository (${milestone.repositoryId})`,
+      );
+    }
+
     issue.milestoneId = milestone.id;
     return this.issueRepo.save(issue);
   }
