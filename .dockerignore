@@ -32,9 +32,6 @@ Thumbs.db
 
 # Documentation and configs not needed in production container
 README.md
-nest-cli.json
-tsconfig.json
-tsconfig.build.json
 eslint.config.mjs
 .prettierrc
 test/
