@@ -6,6 +6,8 @@ import {
   IsOptional,
   IsString,
   IsUUID,
+  Max,
+  Min,
   ValidateNested,
 } from 'class-validator';
 
@@ -21,6 +23,8 @@ export class TeamMemberSplitDto {
 
   @ApiProperty({ example: 40 })
   @IsNumber()
+  @Min(0.01)
+  @Max(100)
   percentage: number;
 }
 

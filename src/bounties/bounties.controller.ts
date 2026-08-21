@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Param, Post, Query } from '@nestjs/common';
+import { Body, Controller, Get, Param, ParseEnumPipe, Post, Query } from '@nestjs/common';
 import { ApiTags } from '@nestjs/swagger';
 import { BountiesService } from './bounties.service';
 import { CreateBountyDto } from './dto/create-bounty.dto';
@@ -23,7 +23,10 @@ export class BountiesController {
   }
 
   @Get()
-  list(@Query('status') status?: BountyStatus) {
+  list(
+    @Query('status', new ParseEnumPipe(BountyStatus, { optional: true }))
+    status?: BountyStatus,
+  ) {
     return this.bountiesService.list(status);
   }
 
