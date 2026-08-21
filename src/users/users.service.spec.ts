@@ -179,6 +179,86 @@ describe('UsersService', () => {
     });
   });
 
+  describe('addRole', () => {
+    it('adds the role when the user does not already have it', async () => {
+      userRepo.findOne.mockResolvedValue({
+        id: 'u1',
+        roles: [UserRole.CONTRIBUTOR],
+      });
+
+      const user = await service.addRole('u1', UserRole.MAINTAINER);
+
+      expect(user.roles).toEqual([UserRole.CONTRIBUTOR, UserRole.MAINTAINER]);
+      expect(userRepo.save).toHaveBeenCalledWith(
+        expect.objectContaining({
+          roles: [UserRole.CONTRIBUTOR, UserRole.MAINTAINER],
+        }),
+      );
+    });
+
+    it('is a no-op when the user already has the role', async () => {
+      userRepo.findOne.mockResolvedValue({
+        id: 'u1',
+        roles: [UserRole.CONTRIBUTOR],
+      });
+
+      const user = await service.addRole('u1', UserRole.CONTRIBUTOR);
+
+      expect(user.roles).toEqual([UserRole.CONTRIBUTOR]);
+      expect(userRepo.save).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('setStellarAddress', () => {
+    it('throws NotFoundException when the user does not exist', async () => {
+      userRepo.findOne.mockResolvedValue(null);
+      await expect(
+        service.setStellarAddress('missing', 'GADDRESS'),
+      ).rejects.toThrow(NotFoundException);
+    });
+
+    it('sets stellarAddress on the given user and persists it', async () => {
+      userRepo.findOne.mockResolvedValue({ id: 'u1', stellarAddress: null });
+
+      const user = await service.setStellarAddress('u1', 'GNEWADDRESS');
+
+      expect(user.stellarAddress).toBe('GNEWADDRESS');
+      expect(userRepo.save).toHaveBeenCalledWith(
+        expect.objectContaining({ id: 'u1', stellarAddress: 'GNEWADDRESS' }),
+      );
+    });
+
+    // Note on #39 (UsersController.setStellarAddress is authenticated but
+    // not authorized: any logged-in user can overwrite another user's
+    // payout address): UsersService.setStellarAddress(userId, address) has
+    // no notion of "who is asking" in its own signature — by design it sets
+    // whichever userId it's given. The IDOR itself lives one layer up, in
+    // UsersController#setStellarAddress binding :id straight from the URL
+    // param instead of the authenticated req.user.id (see
+    // src/users/users.controller.ts). That controller has no spec file
+    // today and is out of this issue's listed scope (only
+    // users.service.spec.ts is asked for here) — a
+    // users.controller.spec.ts with the cross-user rejection test belongs
+    // with #39's fix, since only the controller layer has enough
+    // information (the authenticated caller's identity) to write a
+    // meaningful assertion for it. Documented here so the boundary isn't
+    // silently lost.
+    it('[documents scope of #39] setStellarAddress itself has no caller/authorization concept — see users.controller.ts', async () => {
+      userRepo.findOne.mockResolvedValue({
+        id: 'victim',
+        stellarAddress: 'GOLD',
+      });
+
+      // Nothing about this call's parameters distinguishes "the account
+      // owner is changing their own address" from "some other authenticated
+      // user is overwriting someone else's" — both look identical to the
+      // service.
+      const user = await service.setStellarAddress('victim', 'GATTACKER');
+
+      expect(user.stellarAddress).toBe('GATTACKER');
+    });
+  });
+
   describe('list', () => {
     it('returns every user mapped to its public shape', async () => {
       userRepo.find = jest.fn().mockResolvedValue([
