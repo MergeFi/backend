@@ -27,10 +27,10 @@ export class Milestone {
   @Column()
   repositoryId: string;
 
-  @Column()
+  @Column({ type: 'varchar', length: 255 })
   title: string;
 
-  @Column({ type: 'text', nullable: true })
+  @Column({ type: 'varchar', length: 2000, nullable: true })
   description: string | null;
 
   @ManyToOne(() => User, { onDelete: 'SET NULL', nullable: true })

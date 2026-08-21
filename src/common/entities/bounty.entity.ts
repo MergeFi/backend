@@ -2,6 +2,7 @@ import {
   Column,
   CreateDateColumn,
   Entity,
+  Index,
   JoinColumn,
   ManyToOne,
   OneToOne,
@@ -37,6 +38,7 @@ export class Bounty {
   @JoinColumn()
   claimedBy: User | null;
 
+  @Index()
   @Column({ type: 'varchar', nullable: true })
   claimedById: string | null;
 

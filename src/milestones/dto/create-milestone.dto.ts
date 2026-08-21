@@ -1,5 +1,5 @@
 import { ApiProperty } from '@nestjs/swagger';
-import { IsISO8601, IsOptional, IsString, IsUUID } from 'class-validator';
+import { IsISO8601, IsOptional, IsString, IsUUID, MaxLength } from 'class-validator';
 import { AssetType } from '../../common/enums';
 import {
   IsMoneyAmount,
@@ -18,11 +18,13 @@ export class CreateMilestoneDto {
 
   @ApiProperty()
   @IsString()
+  @MaxLength(255)
   title: string;
 
   @ApiProperty({ required: false })
   @IsOptional()
   @IsString()
+  @MaxLength(2000)
   description?: string;
 
   @ApiProperty()
