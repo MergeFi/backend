@@ -5,6 +5,7 @@ import { FundEscrowDto } from './dto/fund-escrow.dto';
 import { ReleaseEscrowDto } from './dto/release-escrow.dto';
 import { SplitReleaseDto } from './dto/split-release.dto';
 import { toPublicEscrow } from './escrow-response.mapper';
+import { toPublicPayments } from './payment-response.mapper';
 import { Idempotent } from '../common/idempotency/idempotent.decorator';
 
 @ApiTags('escrow')
@@ -37,8 +38,10 @@ export class EscrowController {
 
   @Idempotent('escrow.splitRelease')
   @Post(':id/split-release')
-  splitRelease(@Param('id') id: string, @Body() dto: SplitReleaseDto) {
-    return this.escrowService.splitRelease(id, dto.recipients);
+  async splitRelease(@Param('id') id: string, @Body() dto: SplitReleaseDto) {
+    return toPublicPayments(
+      await this.escrowService.splitRelease(id, dto.recipients),
+    );
   }
 
   @Idempotent('escrow.refund')
