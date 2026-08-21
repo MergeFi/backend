@@ -29,7 +29,7 @@ export class TeamMemberSplit {
   userId: string;
 
   /** Free-text label describing the member's contribution, e.g. "frontend". */
-  @Column({ type: 'varchar', nullable: true })
+  @Column({ type: 'varchar', length: 100, nullable: true })
   role: string | null;
 
   /** Percentage of the bounty payout, 0-100. Sum across a team must equal 100. */

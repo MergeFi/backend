@@ -2,11 +2,14 @@ import {
   Column,
   CreateDateColumn,
   Entity,
+  Index,
   PrimaryGeneratedColumn,
 } from 'typeorm';
 import { WebhookEventStatus } from '../enums';
 
 /** Audit log of every inbound webhook, verified or not, for replay/debugging. */
+@Index(['eventType', 'status'])
+@Index(['status', 'receivedAt'])
 @Entity('webhook_events')
 export class WebhookEvent {
   @PrimaryGeneratedColumn('uuid')
@@ -37,6 +40,7 @@ export class WebhookEvent {
   @Column({ type: 'text', nullable: true })
   error: string | null;
 
+  @Index()
   @CreateDateColumn()
   receivedAt: Date;
 
