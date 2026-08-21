@@ -230,7 +230,7 @@ describe('EscrowService', () => {
     const payments: Partial<Payment>[] = [];
     escrowRepo.findOne.mockResolvedValue(escrow);
     paymentRepo.find.mockImplementation(() => Promise.resolve(payments));
-    paymentRepo.save.mockImplementation(async (payment: Partial<Payment>) => {
+    paymentRepo.save.mockImplementation((payment: Partial<Payment>) => {
       payments.push(payment);
       return payment;
     });
