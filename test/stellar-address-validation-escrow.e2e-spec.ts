@@ -1,10 +1,17 @@
-import { INestApplication, ValidationPipe } from '@nestjs/common';
+import {
+  ExecutionContext,
+  INestApplication,
+  ValidationPipe,
+} from '@nestjs/common';
 import { Reflector } from '@nestjs/core';
 import { Test, TestingModule } from '@nestjs/testing';
 import { getRepositoryToken } from '@nestjs/typeorm';
 import request from 'supertest';
 import { randomUUID } from 'crypto';
 import { Keypair, StrKey } from '@stellar/stellar-sdk';
+import { UsersService } from '../src/users/users.service';
+import { JwtAuthGuard } from '../src/auth/guards/jwt-auth.guard';
+import type { AuthenticatedRequest } from '../src/auth/authenticated-request';
 import { EscrowController } from '../src/escrow/escrow.controller';
 import { EscrowService } from '../src/escrow/escrow.service';
 import { AssetType, IdempotencyKeyStatus } from '../src/common/enums';
@@ -85,6 +92,24 @@ function checksumInvalidAddress(): string {
   return candidate;
 }
 
+/**
+ * These endpoints became JWT-guarded in #40 (funding debits the caller's own
+ * wallet). This suite is about address validation at the HTTP boundary, not
+ * about auth, so the guard is stubbed to a fixed caller and UsersService's
+ * ownership assertion is a no-op — leaving both real would turn every
+ * assertion below into a 401 and stop testing #60 entirely.
+ */
+const authedUser = { userId: 'user_1', username: 'octocat' };
+const passingGuard = {
+  canActivate: (ctx: ExecutionContext) => {
+    ctx.switchToHttp().getRequest<AuthenticatedRequest>().user = authedUser;
+    return true;
+  },
+};
+const usersServiceStub = {
+  assertOwnsStellarAddress: jest.fn().mockResolvedValue(undefined),
+};
+
 describe('Stellar address validation at the API boundary — escrow endpoints (#60)', () => {
   let app: INestApplication;
   let escrowService: {
@@ -104,6 +129,7 @@ describe('Stellar address validation at the API boundary — escrow endpoints (#
       controllers: [EscrowController],
       providers: [
         { provide: EscrowService, useValue: escrowService },
+        { provide: UsersService, useValue: usersServiceStub },
         IdempotencyInterceptor,
         Reflector,
         {
@@ -111,7 +137,10 @@ describe('Stellar address validation at the API boundary — escrow endpoints (#
           useValue: new FakeIdempotencyRepo(),
         },
       ],
-    }).compile();
+    })
+      .overrideGuard(JwtAuthGuard)
+      .useValue(passingGuard)
+      .compile();
 
     app = moduleFixture.createNestApplication();
     // Mirrors main.ts's ValidationPipe config exactly — this is what
