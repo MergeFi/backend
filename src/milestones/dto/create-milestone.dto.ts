@@ -5,6 +5,7 @@ import {
   IsMoneyAmount,
   IsSupportedEscrowAsset,
 } from '../../common/validators/money.validator';
+import { IsFutureDate } from '../../common/validators/future-date.validator';
 
 export class CreateMilestoneDto {
   @ApiProperty()
@@ -36,5 +37,6 @@ export class CreateMilestoneDto {
   @ApiProperty({ required: false })
   @IsOptional()
   @IsISO8601()
+  @IsFutureDate()
   deadline?: string;
 }

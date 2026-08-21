@@ -5,6 +5,7 @@ import {
   IsMoneyAmount,
   IsSupportedEscrowAsset,
 } from '../../common/validators/money.validator';
+import { IsFutureDate } from '../../common/validators/future-date.validator';
 
 export class CreateBountyDto {
   @ApiProperty({
@@ -35,5 +36,6 @@ export class CreateBountyDto {
   @ApiProperty({ required: false })
   @IsOptional()
   @IsISO8601()
+  @IsFutureDate()
   deadline?: string;
 }
