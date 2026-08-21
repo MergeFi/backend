@@ -16,6 +16,7 @@ import {
 } from '../common/validators/money.validator';
 import { SorobanClientService } from './soroban-client.service';
 import { apportionBasisPoints, splitStroops } from './split-math.util';
+import { validateSplitPercentages } from '../teams/team-split.util';
 
 export interface FundEscrowInput {
   amount: string;
@@ -282,20 +283,7 @@ export class EscrowService {
 
   /** Validates that split percentages sum to 100.00, within floating point tolerance. */
   assertValidSplits(recipients: SplitRecipient[]): void {
-    if (recipients.length === 0) {
-      throw new BadRequestException(
-        'At least one recipient is required for a split release',
-      );
-    }
-    const total = recipients.reduce((sum, r) => sum + r.percentage, 0);
-    if (Math.abs(total - 100) > 0.01) {
-      throw new BadRequestException(
-        `Split percentages must sum to 100, got ${total.toFixed(2)}`,
-      );
-    }
-    if (recipients.some((r) => r.percentage <= 0)) {
-      throw new BadRequestException('Split percentages must be positive');
-    }
+    validateSplitPercentages(recipients, 'Split');
   }
 
   /**
