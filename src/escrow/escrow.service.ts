@@ -5,7 +5,7 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { EntityManager, Repository } from 'typeorm';
 import { Escrow, Payment } from '../common/entities';
 import { AssetType, EscrowStatus, PaymentStatus } from '../common/enums';
 import {
@@ -98,150 +98,153 @@ export class EscrowService {
     recipientAddress: string,
     recipientId?: string,
   ): Promise<Escrow> {
-    const escrow = await this.getOrThrow(escrowId);
-    this.assertLocked(escrow);
+    return this.withReleaseLock(
+      escrowId,
+      async (escrowRepo, paymentRepo, escrow) => {
+        this.assertNoExistingPayments(
+          escrow,
+          await paymentRepo.find({ where: { escrowId: escrow.id } }),
+        );
 
-    const result = await this.soroban.invoke('release', [
-      escrow.bountyId ??
-        escrow.milestoneId ??
-        escrow.maintenancePoolId ??
-        escrow.id,
-      recipientAddress,
-    ]);
+        const result = await this.soroban.invoke('release', [
+          escrow.bountyId ??
+            escrow.milestoneId ??
+            escrow.maintenancePoolId ??
+            escrow.id,
+          recipientAddress,
+        ]);
 
-    escrow.status = EscrowStatus.RELEASED;
-    escrow.releaseTxHash = result.txHash;
-    escrow.releasedAt = new Date();
-    await this.escrowRepo.save(escrow);
+        escrow.status = EscrowStatus.RELEASED;
+        escrow.releaseTxHash = result.txHash;
+        escrow.releasedAt = new Date();
+        await escrowRepo.save(escrow);
 
-    const payment = this.paymentRepo.create({
-      escrowId: escrow.id,
-      recipientId: recipientId ?? null,
-      recipientAddress,
-      amount: escrow.amount,
-      asset: escrow.asset,
-      status: PaymentStatus.CONFIRMED,
-      txHash: result.txHash,
-    });
-    await this.paymentRepo.save(payment);
-
-    return escrow;
+        const payment = paymentRepo.create({
+          escrowId: escrow.id,
+          recipientId: recipientId ?? null,
+          recipientAddress,
+          amount: escrow.amount,
+          asset: escrow.asset,
+          status: PaymentStatus.CONFIRMED,
+          txHash: result.txHash,
+        });
+        await paymentRepo.save(payment);
+        return escrow;
+      },
+    );
   }
 
   /**
-   * Splits the escrowed amount across multiple recipients by percentage
-   * (team bounties). Percentages must sum to exactly 100.
-   *
-   * The recorded `Payment.amount` values are derived from the same
-   * basis-point integers sent on-chain — not recomputed independently from the
-   * raw percentages — so the local ledger can never drift from what was
-   * instructed to the contract. Shares are allocated in whole stroops via a
-   * largest-remainder method, guaranteeing `sum(payments.amount) ===
-   * escrow.amount` exactly (#43).
+   * Splits the escrowed amount across multiple recipients by percentage.
+   * A release is intentionally all-or-nothing: an escrow with any prior
+   * payment (including a partial release) cannot be released again.
    */
   async splitRelease(
     escrowId: string,
     recipients: SplitRecipient[],
   ): Promise<Payment[]> {
-    const escrow = await this.getOrThrow(escrowId);
-    this.assertLocked(escrow);
-    this.assertValidSplits(recipients);
+    return this.withReleaseLock(
+      escrowId,
+      async (escrowRepo, paymentRepo, escrow) => {
+        this.assertNoExistingPayments(
+          escrow,
+          await paymentRepo.find({ where: { escrowId: escrow.id } }),
+        );
+        this.assertValidSplits(recipients);
 
-    const totalStroops = amountToStroops(escrow.amount);
-    // Single source of truth for the split: integer basis points summing to
-    // exactly 10,000 (100.00%), used both on-chain and to derive the ledger.
-    const bps = apportionBasisPoints(recipients.map((r) => r.percentage));
+        const totalStroops = amountToStroops(escrow.amount);
+        const bps = apportionBasisPoints(recipients.map((r) => r.percentage));
+        const result = await this.soroban.invoke('split_release', [
+          escrow.bountyId ?? escrow.milestoneId ?? escrow.id,
+          recipients.map((r) => r.recipientAddress),
+          bps,
+        ]);
 
-    const result = await this.soroban.invoke('split_release', [
-      escrow.bountyId ?? escrow.milestoneId ?? escrow.id,
-      recipients.map((r) => r.recipientAddress),
-      bps,
-    ]);
+        const shares = splitStroops(totalStroops, bps);
+        this.reconcileSplitResult(escrow.id, totalStroops, result.returnValue);
+        escrow.status = EscrowStatus.RELEASED;
+        escrow.releaseTxHash = result.txHash;
+        escrow.releasedAt = new Date();
+        escrow.metadata = { ...(escrow.metadata ?? {}), splitRelease: result };
+        await escrowRepo.save(escrow);
 
-    const shares = splitStroops(totalStroops, bps);
-    this.reconcileSplitResult(escrow.id, totalStroops, result.returnValue);
-
-    escrow.status = EscrowStatus.RELEASED;
-    escrow.releaseTxHash = result.txHash;
-    escrow.releasedAt = new Date();
-    escrow.metadata = { ...(escrow.metadata ?? {}), splitRelease: result };
-    await this.escrowRepo.save(escrow);
-
-    const payments: Payment[] = [];
-    for (let i = 0; i < recipients.length; i++) {
-      const recipient = recipients[i];
-      const payment = this.paymentRepo.create({
-        escrowId: escrow.id,
-        recipientId: recipient.recipientId ?? null,
-        recipientAddress: recipient.recipientAddress,
-        amount: stroopsToAmount(shares[i]),
-        asset: escrow.asset,
-        splitPercentage: (bps[i] / 100).toFixed(2),
-        status: PaymentStatus.CONFIRMED,
-        txHash: result.txHash,
-      });
-      payments.push(await this.paymentRepo.save(payment));
-    }
-    return payments;
+        const payments: Payment[] = [];
+        for (let i = 0; i < recipients.length; i++) {
+          const recipient = recipients[i];
+          payments.push(
+            await paymentRepo.save(
+              paymentRepo.create({
+                escrowId: escrow.id,
+                recipientId: recipient.recipientId ?? null,
+                recipientAddress: recipient.recipientAddress,
+                amount: stroopsToAmount(shares[i]),
+                asset: escrow.asset,
+                splitPercentage: (bps[i] / 100).toFixed(2),
+                status: PaymentStatus.CONFIRMED,
+                txHash: result.txHash,
+              }),
+            ),
+          );
+        }
+        return payments;
+      },
+    );
   }
 
-  /**
-   * Releases a portion of a LOCKED escrow to a single recipient without
-   * closing it out — used by milestone funding, where the total budget is
-   * distributed incrementally as individual issues resolve. The escrow
-   * moves to RELEASED once the cumulative released amount reaches the
-   * total locked amount.
-   */
+  /** Releases one leg while leaving the escrow LOCKED until fully distributed. */
   async releasePartial(
     escrowId: string,
     amount: string,
     recipientAddress: string,
     recipientId?: string,
   ): Promise<Payment> {
-    const escrow = await this.getOrThrow(escrowId);
-    this.assertLocked(escrow);
-    this.assertValidAmount(amount);
+    return this.withReleaseLock(
+      escrowId,
+      async (escrowRepo, paymentRepo, escrow) => {
+        this.assertValidAmount(amount);
+        // assertLocked deliberately remains before the history calculation: a
+        // full release marks RELEASED, so partial-after-full is rejected too.
+        const existingPayments = await paymentRepo.find({
+          where: { escrowId: escrow.id },
+        });
+        this.assertLocked(escrow);
+        const releasedSoFar = existingPayments.reduce(
+          (sum, p) => sum + Number(p.amount),
+          0,
+        );
+        const requested = Number(amount);
+        if (releasedSoFar + requested > Number(escrow.amount) + 1e-7) {
+          throw new BadRequestException(
+            `Partial release of ${amount} would exceed remaining escrow balance`,
+          );
+        }
 
-    const existingPayments = await this.paymentRepo.find({
-      where: { escrowId: escrow.id },
-    });
-    const releasedSoFar = existingPayments.reduce(
-      (sum, p) => sum + Number(p.amount),
-      0,
+        const result = await this.soroban.invoke('release', [
+          escrow.milestoneId ?? escrow.bountyId ?? escrow.id,
+          recipientAddress,
+          this.toStroops(amount),
+        ]);
+        const payment = await paymentRepo.save(
+          paymentRepo.create({
+            escrowId: escrow.id,
+            recipientId: recipientId ?? null,
+            recipientAddress,
+            amount,
+            asset: escrow.asset,
+            status: PaymentStatus.CONFIRMED,
+            txHash: result.txHash,
+          }),
+        );
+
+        if (releasedSoFar + requested >= Number(escrow.amount) - 1e-7) {
+          escrow.status = EscrowStatus.RELEASED;
+          escrow.releaseTxHash = result.txHash;
+          escrow.releasedAt = new Date();
+          await escrowRepo.save(escrow);
+        }
+        return payment;
+      },
     );
-    const requested = Number(amount);
-    if (releasedSoFar + requested > Number(escrow.amount) + 1e-7) {
-      throw new BadRequestException(
-        `Partial release of ${amount} would exceed remaining escrow balance`,
-      );
-    }
-
-    const result = await this.soroban.invoke('release', [
-      escrow.milestoneId ?? escrow.bountyId ?? escrow.id,
-      recipientAddress,
-      this.toStroops(amount),
-    ]);
-
-    const payment = await this.paymentRepo.save(
-      this.paymentRepo.create({
-        escrowId: escrow.id,
-        recipientId: recipientId ?? null,
-        recipientAddress,
-        amount,
-        asset: escrow.asset,
-        status: PaymentStatus.CONFIRMED,
-        txHash: result.txHash,
-      }),
-    );
-
-    if (releasedSoFar + requested >= Number(escrow.amount) - 1e-7) {
-      escrow.status = EscrowStatus.RELEASED;
-      escrow.releaseTxHash = result.txHash;
-      escrow.releasedAt = new Date();
-      await this.escrowRepo.save(escrow);
-    }
-
-    return payment;
   }
 
   /** Refunds the full escrowed amount back to the original funder. */
@@ -264,6 +267,49 @@ export class EscrowService {
 
   async findOne(id: string): Promise<Escrow> {
     return this.getOrThrow(id);
+  }
+
+  /**
+   * Serializes every release-family operation on the escrow row. The database
+   * lock is held through the Soroban call and ledger writes, preventing two
+   * concurrent requests from both passing the payment-history check.
+   * The fallback exists only for lightweight unit-test repository doubles;
+   * real TypeORM repositories always have a transaction manager.
+   */
+  private async withReleaseLock<T>(
+    escrowId: string,
+    operation: (
+      escrowRepo: Repository<Escrow>,
+      paymentRepo: Repository<Payment>,
+      escrow: Escrow,
+    ) => Promise<T>,
+  ): Promise<T> {
+    const manager = this.escrowRepo.manager;
+    if (!manager?.transaction) {
+      const escrow = await this.getOrThrow(escrowId);
+      this.assertLocked(escrow);
+      return operation(this.escrowRepo, this.paymentRepo, escrow);
+    }
+
+    return manager.transaction(async (transactionManager: EntityManager) => {
+      const escrowRepo = transactionManager.getRepository(Escrow);
+      const paymentRepo = transactionManager.getRepository(Payment);
+      const escrow = await escrowRepo.findOne({
+        where: { id: escrowId },
+        lock: { mode: 'pessimistic_write' },
+      });
+      if (!escrow) throw new NotFoundException(`Escrow ${escrowId} not found`);
+      this.assertLocked(escrow);
+      return operation(escrowRepo, paymentRepo, escrow);
+    });
+  }
+
+  private assertNoExistingPayments(escrow: Escrow, payments: Payment[]): void {
+    if (payments.length > 0) {
+      throw new BadRequestException(
+        `Escrow ${escrow.id} already has payment history and cannot be fully released`,
+      );
+    }
   }
 
   private async getOrThrow(id: string): Promise<Escrow> {
