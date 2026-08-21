@@ -182,6 +182,31 @@ Route groups: `/api/auth`, `/api/users`, `/api/github`,
 `/api/escrow`, `/api/teams`, `/api/milestones`, `/api/maintenance-pools`,
 `/api/sponsors`, `/api/reputation`, `/api/analytics`.
 
+### Caller identity on money-moving routes
+
+Fields that decide *who benefits* from a mutation are never taken from the
+request body. Two rules enforce this (#40):
+
+- **The claimant is the caller.** `POST /bounties/:id/claim` takes no body at
+  all — the contributor is read from the JWT. It used to accept a
+  `contributorId`, which let any caller claim a bounty as somebody else and
+  burn their claim, since `CLAIMED` is a one-way state transition.
+- **The funder is the caller.** `funderAddress` on `POST /bounties/:id/fund`,
+  `/escrow/fund`, `/milestones/:id/fund`, and
+  `/maintenance-pools/:id/deposit` must equal the caller's own linked
+  `stellarAddress`, checked before anything is locked. These four routes and
+  `/claim` require a bearer token for that reason.
+- **An attributed recipient must own the address being paid.** Where a request
+  supplies both `recipientId` and `recipientAddress` (`/escrow/:id/release`,
+  `/escrow/:id/split-release`, `/milestones/:id/issues/:issueId/resolve`,
+  `/maintenance-pools/:id/assign-reward`), `EscrowService` rejects the pair
+  unless the address is the one on file for that user. The check sits in the
+  service rather than the controllers so that every release path — including
+  the merge-triggered one — passes through it before reaching Soroban.
+
+Authorization on the remaining mutating routes is tracked separately; see the
+roadmap.
+
 ### Idempotency
 
 Every fund/claim/release/refund mutation — `POST /bounties/:id/fund`,
@@ -296,6 +321,10 @@ Unit tests cover critical domains including:
 - `src/github/webhook-signature.util.spec.ts` — GitHub webhook HMAC-SHA256 signature verification.
 - `src/github/github-webhooks.service.spec.ts` — webhook-to-escrow release logic.
 - `src/bounties/bounties.service.spec.ts` — bounty core management.
+- `src/bounties/bounties.controller.spec.ts` — claim/fund identity binding: the
+  claimant and funder come from the JWT, not the body (#40).
+- `src/users/users-stellar-address-binding.spec.ts` — `funderAddress` must be
+  the caller's own linked address (#40).
 - `src/sponsors/sponsors.service.spec.ts` — sponsor dashboard aggregate queries (budgetLocked/totalSpend read the Escrow/Payment ledger directly).
 - `src/database/escrow-fk-integrity.integration.spec.ts` — **integration** test against a real Postgres (requires `DATABASE_URL`, not mocked): the exactly-one-parent CHECK constraint on `escrows`, and that sponsor dashboard figures survive a parent bounty/milestone being deleted.
 

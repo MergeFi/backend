@@ -113,10 +113,12 @@ interface CachedOutcome {
  * released instead — because forcing every future retry to replay a server
  * error forever is worse than letting the retry try again cleanly.
  *
- * Caller scoping: none of the controllers this guards (bounties, escrow,
- * milestones, maintenance-pool) currently sit behind JwtAuthGuard, so there
- * is no authenticated caller to scope by yet. `resolveCallerId` falls back
- * to a shared 'anonymous' bucket per scope in that case — see its doc
+ * Caller scoping: the routes that derive identity from the caller — the four
+ * funding routes and `bounty.claim` — now sit behind JwtAuthGuard (#40), so
+ * `resolveCallerId` returns a real `req.user.userId` and their keys are scoped
+ * per user. The remaining guarded routes (release, split-release, refund,
+ * milestone resolve, pool assign-reward) are still unauthenticated and fall
+ * back to a shared 'anonymous' bucket per scope — see `resolveCallerId`'s doc
  * comment for what that does and doesn't protect against.
  *
  * Request identity: `scope` is a static string per route (e.g.
@@ -211,8 +213,8 @@ export class IdempotencyInterceptor implements NestInterceptor {
 
   /**
    * Determines the bucket a key is scoped to. `req.user.userId` is used
-   * when the route is authenticated (none of the current target routes
-   * are — see class doc comment). The 'anonymous' fallback still gives
+   * when the route is authenticated (some now are — see class doc
+   * comment). The 'anonymous' fallback still gives
    * correct duplicate-suppression and concurrency-safety for a single
    * client retrying its own request, since that's driven entirely by the
    * (key, scope, callerId) uniqueness, not by callerId being a *real*

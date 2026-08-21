@@ -16,7 +16,16 @@ export class FundEscrowDto {
   @IsSupportedEscrowAsset()
   asset: AssetType;
 
-  @ApiProperty({ description: 'Stellar public key of the funding sponsor' })
+  /**
+   * Not permissionless: this endpoint requires a JWT, and the controller
+   * asserts this equals the caller's own linked `stellarAddress` before
+   * anything is locked. Funding is a debit of the named wallet, so naming
+   * someone else's is never a legitimate request (#40).
+   */
+  @ApiProperty({
+    description:
+      "Stellar public key of the funding sponsor. Must equal the caller's own linked Stellar address.",
+  })
   @IsStellarAddress()
   funderAddress: string;
 

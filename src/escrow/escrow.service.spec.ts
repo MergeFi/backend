@@ -3,14 +3,16 @@ import { getRepositoryToken } from '@nestjs/typeorm';
 import { BadRequestException } from '@nestjs/common';
 import { EscrowService } from './escrow.service';
 import { SorobanClientService } from './soroban-client.service';
+import { UsersService } from '../users/users.service';
 import { Escrow, Payment } from '../common/entities';
 import { AssetType, EscrowStatus } from '../common/enums';
 
 describe('EscrowService', () => {
   let service: EscrowService;
   let escrowRepo: { create: jest.Mock; save: jest.Mock; findOne: jest.Mock };
-  let paymentRepo: { create: jest.Mock; save: jest.Mock };
+  let paymentRepo: { create: jest.Mock; save: jest.Mock; find: jest.Mock };
   let soroban: { invoke: jest.Mock };
+  let usersService: { findRawOrNull: jest.Mock };
 
   beforeEach(async () => {
     escrowRepo = {
@@ -24,6 +26,8 @@ describe('EscrowService', () => {
         ...data,
       })),
       save: jest.fn((data: Partial<Payment>) => Promise.resolve(data)),
+      // releasePartial() sums prior payments to work out the remaining balance.
+      find: jest.fn().mockResolvedValue([]),
     };
     soroban = {
       invoke: jest.fn().mockResolvedValue({
@@ -33,6 +37,10 @@ describe('EscrowService', () => {
         status: 'SUCCESS',
       }),
     };
+    // Backs the recipientId/recipientAddress cross-check (#40). Defaults to
+    // "no such user", so any test that passes a recipientId has to say what
+    // that user's address is on purpose.
+    usersService = { findRawOrNull: jest.fn().mockResolvedValue(null) };
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
@@ -40,6 +48,7 @@ describe('EscrowService', () => {
         { provide: getRepositoryToken(Escrow), useValue: escrowRepo },
         { provide: getRepositoryToken(Payment), useValue: paymentRepo },
         { provide: SorobanClientService, useValue: soroban },
+        { provide: UsersService, useValue: usersService },
       ],
     }).compile();
 
@@ -205,6 +214,10 @@ describe('EscrowService', () => {
         asset: AssetType.USDC,
         bountyId: 'bounty-3',
       });
+      usersService.findRawOrNull.mockResolvedValue({
+        id: 'user-1',
+        stellarAddress: 'GRECIPIENT',
+      });
 
       const escrow = await service.release('escrow-3', 'GRECIPIENT', 'user-1');
 
@@ -300,6 +313,159 @@ describe('EscrowService', () => {
       const splitArgs = invokeCall[1] as unknown[];
       const bps = splitArgs[2] as number[];
       expect(bps.reduce((a, b) => a + b, 0)).toBe(10_000);
+    });
+  });
+
+  /**
+   * #40: `recipientAddress` decides who the chain pays, `recipientId` decides
+   * who the Payment row credits, and nothing tied them together — so a caller
+   * could pay one address while attributing the payment to someone else.
+   *
+   * These exercise the check through the public release methods rather than
+   * calling the private helper directly, because the property that matters is
+   * that every release path actually routes through it before invoking Soroban.
+   * A test of the helper alone would still pass if the call site were deleted.
+   */
+  describe('recipientId/recipientAddress cross-check (#40)', () => {
+    // A factory, not a shared constant: release() mutates the escrow it is
+    // handed, so a shared object would leak RELEASED into the next test.
+    const lockedEscrow = () => ({
+      id: 'escrow-40',
+      status: EscrowStatus.LOCKED,
+      amount: '100',
+      asset: AssetType.USDC,
+      bountyId: 'bounty-40',
+    });
+
+    beforeEach(() => {
+      escrowRepo.findOne.mockImplementation(() =>
+        Promise.resolve(lockedEscrow()),
+      );
+      usersService.findRawOrNull.mockResolvedValue({
+        id: 'user-b',
+        stellarAddress: 'GABCONFILE',
+      });
+    });
+
+    it('release() rejects a mismatched pair before any Soroban call', async () => {
+      await expect(
+        service.release('escrow-40', 'GDIFFERENT', 'user-b'),
+      ).rejects.toThrow(BadRequestException);
+
+      expect(soroban.invoke).not.toHaveBeenCalled();
+      expect(paymentRepo.save).not.toHaveBeenCalled();
+      expect(escrowRepo.save).not.toHaveBeenCalled();
+    });
+
+    it('release() names neither address in the rejection message', async () => {
+      // The message must not become an oracle for what a given user id's
+      // address actually is.
+      await expect(
+        service.release('escrow-40', 'GDIFFERENT', 'user-b'),
+      ).rejects.toThrow(
+        'recipientAddress does not match the address on file for recipientId',
+      );
+    });
+
+    it('release() accepts a matching pair and reaches the chain', async () => {
+      const escrow = await service.release('escrow-40', 'GABCONFILE', 'user-b');
+
+      expect(soroban.invoke).toHaveBeenCalledWith(
+        'release',
+        expect.arrayContaining(['GABCONFILE']),
+      );
+      expect(escrow.status).toBe(EscrowStatus.RELEASED);
+      expect(paymentRepo.save).toHaveBeenCalledWith(
+        expect.objectContaining({
+          recipientId: 'user-b',
+          recipientAddress: 'GABCONFILE',
+        }),
+      );
+    });
+
+    it('release() still allows an unattributed payout (no recipientId)', async () => {
+      await service.release('escrow-40', 'GANYADDRESS');
+
+      expect(usersService.findRawOrNull).not.toHaveBeenCalled();
+      expect(soroban.invoke).toHaveBeenCalled();
+    });
+
+    it('release() rejects a recipientId that names no user', async () => {
+      usersService.findRawOrNull.mockResolvedValue(null);
+
+      await expect(
+        service.release('escrow-40', 'GANYADDRESS', 'ghost-user'),
+      ).rejects.toThrow(BadRequestException);
+      expect(soroban.invoke).not.toHaveBeenCalled();
+    });
+
+    it('release() rejects a recipient whose record has no linked address', async () => {
+      // Otherwise an unlinked user's null address would match any string the
+      // caller supplied.
+      usersService.findRawOrNull.mockResolvedValue({
+        id: 'user-b',
+        stellarAddress: null,
+      });
+
+      await expect(
+        service.release('escrow-40', 'GANYADDRESS', 'user-b'),
+      ).rejects.toThrow(BadRequestException);
+      expect(soroban.invoke).not.toHaveBeenCalled();
+    });
+
+    it('splitRelease() rejects when any one recipient in the split mismatches', async () => {
+      usersService.findRawOrNull.mockImplementation((id: string) =>
+        Promise.resolve(
+          id === 'user-good'
+            ? { id, stellarAddress: 'GGOOD' }
+            : { id, stellarAddress: 'GONFILE' },
+        ),
+      );
+
+      await expect(
+        service.splitRelease('escrow-40', [
+          {
+            recipientAddress: 'GGOOD',
+            recipientId: 'user-good',
+            percentage: 50,
+          },
+          {
+            recipientAddress: 'GATTACKER',
+            recipientId: 'user-bad',
+            percentage: 50,
+          },
+        ]),
+      ).rejects.toThrow(BadRequestException);
+
+      expect(soroban.invoke).not.toHaveBeenCalled();
+      expect(paymentRepo.save).not.toHaveBeenCalled();
+    });
+
+    it('splitRelease() accepts a split whose every attributed pair matches', async () => {
+      usersService.findRawOrNull.mockImplementation((id: string) =>
+        Promise.resolve({
+          id,
+          stellarAddress: id === 'user-1' ? 'GONE' : 'GTWO',
+        }),
+      );
+
+      const payments = await service.splitRelease('escrow-40', [
+        { recipientAddress: 'GONE', recipientId: 'user-1', percentage: 50 },
+        { recipientAddress: 'GTWO', recipientId: 'user-2', percentage: 50 },
+      ]);
+
+      expect(payments).toHaveLength(2);
+      expect(soroban.invoke).toHaveBeenCalled();
+    });
+
+    it('releasePartial() rejects a mismatched pair before any Soroban call', async () => {
+      // Reached by the milestone-resolve and pool-assign-reward routes, which
+      // accept the same pair from the client.
+      await expect(
+        service.releasePartial('escrow-40', '10', 'GDIFFERENT', 'user-b'),
+      ).rejects.toThrow(BadRequestException);
+
+      expect(soroban.invoke).not.toHaveBeenCalled();
     });
   });
 });

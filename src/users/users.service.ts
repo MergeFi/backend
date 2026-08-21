@@ -1,4 +1,8 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import {
+  ForbiddenException,
+  Injectable,
+  NotFoundException,
+} from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { GithubAccount, User } from '../common/entities';
@@ -34,9 +38,40 @@ export class UsersService {
     return user;
   }
 
+  /**
+   * Like {@link findOneRaw} but yields null for an unknown id instead of
+   * throwing. Validation callers need this: "no such user" and "user exists but
+   * the address doesn't match" must be answerable without a 404 escaping as the
+   * response to what is really a bad-input problem.
+   */
+  async findRawOrNull(id: string): Promise<User | null> {
+    return this.userRepo.findOne({ where: { id } });
+  }
+
   async findById(id: string): Promise<PublicUserDto> {
     const user = await this.findOneRaw(id);
     return toPublicUser(user);
+  }
+
+  /**
+   * Asserts that `address` is the Stellar address currently linked to `userId`.
+   *
+   * Used on funding endpoints, where the caller is the party whose wallet is
+   * being debited, so the address in the body is only ever allowed to be their
+   * own. A user with no linked address cannot fund at all — there is nothing to
+   * match against, and treating "unlinked" as "matches anything" would reopen
+   * the hole this closes.
+   */
+  async assertOwnsStellarAddress(
+    userId: string,
+    address: string,
+  ): Promise<void> {
+    const user = await this.findRawOrNull(userId);
+    if (!user?.stellarAddress || user.stellarAddress !== address) {
+      throw new ForbiddenException(
+        'funderAddress must match your linked Stellar address',
+      );
+    }
   }
 
   async findByUsername(username: string): Promise<User | null> {
