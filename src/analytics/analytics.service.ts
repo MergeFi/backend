@@ -5,8 +5,10 @@ import {
   Bounty,
   Issue,
   Repository as RepositoryEntity,
+  Payment,
 } from '../common/entities';
 import { BountyStatus } from '../common/enums';
+import { calculateContributorEarnings } from '../common/utils/earnings.util';
 
 export interface ContributorAnalytics {
   lifetimeEarnings: number;
@@ -26,6 +28,7 @@ export class AnalyticsService {
     @InjectRepository(Issue) private readonly issueRepo: Repository<Issue>,
     @InjectRepository(RepositoryEntity)
     private readonly repositoryRepo: Repository<RepositoryEntity>,
+    @InjectRepository(Payment) private readonly paymentRepo: Repository<Payment>,
   ) {}
 
   async forContributor(userId: string): Promise<ContributorAnalytics> {
@@ -37,7 +40,8 @@ export class AnalyticsService {
       [BountyStatus.MERGED, BountyStatus.PAID].includes(b.status),
     );
 
-    const lifetimeEarnings = paid.reduce((sum, b) => sum + Number(b.amount), 0);
+    const { totalEarnings: lifetimeEarnings, earningsBySponsor: clientTotals } =
+      await calculateContributorEarnings(this.paymentRepo, userId);
     const mergeRate =
       claimed.length > 0 ? (merged.length / claimed.length) * 100 : 0;
 
@@ -75,14 +79,6 @@ export class AnalyticsService {
       .sort(([a], [b]) => a.localeCompare(b))
       .map(([date, count]) => ({ date, count }));
 
-    const clientTotals = new Map<string, number>();
-    for (const bounty of paid) {
-      if (!bounty.sponsorId) continue;
-      clientTotals.set(
-        bounty.sponsorId,
-        (clientTotals.get(bounty.sponsorId) ?? 0) + Number(bounty.amount),
-      );
-    }
     const topClients = [...clientTotals.entries()]
       .map(([sponsorId, totalPaid]) => ({ sponsorId, totalPaid }))
       .sort((a, b) => b.totalPaid - a.totalPaid)
