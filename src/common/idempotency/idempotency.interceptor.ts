@@ -113,11 +113,11 @@ interface CachedOutcome {
  * released instead — because forcing every future retry to replay a server
  * error forever is worse than letting the retry try again cleanly.
  *
- * Caller scoping: none of the controllers this guards (bounties, escrow,
- * milestones, maintenance-pool) currently sit behind JwtAuthGuard, so there
- * is no authenticated caller to scope by yet. `resolveCallerId` falls back
- * to a shared 'anonymous' bucket per scope in that case — see its doc
- * comment for what that does and doesn't protect against.
+  * Caller scoping: none of the controllers this guards (bounties, escrow,
+  * milestones, maintenance-pool) currently sit behind JwtAuthGuard, so there
+  * is no authenticated caller to scope by yet. `resolveCallerId` falls back
+  * to a per-scope fingerprint of (IP + User-Agent) in that case to reduce
+  * the collision surface area — see its doc comment for details.
  *
  * Request identity: `scope` is a static string per route (e.g.
  * 'escrow.release'), the same for every request to that route regardless
@@ -211,19 +211,24 @@ export class IdempotencyInterceptor implements NestInterceptor {
 
   /**
    * Determines the bucket a key is scoped to. `req.user.userId` is used
-   * when the route is authenticated (none of the current target routes
-   * are — see class doc comment). The 'anonymous' fallback still gives
-   * correct duplicate-suppression and concurrency-safety for a single
-   * client retrying its own request, since that's driven entirely by the
-   * (key, scope, callerId) uniqueness, not by callerId being a *real*
-   * per-user identity — it just means two different anonymous callers
-   * *could* collide if they both independently generated the same UUID
-   * for the same scope, which is the accepted, documented trade-off until
-   * these routes require auth.
+   * when the route is authenticated. If the route is unauthenticated,
+   * it falls back to a fingerprint derived from the client's IP and
+   * User-Agent to reduce the surface area for collision compared to
+   * a fully shared anonymous bucket.
    */
   private resolveCallerId(request: Request): string {
     const user = (request as Request & { user?: { userId?: string } }).user;
-    return user?.userId ?? 'anonymous';
+    if (user?.userId) {
+      return user.userId;
+    }
+
+    // Fallback: fingerprint based on IP and User-Agent to reduce collision surface
+    // compared to a fully shared anonymous bucket.
+    const ip = request.ip || 'unknown-ip';
+    const userAgent = request.headers['user-agent'] || 'unknown-ua';
+    return `anonymous:${createHash('sha256')
+      .update(`${ip}:${userAgent}`)
+      .digest('hex')}`;
   }
 
   /**
