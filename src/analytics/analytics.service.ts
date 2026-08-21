@@ -4,9 +4,11 @@ import { Repository } from 'typeorm';
 import {
   Bounty,
   Issue,
+  Payment,
   Repository as RepositoryEntity,
 } from '../common/entities';
-import { BountyStatus } from '../common/enums';
+import { BountyStatus, PaymentStatus } from '../common/enums';
+import { computeContributorTotalEarnings } from '../reputation/contributor-earnings.util';
 
 export interface ContributorAnalytics {
   lifetimeEarnings: number;
@@ -24,6 +26,7 @@ export class AnalyticsService {
   constructor(
     @InjectRepository(Bounty) private readonly bountyRepo: Repository<Bounty>,
     @InjectRepository(Issue) private readonly issueRepo: Repository<Issue>,
+    @InjectRepository(Payment) private readonly paymentRepo: Repository<Payment>,
     @InjectRepository(RepositoryEntity)
     private readonly repositoryRepo: Repository<RepositoryEntity>,
   ) {}
@@ -37,7 +40,10 @@ export class AnalyticsService {
       [BountyStatus.MERGED, BountyStatus.PAID].includes(b.status),
     );
 
-    const lifetimeEarnings = paid.reduce((sum, b) => sum + Number(b.amount), 0);
+    const lifetimeEarnings = await computeContributorTotalEarnings(
+      this.paymentRepo,
+      userId,
+    );
     const mergeRate =
       claimed.length > 0 ? (merged.length / claimed.length) * 100 : 0;
 
@@ -75,16 +81,23 @@ export class AnalyticsService {
       .sort(([a], [b]) => a.localeCompare(b))
       .map(([date, count]) => ({ date, count }));
 
-    const clientTotals = new Map<string, number>();
-    for (const bounty of paid) {
-      if (!bounty.sponsorId) continue;
-      clientTotals.set(
-        bounty.sponsorId,
-        (clientTotals.get(bounty.sponsorId) ?? 0) + Number(bounty.amount),
-      );
-    }
-    const topClients = [...clientTotals.entries()]
-      .map(([sponsorId, totalPaid]) => ({ sponsorId, totalPaid }))
+    // Compute topClients by summing actual confirmed payments to this contributor by sponsor
+    const clientPayments = await this.paymentRepo
+      .createQueryBuilder('payment')
+      .innerJoin('payment.escrow', 'escrow')
+      .select('escrow.sponsorId', 'sponsorId')
+      .addSelect('COALESCE(SUM(payment.amount), 0)', 'totalPaid')
+      .where('payment.recipientId = :userId', { userId })
+      .andWhere('payment.status = :status', { status: PaymentStatus.CONFIRMED })
+      .andWhere('escrow.sponsorId IS NOT NULL')
+      .groupBy('escrow.sponsorId')
+      .getRawMany<{ sponsorId: string; totalPaid: string }>();
+
+    const topClients = clientPayments
+      .map((row) => ({
+        sponsorId: row.sponsorId,
+        totalPaid: Number(row.totalPaid),
+      }))
       .sort((a, b) => b.totalPaid - a.totalPaid)
       .slice(0, 10);
 
