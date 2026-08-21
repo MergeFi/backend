@@ -1,4 +1,10 @@
-import { Inject, Injectable, Logger, NotFoundException } from '@nestjs/common';
+import {
+  ForbiddenException,
+  Inject,
+  Injectable,
+  Logger,
+  NotFoundException,
+} from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Octokit } from '@octokit/rest';
 import { Repository as TypeOrmRepository } from 'typeorm';
@@ -222,6 +228,15 @@ export class GithubSyncService {
     githubRepoId: string,
   ): Promise<Repository | null> {
     return this.repositoryRepo.findOne({ where: { githubRepoId } });
+  }
+
+  async findRepositoryByOwnerAndName(
+    owner: string,
+    name: string,
+  ): Promise<Repository | null> {
+    return this.repositoryRepo.findOne({
+      where: { owner, name },
+    });
   }
 
   /** Fetches a single PR's merge status directly from the API (used by webhook fallback verification). */
