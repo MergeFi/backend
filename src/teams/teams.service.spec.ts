@@ -54,7 +54,11 @@ describe('TeamsService', () => {
       expect(teamRepo.save).not.toHaveBeenCalled();
     });
 
-    it('saves the team and one split per member when percentages sum to 100', async () => {
+    it('saves the team and splits in batch when percentages sum to 100', async () => {
+      splitRepo.save.mockResolvedValue([
+        { id: 'split-u1', teamId: 't1', userId: 'u1', role: 'frontend', percentage: '60.00' },
+        { id: 'split-u2', teamId: 't1', userId: 'u2', role: null, percentage: '40.00' },
+      ]);
       const team = await service.create({
         name: 'Team A',
         createdById: 'creator-1',
@@ -67,23 +71,21 @@ describe('TeamsService', () => {
       expect(teamRepo.save).toHaveBeenCalledWith(
         expect.objectContaining({ name: 'Team A', createdById: 'creator-1' }),
       );
-      expect(splitRepo.save).toHaveBeenCalledTimes(2);
-      expect(splitRepo.save).toHaveBeenCalledWith(
+      expect(splitRepo.save).toHaveBeenCalledTimes(1);
+      expect(splitRepo.save).toHaveBeenCalledWith([
         expect.objectContaining({
           teamId: 't1',
           userId: 'u1',
           role: 'frontend',
           percentage: '60.00',
         }),
-      );
-      expect(splitRepo.save).toHaveBeenCalledWith(
         expect.objectContaining({
           teamId: 't1',
           userId: 'u2',
           role: null,
           percentage: '40.00',
         }),
-      );
+      ]);
       expect(team.splits).toHaveLength(2);
     });
 

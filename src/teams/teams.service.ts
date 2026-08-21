@@ -24,18 +24,15 @@ export class TeamsService {
       }),
     );
 
-    team.splits = await Promise.all(
-      dto.members.map((m) =>
-        this.splitRepo.save(
-          this.splitRepo.create({
-            teamId: team.id,
-            userId: m.userId,
-            role: m.role ?? null,
-            percentage: m.percentage.toFixed(2),
-          }),
-        ),
-      ),
+    const splitEntities = dto.members.map((m) =>
+      this.splitRepo.create({
+        teamId: team.id,
+        userId: m.userId,
+        role: m.role ?? null,
+        percentage: m.percentage.toFixed(2),
+      }),
     );
+    team.splits = await this.splitRepo.save(splitEntities);
 
     return team;
   }
