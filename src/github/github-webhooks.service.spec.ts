@@ -83,6 +83,23 @@ describe('GithubWebhooksService', () => {
     expect(bountiesService.markMergedAndRelease).not.toHaveBeenCalled();
   });
 
+  it.each(['push', 'ping', 'unknown_event'])(
+    'ignores a verified %s event when no handler is registered',
+    async (eventType) => {
+      const event = await service.handleEvent(
+        eventType,
+        'delivery-unhandled',
+        {},
+        true,
+      );
+
+      expect(event.status).toBe(WebhookEventStatus.IGNORED);
+      expect(event.processedAt).toBeUndefined();
+      expect(syncService.findRepositoryByGithubId).not.toHaveBeenCalled();
+      expect(bountiesService.markMergedAndRelease).not.toHaveBeenCalled();
+    },
+  );
+
   it('processes a merged pull_request event and releases the linked bounty', async () => {
     issueRepo.findOne.mockResolvedValue({
       id: 'issue-1',
@@ -279,6 +296,7 @@ describe('GithubWebhooksService', () => {
         payload.issue,
       );
       expect(event.status).toBe(WebhookEventStatus.PROCESSED);
+      expect(event.processedAt).toBeInstanceOf(Date);
     });
 
     it('ignores events for a repository this app is not tracking, without erroring', async () => {

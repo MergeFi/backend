@@ -99,14 +99,14 @@ export class GithubWebhooksService {
           payload as unknown as GithubPullRequestPayload,
         );
         this.applyPullRequestOutcomes(event, outcomes);
-      } else {
-        if (eventType === 'issues') {
-          await this.handleIssueEvent(
-            payload as unknown as GithubIssuesEventPayload,
-          );
-        }
+      } else if (eventType === 'issues') {
+        await this.handleIssueEvent(
+          payload as unknown as GithubIssuesEventPayload,
+        );
         event.status = WebhookEventStatus.PROCESSED;
         event.processedAt = new Date();
+      } else {
+        event.status = WebhookEventStatus.IGNORED;
       }
     } catch (err) {
       event.status = WebhookEventStatus.FAILED;
