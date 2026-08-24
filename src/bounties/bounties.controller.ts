@@ -3,7 +3,7 @@ import { ApiTags } from '@nestjs/swagger';
 import { BountiesService } from './bounties.service';
 import { CreateBountyDto } from './dto/create-bounty.dto';
 import { ClaimBountyDto } from './dto/claim-bounty.dto';
-import { BountyStatus } from '../common/enums';
+import { ListBountiesQueryDto } from './dto/list-bounties-query.dto';
 import { Idempotent } from '../common/idempotency/idempotent.decorator';
 import { IsStellarAddress } from '../common/validators/stellar-address.validator';
 
@@ -23,8 +23,8 @@ export class BountiesController {
   }
 
   @Get()
-  list(@Query('status') status?: BountyStatus) {
-    return this.bountiesService.list(status);
+  list(@Query() query?: ListBountiesQueryDto) {
+    return this.bountiesService.list(query);
   }
 
   @Get(':id')
