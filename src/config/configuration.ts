@@ -1,6 +1,7 @@
 export interface AppConfig {
   env: string;
   port: number;
+  logLevel: string;
   appUrl: string;
   frontendUrl: string;
   database: {
@@ -36,6 +37,7 @@ export interface AppConfig {
 export default (): AppConfig => ({
   env: process.env.NODE_ENV ?? 'development',
   port: parseInt(process.env.PORT ?? '3000', 10),
+  logLevel: process.env.LOG_LEVEL ?? 'debug',
   appUrl: process.env.APP_URL ?? 'http://localhost:3000',
   frontendUrl: process.env.FRONTEND_URL ?? 'http://localhost:3001',
   database: {
