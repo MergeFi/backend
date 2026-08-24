@@ -6,6 +6,7 @@ import { BountyStatus } from '../common/enums';
 import { assertTransition } from './bounty-state-machine';
 import { EscrowService } from '../escrow/escrow.service';
 import { CreateBountyDto } from './dto/create-bounty.dto';
+import { ListBountiesQueryDto } from './dto/list-bounties-query.dto';
 
 @Injectable()
 export class BountiesService {
@@ -171,7 +172,42 @@ export class BountiesService {
     return overdue.length;
   }
 
-  async list(status?: BountyStatus): Promise<Bounty[]> {
-    return this.bountyRepo.find({ where: status ? { status } : {} });
+  async list(filter?: ListBountiesQueryDto | BountyStatus): Promise<Bounty[]> {
+    if (!filter) {
+      return this.bountyRepo.find();
+    }
+
+    if (typeof filter === 'string') {
+      return this.bountyRepo.find({ where: { status: filter } });
+    }
+
+    const { status, difficulty, asset, language, repositoryId } = filter;
+
+    const qb = this.bountyRepo.createQueryBuilder('bounty');
+
+    if (status) {
+      qb.andWhere('bounty.status = :status', { status });
+    }
+
+    if (difficulty) {
+      qb.andWhere('bounty.difficulty = :difficulty', { difficulty });
+    }
+
+    if (asset) {
+      qb.andWhere('bounty.asset = :asset', { asset });
+    }
+
+    if (language || repositoryId) {
+      qb.innerJoin('bounty.issue', 'issue');
+      if (repositoryId) {
+        qb.andWhere('issue.repositoryId = :repositoryId', { repositoryId });
+      }
+      if (language) {
+        qb.innerJoin('issue.repository', 'repository');
+        qb.andWhere('repository.primaryLanguage = :language', { language });
+      }
+    }
+
+    return qb.getMany();
   }
 }

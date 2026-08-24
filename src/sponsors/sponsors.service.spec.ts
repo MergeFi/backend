@@ -2,7 +2,7 @@ import { Test, TestingModule } from '@nestjs/testing';
 import { getRepositoryToken } from '@nestjs/typeorm';
 import { SponsorsService } from './sponsors.service';
 import { Bounty, Escrow, Milestone, Payment } from '../common/entities';
-import { EscrowStatus, PaymentStatus } from '../common/enums';
+import { EscrowStatus, MilestoneStatus, PaymentStatus } from '../common/enums';
 
 /**
  * Minimal fluent mock of TypeORM's QueryBuilder: every chainable method
@@ -47,6 +47,66 @@ describe('SponsorsService', () => {
     }).compile();
 
     service = module.get(SponsorsService);
+  });
+
+  describe('activeBounties', () => {
+    it('queries bounties by sponsorId excluding terminal statuses', async () => {
+      const mockBounties = [{ id: 'b1', sponsorId: 'sponsor-1' }];
+      const qb = createMockQueryBuilder({ many: mockBounties });
+      bountyRepo.createQueryBuilder.mockReturnValue(qb);
+
+      const res = await service.activeBounties('sponsor-1');
+
+      expect(bountyRepo.createQueryBuilder).toHaveBeenCalledWith('bounty');
+      expect(qb.where).toHaveBeenCalledWith('bounty.sponsorId = :sponsorId', {
+        sponsorId: 'sponsor-1',
+      });
+      expect(qb.andWhere).toHaveBeenCalledWith(
+        'bounty.status NOT IN (:...terminal)',
+        {
+          terminal: ['paid', 'refunded', 'expired'],
+        },
+      );
+      expect(res).toEqual(mockBounties);
+    });
+  });
+
+  describe('activeMilestones', () => {
+    it('finds milestones with FUNDED or IN_PROGRESS status for sponsor', async () => {
+      const mockMilestones = [
+        { id: 'm1', sponsorId: 'sponsor-1', status: MilestoneStatus.FUNDED },
+      ];
+      milestoneRepo.find.mockResolvedValue(mockMilestones);
+
+      const res = await service.activeMilestones('sponsor-1');
+
+      expect(milestoneRepo.find).toHaveBeenCalledWith({
+        where: [
+          { sponsorId: 'sponsor-1', status: MilestoneStatus.FUNDED },
+          { sponsorId: 'sponsor-1', status: MilestoneStatus.IN_PROGRESS },
+        ],
+      });
+      expect(res).toEqual(mockMilestones);
+    });
+  });
+
+  describe('milestoneProgress', () => {
+    it('calculates progress ratio and guards against division by zero', async () => {
+      milestoneRepo.find.mockResolvedValue([
+        { id: 'm1', title: 'M1', budget: '1000', distributed: '500' },
+        { id: 'm2', title: 'M2', budget: '0', distributed: '0' },
+      ]);
+
+      const progress = await service.milestoneProgress('sponsor-1');
+
+      expect(milestoneRepo.find).toHaveBeenCalledWith({
+        where: { sponsorId: 'sponsor-1' },
+      });
+      expect(progress).toEqual([
+        { milestoneId: 'm1', title: 'M1', progress: 0.5 },
+        { milestoneId: 'm2', title: 'M2', progress: 0 },
+      ]);
+    });
   });
 
   describe('budgetLocked', () => {
@@ -122,10 +182,6 @@ describe('SponsorsService', () => {
 
       await service.dashboard('sponsor-1');
 
-      // recentPayments's join must key off escrow.sponsorId so it still
-      // finds payments after the parent bounty/milestone is deleted, and so
-      // milestone-funded payments (which never had a `bounty` at all) show
-      // up too — see #27.
       expect(paymentsQb.innerJoin).toHaveBeenCalledWith(
         'payment.escrow',
         'escrow',
