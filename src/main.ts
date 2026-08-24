@@ -1,3 +1,24 @@
+
+import { LogLevel } from '@nestjs/common';
+
+function getLogLevels(level?: string): LogLevel[] {
+  const normalized = (level ?? 'debug').toLowerCase();
+  switch (normalized) {
+    case 'error':
+      return ['error'];
+    case 'warn':
+      return ['error', 'warn'];
+    case 'log':
+    case 'info':
+      return ['error', 'warn', 'log'];
+    case 'verbose':
+      return ['error', 'warn', 'log', 'verbose'];
+    case 'debug':
+    default:
+      return ['error', 'warn', 'log', 'verbose', 'debug'];
+  }
+}
+
 import { NestFactory } from '@nestjs/core';
 import { ConfigService } from '@nestjs/config';
 import { ValidationPipe } from '@nestjs/common';
@@ -12,7 +33,10 @@ const INSECURE_DEFAULT_JWT_SECRET = 'insecure-dev-secret';
 async function bootstrap() {
   // rawBody: true preserves the raw request buffer on req.rawBody, which the
   // GitHub webhooks controller needs to verify the HMAC-SHA256 signature.
-  const app = await NestFactory.create(AppModule, { rawBody: true });
+  const app = await NestFactory.create(AppModule, {
+    rawBody: true,
+    logger: getLogLevels(process.env.LOG_LEVEL),
+  });
 
   const configService = app.get(ConfigService<AppConfig, true>);
 
