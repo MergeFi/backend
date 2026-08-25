@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Param, Post, Query } from '@nestjs/common';
+import { Body, Controller, Get, Param, ParseEnumPipe, Post, Query } from '@nestjs/common';
 import { ApiTags } from '@nestjs/swagger';
 import { BountiesService } from './bounties.service';
 import { CreateBountyDto } from './dto/create-bounty.dto';
@@ -17,13 +17,14 @@ class FundBountyDto {
 export class BountiesController {
   constructor(private readonly bountiesService: BountiesService) {}
 
+  @Idempotent('bounty.create')
   @Post()
   create(@Body() dto: CreateBountyDto) {
     return this.bountiesService.create(dto);
   }
 
   @Get()
-  list(@Query('status') status?: BountyStatus) {
+  list(@Query('status', new ParseEnumPipe(BountyStatus, { optional: true })) status?: BountyStatus) {
     return this.bountiesService.list(status);
   }
 
