@@ -1,6 +1,6 @@
 import { NestFactory } from '@nestjs/core';
 import { ConfigService } from '@nestjs/config';
-import { ValidationPipe } from '@nestjs/common';
+import { ValidationPipe, LoggerService, Logger } from '@nestjs/common';
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
 import helmet from 'helmet';
 import { AppModule } from './app.module';
@@ -8,6 +8,18 @@ import { AppConfig } from './config/configuration';
 import { GlobalExceptionFilter } from './common/filters/global-exception.filter';
 
 const INSECURE_DEFAULT_JWT_SECRET = 'insecure-dev-secret';
+
+const LOG_LEVEL_MAP: Record<string, string[]> = {
+  error: ['error'],
+  warn: ['error', 'warn'],
+  log: ['error', 'warn', 'log'],
+  debug: ['error', 'warn', 'log', 'debug'],
+  verbose: ['error', 'warn', 'log', 'debug', 'verbose'],
+};
+
+function resolveLogLevels(level: string): string[] {
+  return LOG_LEVEL_MAP[level.toLowerCase()] ?? LOG_LEVEL_MAP.log;
+}
 
 async function bootstrap() {
   // rawBody: true preserves the raw request buffer on req.rawBody, which the
@@ -17,6 +29,8 @@ async function bootstrap() {
   const configService = app.get(ConfigService<AppConfig, true>);
 
   const env = configService.get('env', { infer: true });
+  const logLevel = configService.get('logLevel', { infer: true });
+  app.useLogger(resolveLogLevels(logLevel));
   const jwtSecret = configService.get('jwt', { infer: true }).secret;
   if (env === 'production' && jwtSecret === INSECURE_DEFAULT_JWT_SECRET) {
     throw new Error(
