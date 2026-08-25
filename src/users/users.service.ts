@@ -1,112 +1,75 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
-import { GithubAccount, User } from '../common/entities';
-import { UserRole } from '../common/enums';
-import { PublicUserDto } from './dto/public-user.dto';
-import { toPublicUser } from './users.mapper';
+import { User } from '../common/entities/user.entity';
 
-export interface UpsertFromGithubInput {
-  githubId: string;
-  login: string;
-  email: string | null;
-  displayName: string | null;
-  avatarUrl: string | null;
-  profileUrl: string | null;
-  accessToken: string;
-  refreshToken?: string | null;
+interface PaginationOptions {
+  limit?: number;
+  offset?: number;
 }
+
+interface PaginatedResult<T> {
+  data: T[];
+  total: number;
+  limit: number;
+  offset: number;
+  hasMore: boolean;
+}
+
+const DEFAULT_LIMIT = 50;
+const MAX_LIMIT = 100;
 
 @Injectable()
 export class UsersService {
   constructor(
-    @InjectRepository(User) private readonly userRepo: Repository<User>,
-    @InjectRepository(GithubAccount)
-    private readonly githubAccountRepo: Repository<GithubAccount>,
+    @InjectRepository(User)
+    private readonly userRepo: Repository<User>,
   ) {}
 
-  async findOneRaw(id: string): Promise<User> {
-    const user = await this.userRepo.findOne({
-      where: { id },
-      relations: { githubAccount: true },
-    });
-    if (!user) throw new NotFoundException(`User ${id} not found`);
-    return user;
-  }
-
-  async findById(id: string): Promise<PublicUserDto> {
-    const user = await this.findOneRaw(id);
-    return toPublicUser(user);
-  }
-
-  async findByUsername(username: string): Promise<User | null> {
-    return this.userRepo.findOne({ where: { username } });
-  }
-
-  /** Finds or creates a User + GithubAccount from a completed OAuth handshake. */
-  async upsertFromGithub(input: UpsertFromGithubInput): Promise<User> {
-    let account = await this.githubAccountRepo.findOne({
-      where: { githubId: input.githubId },
-      relations: { user: true },
-    });
-
-    if (account) {
-      account.accessToken = input.accessToken;
-      account.refreshToken = input.refreshToken ?? null;
-      account.avatarUrl = input.avatarUrl;
-      account.profileUrl = input.profileUrl;
-      await this.githubAccountRepo.save(account);
-      return this.findOneRaw(account.userId);
-    }
-
-    let user = await this.userRepo.findOne({
-      where: { username: input.login },
-    });
-    if (!user) {
-      user = this.userRepo.create({
-        username: input.login,
-        email: input.email,
-        displayName: input.displayName,
-        avatarUrl: input.avatarUrl,
-        roles: [UserRole.CONTRIBUTOR],
-      });
-      user = await this.userRepo.save(user);
-    }
-
-    account = this.githubAccountRepo.create({
-      githubId: input.githubId,
-      login: input.login,
-      avatarUrl: input.avatarUrl,
-      profileUrl: input.profileUrl,
-      accessToken: input.accessToken,
-      refreshToken: input.refreshToken ?? null,
-      userId: user.id,
-    });
-    await this.githubAccountRepo.save(account);
-
-    return this.findOneRaw(user.id);
-  }
-
-  async addRole(userId: string, role: UserRole): Promise<User> {
-    const user = await this.findOneRaw(userId);
-    if (!user.roles.includes(role)) {
-      user.roles = [...user.roles, role];
-      await this.userRepo.save(user);
-    }
-    return user;
-  }
-
-  async setStellarAddress(
-    userId: string,
-    stellarAddress: string,
-  ): Promise<User> {
-    const user = await this.findOneRaw(userId);
-    user.stellarAddress = stellarAddress;
+  async create(data: Partial<User>): Promise<User> {
+    const user = this.userRepo.create(data);
     return this.userRepo.save(user);
   }
 
-  async list(): Promise<PublicUserDto[]> {
-    const users = await this.userRepo.find();
-    return users.map(toPublicUser);
+  async findOne(id: string): Promise<User> {
+    const user = await this.userRepo.findOne({ where: { id } });
+    if (!user) {
+      throw new NotFoundException(`User with id ${id} not found`);
+    }
+    return user;
+  }
+
+  async findByGithubId(githubId: string): Promise<User | null> {
+    return this.userRepo.findOne({ where: { githubId } });
+  }
+
+  async list(pagination?: PaginationOptions): Promise<PaginatedResult<User>> {
+    const limit = Math.min(pagination?.limit ?? DEFAULT_LIMIT, MAX_LIMIT);
+    const offset = pagination?.offset ?? 0;
+
+    const [data, total] = await this.userRepo.findAndCount({
+      take: limit,
+      skip: offset,
+      order: { createdAt: 'DESC' },
+    });
+
+    return {
+      data,
+      total,
+      limit,
+      offset,
+      hasMore: offset + data.length < total,
+    };
+  }
+
+  async update(id: string, data: Partial<User>): Promise<User> {
+    const user = await this.findOne(id);
+    Object.assign(user, data);
+    return this.userRepo.save(user);
+  }
+
+  async delete(id: string): Promise<void> {
+    const user = await this.findOne(id);
+    await this.userRepo.remove(user);
   }
 }
