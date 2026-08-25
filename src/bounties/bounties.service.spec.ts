@@ -1,3 +1,4 @@
+import { BadRequestException } from '@nestjs/common';
 import { Test, TestingModule } from '@nestjs/testing';
 import { getRepositoryToken } from '@nestjs/typeorm';
 import { BountiesService } from './bounties.service';
@@ -141,6 +142,88 @@ describe('BountiesService', () => {
       'GCONTRIB',
       'contributor-1',
     );
+    expect(bounty.status).toBe(BountyStatus.PAID);
+  });
+
+  it('markMergedAndRelease throws BadRequestException if team has no member splits', async () => {
+    bountyRepo.findOne.mockResolvedValue({
+      id: 'b-team',
+      status: BountyStatus.IN_REVIEW,
+      escrowId: 'escrow-team',
+      claimedById: null,
+      teamId: 'team-empty',
+    });
+
+    const module: TestingModule = await Test.createTestingModule({
+      providers: [
+        BountiesService,
+        { provide: getRepositoryToken(Bounty), useValue: bountyRepo },
+        { provide: getRepositoryToken(User), useValue: { findOne: jest.fn() } },
+        {
+          provide: getRepositoryToken(Team),
+          useValue: {
+            findOne: jest.fn().mockResolvedValue({
+              id: 'team-empty',
+              splits: [],
+            }),
+          },
+        },
+        { provide: EscrowService, useValue: escrowService },
+      ],
+    }).compile();
+    service = module.get(BountiesService);
+
+    await expect(service.markMergedAndRelease('b-team')).rejects.toThrow(
+      BadRequestException,
+    );
+    expect(escrowService.splitRelease).not.toHaveBeenCalled();
+  });
+
+  it('markMergedAndRelease releases split to team members when splits exist', async () => {
+    bountyRepo.findOne.mockResolvedValue({
+      id: 'b-team-valid',
+      status: BountyStatus.IN_REVIEW,
+      escrowId: 'escrow-team-valid',
+      claimedById: null,
+      teamId: 'team-1',
+    });
+
+    const module: TestingModule = await Test.createTestingModule({
+      providers: [
+        BountiesService,
+        { provide: getRepositoryToken(Bounty), useValue: bountyRepo },
+        {
+          provide: getRepositoryToken(User),
+          useValue: {
+            findOne: jest.fn().mockResolvedValue({
+              id: 'u1',
+              stellarAddress: 'GSTELLAR1',
+            }),
+          },
+        },
+        {
+          provide: getRepositoryToken(Team),
+          useValue: {
+            findOne: jest.fn().mockResolvedValue({
+              id: 'team-1',
+              splits: [{ userId: 'u1', percentage: 100 }],
+            }),
+          },
+        },
+        { provide: EscrowService, useValue: escrowService },
+      ],
+    }).compile();
+    service = module.get(BountiesService);
+
+    const bounty = await service.markMergedAndRelease('b-team-valid');
+
+    expect(escrowService.splitRelease).toHaveBeenCalledWith('escrow-team-valid', [
+      {
+        recipientId: 'u1',
+        recipientAddress: 'GSTELLAR1',
+        percentage: 100,
+      },
+    ]);
     expect(bounty.status).toBe(BountyStatus.PAID);
   });
 });
