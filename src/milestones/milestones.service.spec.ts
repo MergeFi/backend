@@ -1,4 +1,5 @@
 import { Test, TestingModule } from '@nestjs/testing';
+import { BadRequestException } from '@nestjs/common';
 import { getRepositoryToken } from '@nestjs/typeorm';
 import { DataSource } from 'typeorm';
 import { MilestonesService } from './milestones.service';
@@ -16,7 +17,6 @@ describe('MilestonesService', () => {
   let issueRepo: {
     findOne: jest.Mock;
     save: jest.Mock;
-    update: jest.Mock;
   };
   let escrowService: {
     fund: jest.Mock;
@@ -35,7 +35,6 @@ describe('MilestonesService', () => {
     issueRepo = {
       findOne: jest.fn(),
       save: jest.fn((i: Partial<Issue>) => Promise.resolve(i)),
-      update: jest.fn(),
     };
     escrowService = {
       fund: jest.fn().mockResolvedValue({ id: 'escrow-1', status: 'locked' }),
@@ -270,13 +269,10 @@ describe('MilestonesService', () => {
         ],
       });
 
-      const txFn = dataSource.transaction.mock.calls[0]?.[0];
-      // Resolve manually to check the status logic
-      const mockMgr = { update: jest.fn() };
       await service.resolveIssue('m1', 'i1', 'RECIPIENT_ADDR');
 
-      // The transaction was called - verify the milestone update includes IN_PROGRESS
       const transactionFn = dataSource.transaction.mock.calls[0][0];
+      const mockMgr = { update: jest.fn() };
       await transactionFn(mockMgr);
 
       expect(mockMgr.update).toHaveBeenCalledWith(
@@ -312,7 +308,44 @@ describe('MilestonesService', () => {
       ).rejects.toThrow('Milestone m1 is not accepting distributions');
     });
 
-    it('splits budget evenly across open issues', async () => {
+    it('rejects when the issue does not belong to the milestone (#114)', async () => {
+      milestoneRepo.findOne.mockResolvedValue({
+        id: 'm1',
+        status: MilestoneStatus.FUNDED,
+        escrowId: 'escrow-1',
+        budget: '100',
+        distributed: '0',
+        issues: [{ id: 'issue-aaa', state: 'open' }],
+      });
+
+      await expect(
+        service.resolveIssue('m1', 'issue-999', 'RECIPIENT'),
+      ).rejects.toThrow(BadRequestException);
+
+      expect(escrowService.releasePartial).not.toHaveBeenCalled();
+    });
+
+    it('rejects when no open issues remain (#115)', async () => {
+      milestoneRepo.findOne.mockResolvedValue({
+        id: 'm1',
+        status: MilestoneStatus.FUNDED,
+        escrowId: 'escrow-1',
+        budget: '100',
+        distributed: '0',
+        issues: [
+          { id: 'issue-1', state: 'closed' },
+          { id: 'issue-2', state: 'closed' },
+        ],
+      });
+
+      await expect(
+        service.resolveIssue('m1', 'issue-1', 'RECIPIENT'),
+      ).rejects.toThrow('No unresolved issues left to attribute this payout to');
+
+      expect(escrowService.releasePartial).not.toHaveBeenCalled();
+    });
+
+    it('releases an equal share of remaining budget across open issues', async () => {
       milestoneRepo.findOne.mockResolvedValue({
         id: 'm1',
         status: MilestoneStatus.FUNDED,
