@@ -114,8 +114,25 @@ export class MilestonesService {
       );
     }
 
+    // Verify the issue belongs to this milestone (#114).
+    const issue = milestone.issues.find((i) => i.id === issueId);
+    if (!issue) {
+      throw new BadRequestException(
+        `Issue ${issueId} is not attached to milestone ${milestoneId}`,
+      );
+    }
+
     const openIssues = milestone.issues.filter((i) => i.state === 'open');
-    const unresolvedCount = Math.max(openIssues.length, 1);
+
+    // Reject when no issues remain open — fallback to divisor 1 would let a
+    // single call drain the entire remaining budget (#115).
+    if (openIssues.length === 0) {
+      throw new BadRequestException(
+        'No unresolved issues left to attribute this payout to',
+      );
+    }
+
+    const unresolvedCount = openIssues.length;
     const remainingBudget =
       Number(milestone.budget) - Number(milestone.distributed);
     const share = Math.min(remainingBudget / unresolvedCount, remainingBudget);
