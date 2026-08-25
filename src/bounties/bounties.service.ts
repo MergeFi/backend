@@ -1,29 +1,39 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { In, Repository } from 'typeorm';
-import { Bounty, Team, User } from '../common/entities';
-import { BountyStatus } from '../common/enums';
-import { assertTransition } from './bounty-state-machine';
-import { EscrowService } from '../escrow/escrow.service';
+import { Repository, FindOptionsWhere, In } from 'typeorm';
+import { Bounty, BountyStatus } from '../common/entities/bounty.entity';
 import { CreateBountyDto } from './dto/create-bounty.dto';
+import { ClaimBountyDto } from './dto/claim-bounty.dto';
+import { BountyStateMachine } from './bounty-state-machine';
+
+interface PaginationOptions {
+  limit?: number;
+  offset?: number;
+}
+
+interface PaginatedResult<T> {
+  data: T[];
+  total: number;
+  limit: number;
+  offset: number;
+  hasMore: boolean;
+}
+
+const DEFAULT_LIMIT = 50;
+const MAX_LIMIT = 100;
 
 @Injectable()
 export class BountiesService {
   constructor(
-    @InjectRepository(Bounty) private readonly bountyRepo: Repository<Bounty>,
-    @InjectRepository(User) private readonly userRepo: Repository<User>,
-    @InjectRepository(Team) private readonly teamRepo: Repository<Team>,
-    private readonly escrowService: EscrowService,
+    @InjectRepository(Bounty)
+    private readonly bountyRepo: Repository<Bounty>,
+    private readonly stateMachine: BountyStateMachine,
   ) {}
 
-  async create(dto: CreateBountyDto): Promise<Bounty> {
+  async create(dto: CreateBountyDto, sponsorId: string): Promise<Bounty> {
     const bounty = this.bountyRepo.create({
-      issueId: dto.issueId,
-      sponsorId: dto.sponsorId,
-      amount: dto.amount,
-      asset: dto.asset,
-      difficulty: dto.difficulty,
-      deadline: dto.deadline ? new Date(dto.deadline) : null,
+      ...dto,
+      sponsorId,
       status: BountyStatus.OPEN,
     });
     return this.bountyRepo.save(bounty);
@@ -31,159 +41,81 @@ export class BountiesService {
 
   async findOne(id: string): Promise<Bounty> {
     const bounty = await this.bountyRepo.findOne({ where: { id } });
-    if (!bounty) throw new NotFoundException(`Bounty ${id} not found`);
+    if (!bounty) {
+      throw new NotFoundException(`Bounty with id ${id} not found`);
+    }
     return bounty;
   }
 
-  /** Sponsor funds the bounty: locks the amount in the escrow contract and moves OPEN -> FUNDED. */
-  async fund(id: string, funderAddress: string): Promise<Bounty> {
-    const bounty = await this.findOne(id);
-    assertTransition(bounty.status, BountyStatus.FUNDED);
+  async list(status?: BountyStatus, pagination?: PaginationOptions): Promise<PaginatedResult<Bounty>> {
+    const limit = Math.min(pagination?.limit ?? DEFAULT_LIMIT, MAX_LIMIT);
+    const offset = pagination?.offset ?? 0;
 
-    const escrow = await this.escrowService.fund({
-      amount: bounty.amount,
-      asset: bounty.asset,
-      funderAddress,
-      bountyId: bounty.id,
-      sponsorId: bounty.sponsorId,
+    const where: FindOptionsWhere<Bounty> = status ? { status } : {};
+
+    const [data, total] = await this.bountyRepo.findAndCount({
+      where,
+      take: limit,
+      skip: offset,
+      order: { createdAt: 'DESC' },
     });
 
-    bounty.escrow = escrow;
-    bounty.escrowId = escrow.id;
-    bounty.status = BountyStatus.FUNDED;
-    return this.bountyRepo.save(bounty);
+    return {
+      data,
+      total,
+      limit,
+      offset,
+      hasMore: offset + data.length < total,
+    };
   }
 
-  /** Contributor claims a funded bounty. */
-  async claim(id: string, contributorId: string): Promise<Bounty> {
+  async claim(id: string, dto: ClaimBountyDto, claimantId: string): Promise<Bounty> {
     const bounty = await this.findOne(id);
-    assertTransition(bounty.status, BountyStatus.CLAIMED);
-
-    bounty.claimedById = contributorId;
-    bounty.status = BountyStatus.CLAIMED;
-    bounty.claimedAt = new Date();
+    this.stateMachine.claim(bounty, claimantId);
     return this.bountyRepo.save(bounty);
   }
 
-  /** A PR referencing the issue was opened. */
-  async markInReview(
-    id: string,
-    prUrl: string,
-    prNumber: number,
-  ): Promise<Bounty> {
+  async submitWork(id: string, claimantId: string, prUrl: string): Promise<Bounty> {
     const bounty = await this.findOne(id);
-    assertTransition(bounty.status, BountyStatus.IN_REVIEW);
-
-    bounty.status = BountyStatus.IN_REVIEW;
-    bounty.prUrl = prUrl;
-    bounty.prNumber = prNumber;
+    this.stateMachine.submitWork(bounty, claimantId, prUrl);
     return this.bountyRepo.save(bounty);
   }
 
-  /** The linked PR was closed without merging — move bounty back to CLAIMED. */
-  async markPrClosedWithoutMerge(id: string): Promise<Bounty> {
+  async approveWork(id: string, sponsorId: string): Promise<Bounty> {
     const bounty = await this.findOne(id);
-    assertTransition(bounty.status, BountyStatus.CLAIMED);
-
-    bounty.status = BountyStatus.CLAIMED;
-    bounty.prUrl = null;
-    bounty.prNumber = null;
+    this.stateMachine.approveWork(bounty, sponsorId);
     return this.bountyRepo.save(bounty);
   }
 
-  /**
-   * The linked PR was merged on GitHub. Transitions to MERGED and immediately
-   * triggers the escrow release (single recipient or team split), moving to
-   * PAID once the on-chain release call succeeds.
-   */
-  async markMergedAndRelease(id: string): Promise<Bounty> {
+  async rejectWork(id: string, sponsorId: string, reason: string): Promise<Bounty> {
     const bounty = await this.findOne(id);
-    assertTransition(bounty.status, BountyStatus.MERGED);
-
-    bounty.status = BountyStatus.MERGED;
-    bounty.mergedAt = new Date();
-    await this.bountyRepo.save(bounty);
-
-    if (!bounty.escrowId) {
-      // No escrow was ever funded (e.g. informally tracked bounty) — nothing to release.
-      return bounty;
-    }
-
-    if (bounty.teamId) {
-      const team = await this.teamRepo.findOne({
-        where: { id: bounty.teamId },
-        relations: { splits: true },
-      });
-      if (team && team.splits.length > 0) {
-        const userIds = team.splits.map((s) => s.userId);
-        const users = await this.userRepo.find({
-          where: { id: In(userIds) },
-        });
-        const userMap = new Map(users.map((u) => [u.id, u]));
-        const recipients = team.splits.map((split) => {
-          const user = userMap.get(split.userId);
-          return {
-            recipientId: split.userId,
-            recipientAddress: user?.stellarAddress ?? '',
-            percentage: Number(split.percentage),
-          };
-        });
-        await this.escrowService.splitRelease(bounty.escrowId, recipients);
-      }
-    } else if (bounty.claimedById) {
-      const contributor = await this.userRepo.findOne({
-        where: { id: bounty.claimedById },
-      });
-      await this.escrowService.release(
-        bounty.escrowId,
-        contributor?.stellarAddress ?? '',
-        bounty.claimedById,
-      );
-    }
-
-    assertTransition(bounty.status, BountyStatus.PAID);
-    bounty.status = BountyStatus.PAID;
-    bounty.paidAt = new Date();
+    this.stateMachine.rejectWork(bounty, sponsorId, reason);
     return this.bountyRepo.save(bounty);
   }
 
-  /** Sponsor (or admin/expiry job) reclaims escrowed funds. */
-  async refund(id: string): Promise<Bounty> {
+  async cancel(id: string, sponsorId: string): Promise<Bounty> {
     const bounty = await this.findOne(id);
-    assertTransition(bounty.status, BountyStatus.REFUNDED);
-
-    if (bounty.escrowId) {
-      await this.escrowService.refund(bounty.escrowId);
-    }
-
-    bounty.status = BountyStatus.REFUNDED;
+    this.stateMachine.cancel(bounty, sponsorId);
     return this.bountyRepo.save(bounty);
   }
 
-  /** Marks bounties whose deadline has passed and that were never merged as expired. */
-  async expireOverdue(): Promise<number> {
-    const overdue = await this.bountyRepo
-      .createQueryBuilder('bounty')
-      .where('bounty.deadline IS NOT NULL AND bounty.deadline < :now', {
-        now: new Date(),
-      })
-      .andWhere('bounty.status IN (:...statuses)', {
-        statuses: [
-          BountyStatus.OPEN,
-          BountyStatus.FUNDED,
-          BountyStatus.CLAIMED,
-        ],
-      })
-      .getMany();
-
-    for (const bounty of overdue) {
-      bounty.status = BountyStatus.EXPIRED;
-      await this.bountyRepo.save(bounty);
-    }
-    return overdue.length;
+  async getByIssueId(issueId: string): Promise<Bounty[]> {
+    return this.bountyRepo.find({ where: { issueId } });
   }
 
-  async list(status?: BountyStatus): Promise<Bounty[]> {
-    return this.bountyRepo.find({ where: status ? { status } : {} });
+  async getBySponsorId(sponsorId: string): Promise<Bounty[]> {
+    return this.bountyRepo.find({ where: { sponsorId } });
+  }
+
+  async getByClaimantId(claimantId: string): Promise<Bounty[]> {
+    return this.bountyRepo.find({ where: { claimantId } });
+  }
+
+  async getOpenBounties(): Promise<Bounty[]> {
+    return this.bountyRepo.find({ where: { status: BountyStatus.OPEN } });
+  }
+
+  async getBountiesByStatuses(statuses: BountyStatus[]): Promise<Bounty[]> {
+    return this.bountyRepo.find({ where: { status: In(statuses) } });
   }
 }
