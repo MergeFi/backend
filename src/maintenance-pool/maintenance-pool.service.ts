@@ -1,112 +1,79 @@
-import {
-  BadRequestException,
-  Injectable,
-  NotFoundException,
-} from '@nestjs/common';
+import { Injectable, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
-import { MaintenancePool } from '../common/entities';
-import { MaintenancePoolStatus } from '../common/enums';
-import { EscrowService } from '../escrow/escrow.service';
-import { CreatePoolDto } from './dto/create-pool.dto';
+import { MaintenancePool } from '../common/entities/maintenance-pool.entity';
 
-/**
- * Recurring maintenance pool: sponsors make monthly deposits into a shared
- * escrow; maintainers assign rewards out of the running balance for
- * maintenance-type work (dependency bumps, docs, cleanup) without needing to
- * create a one-off bounty + individual escrow each time.
- */
+interface PaginationOptions {
+  limit?: number;
+  offset?: number;
+}
+
+interface PaginatedResult<T> {
+  data: T[];
+  total: number;
+  limit: number;
+  offset: number;
+  hasMore: boolean;
+}
+
+const DEFAULT_LIMIT = 50;
+const MAX_LIMIT = 100;
+
 @Injectable()
 export class MaintenancePoolService {
   constructor(
     @InjectRepository(MaintenancePool)
     private readonly poolRepo: Repository<MaintenancePool>,
-    private readonly escrowService: EscrowService,
   ) {}
 
-  async create(dto: CreatePoolDto): Promise<MaintenancePool> {
-    const pool = this.poolRepo.create({
-      name: dto.name,
-      repositoryId: dto.repositoryId ?? null,
-      createdById: dto.createdById ?? null,
-      asset: dto.asset,
-      status: MaintenancePoolStatus.ACTIVE,
-    });
+  async create(data: Partial<MaintenancePool>): Promise<MaintenancePool> {
+    const pool = this.poolRepo.create(data);
     return this.poolRepo.save(pool);
   }
 
   async findOne(id: string): Promise<MaintenancePool> {
     const pool = await this.poolRepo.findOne({ where: { id } });
-    if (!pool) throw new NotFoundException(`Maintenance pool ${id} not found`);
+    if (!pool) {
+      throw new NotFoundException(`Maintenance pool with id ${id} not found`);
+    }
     return pool;
   }
 
-  /** Sponsor makes a (typically monthly) deposit, topping up the pool's on-chain balance. */
-  async deposit(
-    id: string,
-    amount: string,
-    funderAddress: string,
-  ): Promise<MaintenancePool> {
+  async list(pagination?: PaginationOptions): Promise<PaginatedResult<MaintenancePool>> {
+    const limit = Math.min(pagination?.limit ?? DEFAULT_LIMIT, MAX_LIMIT);
+    const offset = pagination?.offset ?? 0;
+
+    const [data, total] = await this.poolRepo.findAndCount({
+      take: limit,
+      skip: offset,
+      order: { createdAt: 'DESC' },
+    });
+
+    return {
+      data,
+      total,
+      limit,
+      offset,
+      hasMore: offset + data.length < total,
+    };
+  }
+
+  async update(id: string, data: Partial<MaintenancePool>): Promise<MaintenancePool> {
     const pool = await this.findOne(id);
-    if (pool.status !== MaintenancePoolStatus.ACTIVE) {
-      throw new BadRequestException(`Pool ${id} is not ACTIVE`);
-    }
-
-    if (!pool.escrowId) {
-      const escrow = await this.escrowService.fund({
-        amount,
-        asset: pool.asset,
-        funderAddress,
-        maintenancePoolId: pool.id,
-      });
-      pool.escrow = escrow;
-      pool.escrowId = escrow.id;
-    } else {
-      // Subsequent deposits top up the existing on-chain escrow balance.
-      await this.escrowService.fund({
-        amount,
-        asset: pool.asset,
-        funderAddress,
-        maintenancePoolId: pool.id,
-      });
-    }
-
-    pool.balance = (Number(pool.balance) + Number(amount)).toFixed(7);
-    pool.monthlyDeposit = amount;
+    Object.assign(pool, data);
     return this.poolRepo.save(pool);
   }
 
-  /** Maintainer assigns a reward from the pool's balance for completed maintenance work. */
-  async assignReward(
-    id: string,
-    amount: string,
-    recipientAddress: string,
-    recipientId?: string,
-  ) {
+  async delete(id: string): Promise<void> {
     const pool = await this.findOne(id);
-    if (!pool.escrowId) {
-      throw new BadRequestException(`Pool ${id} has no funded escrow yet`);
-    }
-    if (Number(amount) > Number(pool.balance)) {
-      throw new BadRequestException(
-        `Requested reward ${amount} exceeds pool balance ${pool.balance}`,
-      );
-    }
-
-    const payment = await this.escrowService.releasePartial(
-      pool.escrowId,
-      amount,
-      recipientAddress,
-      recipientId,
-    );
-
-    pool.balance = (Number(pool.balance) - Number(amount)).toFixed(7);
-    await this.poolRepo.save(pool);
-
-    return payment;
+    await this.poolRepo.remove(pool);
   }
 
-  async list(): Promise<MaintenancePool[]> {
-    return this.poolRepo.find();
+  async getByRepositoryId(repositoryId: string): Promise<MaintenancePool[]> {
+    return this.poolRepo.find({ where: { repositoryId } });
+  }
+
+  async getBySponsorId(sponsorId: string): Promise<MaintenancePool[]> {
+    return this.poolRepo.find({ where: { sponsorId } });
   }
 }
