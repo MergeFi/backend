@@ -1,6 +1,6 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { In, Repository } from 'typeorm';
 import { Bounty, Team, User } from '../common/entities';
 import { BountyStatus } from '../common/enums';
 import { assertTransition } from './bounty-state-machine';
@@ -80,6 +80,17 @@ export class BountiesService {
     return this.bountyRepo.save(bounty);
   }
 
+  /** The linked PR was closed without merging — move bounty back to CLAIMED. */
+  async markPrClosedWithoutMerge(id: string): Promise<Bounty> {
+    const bounty = await this.findOne(id);
+    assertTransition(bounty.status, BountyStatus.CLAIMED);
+
+    bounty.status = BountyStatus.CLAIMED;
+    bounty.prUrl = null;
+    bounty.prNumber = null;
+    return this.bountyRepo.save(bounty);
+  }
+
   /**
    * The linked PR was merged on GitHub. Transitions to MERGED and immediately
    * triggers the escrow release (single recipient or team split), moving to
@@ -104,18 +115,19 @@ export class BountiesService {
         relations: { splits: true },
       });
       if (team && team.splits.length > 0) {
-        const recipients = await Promise.all(
-          team.splits.map(async (split) => {
-            const user = await this.userRepo.findOne({
-              where: { id: split.userId },
-            });
-            return {
-              recipientId: split.userId,
-              recipientAddress: user?.stellarAddress ?? '',
-              percentage: Number(split.percentage),
-            };
-          }),
-        );
+        const userIds = team.splits.map((s) => s.userId);
+        const users = await this.userRepo.find({
+          where: { id: In(userIds) },
+        });
+        const userMap = new Map(users.map((u) => [u.id, u]));
+        const recipients = team.splits.map((split) => {
+          const user = userMap.get(split.userId);
+          return {
+            recipientId: split.userId,
+            recipientAddress: user?.stellarAddress ?? '',
+            percentage: Number(split.percentage),
+          };
+        });
         await this.escrowService.splitRelease(bounty.escrowId, recipients);
       }
     } else if (bounty.claimedById) {

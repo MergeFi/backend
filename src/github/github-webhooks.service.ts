@@ -159,6 +159,10 @@ export class GithubWebhooksService {
   private async handlePullRequest(
     payload: GithubPullRequestPayload,
   ): Promise<LinkedIssueOutcome[]> {
+    if (payload.action === 'closed' && !payload.pull_request.merged) {
+      return this.handlePullRequestClosedWithoutMerge(payload);
+    }
+
     if (payload.action !== 'closed' || !payload.pull_request.merged) {
       return [];
     }
@@ -264,5 +268,57 @@ export class GithubWebhooksService {
   private extractLinkedIssueNumbers(body: string): number[] {
     const matches = [...body.matchAll(CLOSING_KEYWORD_RE)];
     return matches.map((m) => parseInt(m[3], 10));
+  }
+
+  /**
+   * When a PR is closed without merging, move linked bounties from
+   * IN_REVIEW back to CLAIMED so they become claimable again.
+   */
+  private async handlePullRequestClosedWithoutMerge(
+    payload: GithubPullRequestPayload,
+  ): Promise<LinkedIssueOutcome[]> {
+    const issueNumbers = [
+      ...new Set(
+        this.extractLinkedIssueNumbers(payload.pull_request.body ?? ''),
+      ),
+    ];
+    if (issueNumbers.length === 0) {
+      return [];
+    }
+
+    const outcomes: LinkedIssueOutcome[] = [];
+    for (const number of issueNumbers) {
+      try {
+        const issue = await this.issueRepo.findOne({
+          where: {
+            number,
+            repository: { githubRepoId: String(payload.repository.id) },
+          },
+          relations: { repository: true, bounty: true },
+        });
+        if (!issue?.bounty) {
+          outcomes.push({ issueNumber: number, outcome: 'skipped' });
+          continue;
+        }
+
+        const bounty = await this.bountyRepo.findOne({
+          where: { id: issue.bounty.id },
+        });
+        if (!bounty || bounty.status !== BountyStatus.IN_REVIEW) {
+          outcomes.push({ issueNumber: number, outcome: 'skipped' });
+          continue;
+        }
+
+        await this.bountiesService.markPrClosedWithoutMerge(bounty.id);
+        outcomes.push({ issueNumber: number, outcome: 'succeeded' });
+      } catch (err) {
+        outcomes.push({
+          issueNumber: number,
+          outcome: 'failed',
+          error: (err as Error).message,
+        });
+      }
+    }
+    return outcomes;
   }
 }
