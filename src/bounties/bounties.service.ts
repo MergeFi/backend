@@ -1,4 +1,4 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { Bounty, Team, User } from '../common/entities';
@@ -103,21 +103,24 @@ export class BountiesService {
         where: { id: bounty.teamId },
         relations: { splits: true },
       });
-      if (team && team.splits.length > 0) {
-        const recipients = await Promise.all(
-          team.splits.map(async (split) => {
-            const user = await this.userRepo.findOne({
-              where: { id: split.userId },
-            });
-            return {
-              recipientId: split.userId,
-              recipientAddress: user?.stellarAddress ?? '',
-              percentage: Number(split.percentage),
-            };
-          }),
+      if (!team || !team.splits || team.splits.length === 0) {
+        throw new BadRequestException(
+          `Cannot release bounty ${id}: assigned team ${bounty.teamId} has no member splits`,
         );
-        await this.escrowService.splitRelease(bounty.escrowId, recipients);
       }
+      const recipients = await Promise.all(
+        team.splits.map(async (split) => {
+          const user = await this.userRepo.findOne({
+            where: { id: split.userId },
+          });
+          return {
+            recipientId: split.userId,
+            recipientAddress: user?.stellarAddress ?? '',
+            percentage: Number(split.percentage),
+          };
+        }),
+      );
+      await this.escrowService.splitRelease(bounty.escrowId, recipients);
     } else if (bounty.claimedById) {
       const contributor = await this.userRepo.findOne({
         where: { id: bounty.claimedById },
