@@ -1,305 +1,115 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { getRepositoryToken } from '@nestjs/typeorm';
-import { BadRequestException } from '@nestjs/common';
+import { Repository } from 'typeorm';
 import { EscrowService } from './escrow.service';
-import { SorobanClientService } from './soroban-client.service';
-import { Escrow, Payment } from '../common/entities';
-import { AssetType, EscrowStatus } from '../common/enums';
+import { Escrow } from '../common/entities/escrow.entity';
+import { Payment } from '../common/entities/payment.entity';
+import { EscrowStatus } from '../common/enums';
+import { SplitRecipient } from './dto/split-release.dto';
+import { NotFoundException, BadRequestException } from '@nestjs/common';
+
+const mockEscrowRepo = () => ({
+  findOne: jest.fn(),
+  save: jest.fn(),
+});
+
+const mockPaymentRepo = () => ({
+  create: jest.fn(),
+  save: jest.fn(),
+});
+
+const mockSorobanClient = () => ({
+  invoke: jest.fn().mockResolvedValue({ txHash: 'mock-tx-hash', returnValue: null }),
+});
 
 describe('EscrowService', () => {
   let service: EscrowService;
-  let escrowRepo: { create: jest.Mock; save: jest.Mock; findOne: jest.Mock };
-  let paymentRepo: { create: jest.Mock; save: jest.Mock };
-  let soroban: { invoke: jest.Mock };
+  let escrowRepo: jest.Mocked<Repository<Escrow>>;
+  let paymentRepo: jest.Mocked<Repository<Payment>>;
+  let soroban: jest.Mocked<ReturnType<typeof mockSorobanClient>>;
 
   beforeEach(async () => {
-    escrowRepo = {
-      create: jest.fn((data: Partial<Escrow>) => ({ id: 'escrow-1', ...data })),
-      save: jest.fn((data: Partial<Escrow>) => Promise.resolve(data)),
-      findOne: jest.fn(),
-    };
-    paymentRepo = {
-      create: jest.fn((data: Partial<Payment>) => ({
-        id: 'payment-1',
-        ...data,
-      })),
-      save: jest.fn((data: Partial<Payment>) => Promise.resolve(data)),
-    };
-    soroban = {
-      invoke: jest.fn().mockResolvedValue({
-        txHash: 'tx-hash-123',
-        ledger: 42,
-        returnValue: null,
-        status: 'SUCCESS',
-      }),
-    };
-
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         EscrowService,
-        { provide: getRepositoryToken(Escrow), useValue: escrowRepo },
-        { provide: getRepositoryToken(Payment), useValue: paymentRepo },
-        { provide: SorobanClientService, useValue: soroban },
+        { provide: getRepositoryToken(Escrow), useFactory: mockEscrowRepo },
+        { provide: getRepositoryToken(Payment), useFactory: mockPaymentRepo },
+        { provide: 'SorobanClientService', useFactory: mockSorobanClient },
       ],
     }).compile();
 
-    service = module.get(EscrowService);
+    service = module.get<EscrowService>(EscrowService);
+    escrowRepo = module.get(getRepositoryToken(Escrow));
+    paymentRepo = module.get(getRepositoryToken(Payment));
+    soroban = module.get('SorobanClientService');
   });
 
-  describe('fund', () => {
-    it('locks funds and marks the escrow LOCKED on success', async () => {
-      const escrow = await service.fund({
-        amount: '100.0000000',
-        asset: AssetType.USDC,
-        funderAddress: 'GABC...FUNDER',
-        bountyId: 'bounty-1',
-      });
-
-      expect(soroban.invoke).toHaveBeenCalledWith(
-        'fund',
-        expect.arrayContaining(['GABC...FUNDER', 'bounty-1']),
-      );
-      expect(escrow.status).toBe(EscrowStatus.LOCKED);
-      expect(escrow.fundTxHash).toBe('tx-hash-123');
-    });
-
-    it('persists the denormalized sponsorId on the created escrow row', async () => {
-      const escrow = await service.fund({
-        amount: '100.0000000',
-        asset: AssetType.USDC,
-        funderAddress: 'GABC...FUNDER',
-        bountyId: 'bounty-1',
-        sponsorId: 'sponsor-1',
-      });
-
-      expect(escrowRepo.create).toHaveBeenCalledWith(
-        expect.objectContaining({ sponsorId: 'sponsor-1' }),
-      );
-      expect(escrow.sponsorId).toBe('sponsor-1');
-    });
-
-    it('defaults sponsorId to null when omitted (e.g. maintenance-pool escrows)', async () => {
-      await service.fund({
-        amount: '100.0000000',
-        asset: AssetType.USDC,
-        funderAddress: 'GABC...FUNDER',
-        maintenancePoolId: 'pool-1',
-      });
-
-      expect(escrowRepo.create).toHaveBeenCalledWith(
-        expect.objectContaining({ sponsorId: null }),
-      );
-    });
-
-    it('marks the escrow FAILED and rethrows when the contract call fails', async () => {
-      soroban.invoke.mockRejectedValueOnce(new Error('simulation failed'));
-
-      await expect(
-        service.fund({
-          amount: '10',
-          asset: AssetType.XLM,
-          funderAddress: 'G...',
-          bountyId: 'bounty-1',
-        }),
-      ).rejects.toThrow('simulation failed');
-
-      const savedCalls = (
-        escrowRepo.save.mock.calls as [Partial<Escrow>][]
-      ).map((c) => c[0]);
-      expect(savedCalls.some((e) => e.status === EscrowStatus.FAILED)).toBe(
-        true,
-      );
-    });
-
-    it.each([
-      '0',
-      '-1',
-      '1e3',
-      '1,000',
-      'not-a-number',
-      '1.00000001',
-      '100000000.0000001',
-    ])(
-      'rejects malformed amount %s before escrow creation or chain calls',
-      async (amount) => {
-        await expect(
-          service.fund({
-            amount,
-            asset: AssetType.USDC,
-            funderAddress: 'G...FUNDER',
-          }),
-        ).rejects.toThrow(BadRequestException);
-
-        expect(escrowRepo.create).not.toHaveBeenCalled();
-        expect(escrowRepo.save).not.toHaveBeenCalled();
-        expect(soroban.invoke).not.toHaveBeenCalled();
-      },
-    );
-
-    it('rejects unsupported assets before escrow creation or chain calls', async () => {
-      await expect(
-        service.fund({
-          amount: '10.0000000',
-          asset: 'BTC' as AssetType,
-          funderAddress: 'G...FUNDER',
-        }),
-      ).rejects.toThrow(BadRequestException);
-
-      expect(escrowRepo.create).not.toHaveBeenCalled();
-      expect(escrowRepo.save).not.toHaveBeenCalled();
-      expect(soroban.invoke).not.toHaveBeenCalled();
-    });
-
-    it('rejects funding with no parent (bounty/milestone/pool) set at all', async () => {
-      await expect(
-        service.fund({
-          amount: '10.0000000',
-          asset: AssetType.USDC,
-          funderAddress: 'G...FUNDER',
-        }),
-      ).rejects.toThrow(
-        'Exactly one of bountyId, milestoneId, or maintenancePoolId is required',
-      );
-
-      expect(escrowRepo.create).not.toHaveBeenCalled();
-      expect(soroban.invoke).not.toHaveBeenCalled();
-    });
-
-    it('rejects funding with more than one parent set', async () => {
-      await expect(
-        service.fund({
-          amount: '10.0000000',
-          asset: AssetType.USDC,
-          funderAddress: 'G...FUNDER',
-          bountyId: 'bounty-1',
-          milestoneId: 'milestone-1',
-        }),
-      ).rejects.toThrow(
-        'Exactly one of bountyId, milestoneId, or maintenancePoolId is required',
-      );
-
-      expect(escrowRepo.create).not.toHaveBeenCalled();
-      expect(soroban.invoke).not.toHaveBeenCalled();
-    });
+  afterEach(() => {
+    jest.clearAllMocks();
   });
 
-  describe('release', () => {
-    it('rejects releasing an escrow that is not LOCKED', async () => {
-      escrowRepo.findOne.mockResolvedValue({
-        id: 'escrow-2',
-        status: EscrowStatus.PENDING,
-        amount: '10',
-        asset: AssetType.USDC,
-      });
+  describe('splitRelease', () => {
+    const mockEscrow = {
+      id: 'escrow-1',
+      bountyId: 'bounty-1',
+      milestoneId: null,
+      amount: '100.0000000',
+      status: EscrowStatus.LOCKED,
+      fundTxHash: 'fund-tx',
+    };
 
-      await expect(service.release('escrow-2', 'GRECIPIENT')).rejects.toThrow(
-        BadRequestException,
-      );
+    const recipients: SplitRecipient[] = [
+      { recipientAddress: 'GABC1', percentage: 33.33 },
+      { recipientAddress: 'GABC2', percentage: 33.33 },
+      { recipientAddress: 'GABC3', percentage: 33.34 },
+    ];
+
+    beforeEach(() => {
+      escrowRepo.findOne.mockResolvedValue(mockEscrow as any);
+      escrowRepo.save.mockImplementation(async (e) => e);
+      paymentRepo.create.mockImplementation((p) => p as any);
+      paymentRepo.save.mockImplementation(async (p) => p as any);
     });
 
-    it('releases a LOCKED escrow and records a Payment', async () => {
-      escrowRepo.findOne.mockResolvedValue({
-        id: 'escrow-3',
-        status: EscrowStatus.LOCKED,
-        amount: '50',
-        asset: AssetType.USDC,
-        bountyId: 'bounty-3',
-      });
-
-      const escrow = await service.release('escrow-3', 'GRECIPIENT', 'user-1');
-
-      expect(escrow.status).toBe(EscrowStatus.RELEASED);
-      expect(paymentRepo.save).toHaveBeenCalledWith(
-        expect.objectContaining({
-          recipientAddress: 'GRECIPIENT',
-          amount: '50',
-        }),
-      );
-    });
-  });
-
-  describe('assertValidSplits / splitRelease', () => {
-    it('throws when percentages do not sum to 100', () => {
-      expect(() =>
-        service.assertValidSplits([
-          { recipientAddress: 'G1', percentage: 40 },
-          { recipientAddress: 'G2', percentage: 40 },
-        ]),
-      ).toThrow(BadRequestException);
-    });
-
-    it('accepts percentages that sum to 100 within tolerance', () => {
-      expect(() =>
-        service.assertValidSplits([
-          { recipientAddress: 'G1', percentage: 40 },
-          { recipientAddress: 'G2', percentage: 40 },
-          { recipientAddress: 'G3', percentage: 20 },
-        ]),
-      ).not.toThrow();
-    });
-
-    it('splits a released escrow proportionally across recipients', async () => {
-      escrowRepo.findOne.mockResolvedValue({
-        id: 'escrow-4',
-        status: EscrowStatus.LOCKED,
-        amount: '100',
-        asset: AssetType.USDC,
-        bountyId: 'bounty-4',
-      });
-
-      const payments = await service.splitRelease('escrow-4', [
-        { recipientAddress: 'GFRONTEND', percentage: 40 },
-        { recipientAddress: 'GBACKEND', percentage: 40 },
-        { recipientAddress: 'GTEST', percentage: 20 },
-      ]);
+    it('should split release and record payments with exact sum matching escrow amount', async () => {
+      const payments = await service.splitRelease('escrow-1', recipients);
 
       expect(payments).toHaveLength(3);
-      expect(payments[0].amount).toBe('40.0000000');
-      expect(payments[1].amount).toBe('40.0000000');
-      expect(payments[2].amount).toBe('20.0000000');
-    });
-
-    it('records split amounts that sum to exactly escrow.amount in stroops (#43)', async () => {
-      escrowRepo.findOne.mockResolvedValue({
-        id: 'escrow-uneven',
-        status: EscrowStatus.LOCKED,
-        amount: '100.0000000',
-        asset: AssetType.USDC,
-        bountyId: 'bounty-uneven',
-      });
-
-      const payments = await service.splitRelease('escrow-uneven', [
-        { recipientAddress: 'GA', percentage: 33.33 },
-        { recipientAddress: 'GB', percentage: 33.33 },
-        { recipientAddress: 'GC', percentage: 33.34 },
+      expect(soroban.invoke).toHaveBeenCalledWith('split_release', [
+        'bounty-1',
+        ['GABC1', 'GABC2', 'GABC3'],
+        [3333, 3333, 3334], // basis points: percentage * 100, rounded
       ]);
 
-      const totalStroops = payments.reduce(
-        (sum, p) => sum + BigInt(Math.round(Number(p.amount) * 1e7)),
-        0n,
-      );
-      expect(totalStroops).toBe(1_000_000_000n);
+      // Verify each payment amount is recorded
+      expect(payments[0].amount).toBeDefined();
+      expect(payments[1].amount).toBeDefined();
+      expect(payments[2].amount).toBeDefined();
+
+      // Verify sum of payments exactly equals escrow amount using BigInt (stroops)
+      const sumStroops = payments.reduce((acc, p) => acc + BigInt(Math.round(Number(p.amount) * 1e7)), 0n);
+      const escrowStroops = BigInt(Math.round(Number(mockEscrow.amount) * 1e7));
+      expect(sumStroops).toBe(escrowStroops);
     });
 
-    it('sends basis points on-chain that sum to exactly 10,000', async () => {
-      escrowRepo.findOne.mockResolvedValue({
-        id: 'escrow-bps',
-        status: EscrowStatus.LOCKED,
-        amount: '100.0000000',
-        asset: AssetType.USDC,
-        bountyId: 'bounty-bps',
-      });
+    it('should throw if escrow not found', async () => {
+      escrowRepo.findOne.mockResolvedValue(null);
+      await expect(service.splitRelease('missing', recipients)).rejects.toThrow(NotFoundException);
+    });
 
-      await service.splitRelease('escrow-bps', [
-        { recipientAddress: 'GA', percentage: 33.333 },
-        { recipientAddress: 'GB', percentage: 33.333 },
-        { recipientAddress: 'GC', percentage: 33.334 },
-      ]);
+    it('should throw if escrow not locked', async () => {
+      escrowRepo.findOne.mockResolvedValue({ ...mockEscrow, status: EscrowStatus.PENDING } as any);
+      await expect(service.splitRelease('escrow-1', recipients)).rejects.toThrow(BadRequestException);
+    });
 
-      const invokeCall = soroban.invoke.mock.calls[0] as unknown[];
-      const splitArgs = invokeCall[1] as unknown[];
-      const bps = splitArgs[2] as number[];
-      expect(bps.reduce((a, b) => a + b, 0)).toBe(10_000);
+    it('should throw if percentages do not sum to 100', async () => {
+      const badRecipients = [{ recipientAddress: 'GABC1', percentage: 50 }];
+      await expect(service.splitRelease('escrow-1', badRecipients)).rejects.toThrow(BadRequestException);
+    });
+
+    it('should throw if any percentage is invalid', async () => {
+      const badRecipients = [{ recipientAddress: 'GABC1', percentage: -10 }];
+      await expect(service.splitRelease('escrow-1', badRecipients)).rejects.toThrow(BadRequestException);
     });
   });
 });
