@@ -1,49 +1,52 @@
-import { Body, Controller, Get, Param, ParseUUIDPipe, Post } from '@nestjs/common';
-import { ApiTags } from '@nestjs/swagger';
+import { Controller, Post, Param, Body, UseGuards, Get } from '@nestjs/common';
+import { ApiTags, ApiOperation, ApiBearerAuth } from '@nestjs/swagger';
 import { EscrowService } from './escrow.service';
 import { FundEscrowDto } from './dto/fund-escrow.dto';
 import { ReleaseEscrowDto } from './dto/release-escrow.dto';
 import { SplitReleaseDto } from './dto/split-release.dto';
-import { toPublicEscrow } from './escrow-response.mapper';
+import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { Idempotent } from '../common/idempotency/idempotent.decorator';
+import { CurrentUser } from '../auth/decorators/current-user.decorator';
+import { User } from '../common/entities/user.entity';
 
 @ApiTags('escrow')
+@ApiBearerAuth()
 @Controller('escrow')
+@UseGuards(JwtAuthGuard)
 export class EscrowController {
   constructor(private readonly escrowService: EscrowService) {}
 
-  @Idempotent('escrow.fund')
   @Post('fund')
-  async fund(@Body() dto: FundEscrowDto) {
-    return toPublicEscrow(await this.escrowService.fund(dto));
+  @Idempotent()
+  @ApiOperation({ summary: 'Fund an escrow' })
+  async fund(@Body() fundEscrowDto: FundEscrowDto, @CurrentUser() user: User) {
+    return this.escrowService.fund(fundEscrowDto, user);
   }
 
   @Get(':id')
-  async findOne(@Param('id', new ParseUUIDPipe()) id: string) {
-    return toPublicEscrow(await this.escrowService.findOne(id));
+  @ApiOperation({ summary: 'Get escrow by ID' })
+  async findOne(@Param('id') id: string) {
+    return this.escrowService.findOne(id);
   }
 
-  @Idempotent('escrow.release')
   @Post(':id/release')
-  async release(@Param('id', new ParseUUIDPipe()) id: string, @Body() dto: ReleaseEscrowDto) {
-    return toPublicEscrow(
-      await this.escrowService.release(
-        id,
-        dto.recipientAddress,
-        dto.recipientId,
-      ),
-    );
+  @Idempotent()
+  @ApiOperation({ summary: 'Release escrow funds' })
+  async release(@Param('id') id: string, @Body() releaseEscrowDto: ReleaseEscrowDto, @CurrentUser() user: User) {
+    return this.escrowService.release(id, releaseEscrowDto, user);
   }
 
-  @Idempotent('escrow.splitRelease')
   @Post(':id/split-release')
-  splitRelease(@Param('id', new ParseUUIDPipe()) id: string, @Body() dto: SplitReleaseDto) {
-    return this.escrowService.splitRelease(id, dto.recipients);
+  @Idempotent()
+  @ApiOperation({ summary: 'Split release escrow funds' })
+  async splitRelease(@Param('id') id: string, @Body() splitReleaseDto: SplitReleaseDto, @CurrentUser() user: User) {
+    return this.escrowService.splitRelease(id, splitReleaseDto, user);
   }
 
-  @Idempotent('escrow.refund')
   @Post(':id/refund')
-  async refund(@Param('id', new ParseUUIDPipe()) id: string) {
-    return toPublicEscrow(await this.escrowService.refund(id));
+  @Idempotent()
+  @ApiOperation({ summary: 'Refund escrow' })
+  async refund(@Param('id') id: string, @CurrentUser() user: User) {
+    return this.escrowService.refund(id, user);
   }
 }
