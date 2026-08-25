@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Param, Post } from '@nestjs/common';
+import { Body, Controller, Get, Param, ParseUUIDPipe, Post } from '@nestjs/common';
 import { ApiTags } from '@nestjs/swagger';
 import { IsOptional, IsUUID } from 'class-validator';
 import { MilestonesService } from './milestones.service';
@@ -36,26 +36,26 @@ export class MilestonesController {
   }
 
   @Get(':id')
-  findOne(@Param('id') id: string) {
+  findOne(@Param('id', new ParseUUIDPipe()) id: string) {
     return this.milestonesService.findOne(id);
   }
 
   @Idempotent('milestone.fund')
   @Post(':id/fund')
-  fund(@Param('id') id: string, @Body() dto: FundMilestoneDto) {
+  fund(@Param('id', new ParseUUIDPipe()) id: string, @Body() dto: FundMilestoneDto) {
     return this.milestonesService.fund(id, dto.funderAddress);
   }
 
   @Post(':id/issues/:issueId')
-  addIssue(@Param('id') id: string, @Param('issueId') issueId: string) {
+  addIssue(@Param('id', new ParseUUIDPipe()) id: string, @Param('issueId', new ParseUUIDPipe()) issueId: string) {
     return this.milestonesService.addIssue(id, issueId);
   }
 
   @Idempotent('milestone.resolveIssue')
   @Post(':id/issues/:issueId/resolve')
   resolveIssue(
-    @Param('id') id: string,
-    @Param('issueId') issueId: string,
+    @Param('id', new ParseUUIDPipe()) id: string,
+    @Param('issueId', new ParseUUIDPipe()) issueId: string,
     @Body() dto: ResolveIssueDto,
   ) {
     return this.milestonesService.resolveIssue(

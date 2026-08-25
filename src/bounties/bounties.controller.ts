@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Param, ParseEnumPipe, Post, Query } from '@nestjs/common';
+import { Body, Controller, Get, Param, ParseEnumPipe, ParseUUIDPipe, Post, Query } from '@nestjs/common';
 import { ApiTags } from '@nestjs/swagger';
 import { BountiesService } from './bounties.service';
 import { CreateBountyDto } from './dto/create-bounty.dto';
@@ -29,25 +29,25 @@ export class BountiesController {
   }
 
   @Get(':id')
-  findOne(@Param('id') id: string) {
+  findOne(@Param('id', new ParseUUIDPipe()) id: string) {
     return this.bountiesService.findOne(id);
   }
 
   @Idempotent('bounty.fund')
   @Post(':id/fund')
-  fund(@Param('id') id: string, @Body() dto: FundBountyDto) {
+  fund(@Param('id', new ParseUUIDPipe()) id: string, @Body() dto: FundBountyDto) {
     return this.bountiesService.fund(id, dto.funderAddress);
   }
 
   @Idempotent('bounty.claim')
   @Post(':id/claim')
-  claim(@Param('id') id: string, @Body() dto: ClaimBountyDto) {
+  claim(@Param('id', new ParseUUIDPipe()) id: string, @Body() dto: ClaimBountyDto) {
     return this.bountiesService.claim(id, dto.contributorId);
   }
 
   @Idempotent('bounty.refund')
   @Post(':id/refund')
-  refund(@Param('id') id: string) {
+  refund(@Param('id', new ParseUUIDPipe()) id: string) {
     return this.bountiesService.refund(id);
   }
 }
