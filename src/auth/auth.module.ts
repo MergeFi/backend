@@ -19,7 +19,7 @@ import { AppConfig } from '../config/configuration';
         const jwt = configService.get('jwt', { infer: true });
         return {
           secret: jwt.secret,
-          signOptions: { expiresIn: jwt.expiresIn as unknown as number },
+          signOptions: { expiresIn: jwt.expiresIn as string | number },
         };
       },
     }),
