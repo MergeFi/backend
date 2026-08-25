@@ -1,11 +1,4 @@
-import {
-  Column,
-  CreateDateColumn,
-  Entity,
-  JoinColumn,
-  ManyToOne,
-  PrimaryGeneratedColumn,
-} from 'typeorm';
+import { Column, Entity, ManyToOne, PrimaryGeneratedColumn } from 'typeorm';
 import { Team } from './team.entity';
 import { User } from './user.entity';
 
@@ -15,27 +8,19 @@ export class TeamMemberSplit {
   id: string;
 
   @ManyToOne(() => Team, (team) => team.splits, { onDelete: 'CASCADE' })
-  @JoinColumn()
+  @JoinColumn({ name: 'teamId' })
   team: Team;
 
-  @Column()
+  @Column({ name: 'teamId' })
   teamId: string;
 
-  @ManyToOne(() => User, { onDelete: 'CASCADE' })
-  @JoinColumn()
+  @ManyToOne(() => User, { onDelete: 'RESTRICT' })
+  @JoinColumn({ name: 'userId' })
   user: User;
 
-  @Column()
+  @Column({ name: 'userId' })
   userId: string;
 
-  /** Free-text label describing the member's contribution, e.g. "frontend". */
-  @Column({ type: 'varchar', nullable: true })
-  role: string | null;
-
-  /** Percentage of the bounty payout, 0-100. Sum across a team must equal 100. */
   @Column({ type: 'decimal', precision: 5, scale: 2 })
-  percentage: string;
-
-  @CreateDateColumn()
-  createdAt: Date;
+  percentage: number;
 }
