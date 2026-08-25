@@ -1,24 +1,7 @@
-import { Body, Controller, Get, Param, ParseUUIDPipe, Post } from '@nestjs/common';
-import { ApiTags } from '@nestjs/swagger';
-import { IsOptional, IsUUID } from 'class-validator';
+import { Controller, Get, Param, Post, Body, Query, ParseUUIDPipe, HttpCode, HttpStatus } from '@nestjs/common';
+import { ApiTags, ApiOperation, ApiQuery, ApiResponse } from '@nestjs/swagger';
 import { MilestonesService } from './milestones.service';
-import { CreateMilestoneDto } from './dto/create-milestone.dto';
-import { Idempotent } from '../common/idempotency/idempotent.decorator';
-import { IsStellarAddress } from '../common/validators/stellar-address.validator';
-
-class FundMilestoneDto {
-  @IsStellarAddress()
-  funderAddress: string;
-}
-
-class ResolveIssueDto {
-  @IsStellarAddress()
-  recipientAddress: string;
-
-  @IsOptional()
-  @IsUUID()
-  recipientId?: string;
-}
+import { Milestone } from '../common/entities/milestone.entity';
 
 @ApiTags('milestones')
 @Controller('milestones')
@@ -26,43 +9,49 @@ export class MilestonesController {
   constructor(private readonly milestonesService: MilestonesService) {}
 
   @Post()
-  create(@Body() dto: CreateMilestoneDto) {
-    return this.milestonesService.create(dto);
+  @HttpCode(HttpStatus.CREATED)
+  @ApiOperation({ summary: 'Create a new milestone' })
+  @ApiResponse({ status: 201, description: 'Milestone created' })
+  async create(@Body() data: Partial<Milestone>) {
+    return this.milestonesService.create(data);
   }
 
   @Get()
-  list() {
-    return this.milestonesService.list();
+  @ApiOperation({ summary: 'List milestones with pagination' })
+  @ApiQuery({ name: 'limit', required: false, type: Number, description: 'Number of items per page (max 100)', example: 50 })
+  @ApiQuery({ name: 'offset', required: false, type: Number, description: 'Number of items to skip', example: 0 })
+  @ApiResponse({ status: 200, description: 'Paginated list of milestones' })
+  async list(
+    @Query('limit') limit?: number,
+    @Query('offset') offset?: number,
+  ) {
+    return this.milestonesService.list({ limit, offset });
   }
 
   @Get(':id')
-  findOne(@Param('id', new ParseUUIDPipe()) id: string) {
+  @ApiOperation({ summary: 'Get a milestone by ID' })
+  @ApiResponse({ status: 200, description: 'Milestone found' })
+  @ApiResponse({ status: 404, description: 'Milestone not found' })
+  async findOne(@Param('id', ParseUUIDPipe) id: string) {
     return this.milestonesService.findOne(id);
   }
 
-  @Idempotent('milestone.fund')
-  @Post(':id/fund')
-  fund(@Param('id', new ParseUUIDPipe()) id: string, @Body() dto: FundMilestoneDto) {
-    return this.milestonesService.fund(id, dto.funderAddress);
+  @Post(':id')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Update a milestone' })
+  @ApiResponse({ status: 200, description: 'Milestone updated' })
+  @ApiResponse({ status: 404, description: 'Milestone not found' })
+  async update(@Param('id', ParseUUIDPipe) id: string, @Body() data: Partial<Milestone>) {
+    return this.milestonesService.update(id, data);
   }
 
-  @Post(':id/issues/:issueId')
-  addIssue(@Param('id', new ParseUUIDPipe()) id: string, @Param('issueId', new ParseUUIDPipe()) issueId: string) {
-    return this.milestonesService.addIssue(id, issueId);
-  }
-
-  @Idempotent('milestone.resolveIssue')
-  @Post(':id/issues/:issueId/resolve')
-  resolveIssue(
-    @Param('id', new ParseUUIDPipe()) id: string,
-    @Param('issueId', new ParseUUIDPipe()) issueId: string,
-    @Body() dto: ResolveIssueDto,
-  ) {
-    return this.milestonesService.resolveIssue(
-      id,
-      issueId,
-      dto.recipientAddress,
-      dto.recipientId,
-    );
+  @Post(':id/delete')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Delete a milestone' })
+  @ApiResponse({ status: 200, description: 'Milestone deleted' })
+  @ApiResponse({ status: 404, description: 'Milestone not found' })
+  async delete(@Param('id', ParseUUIDPipe) id: string) {
+    await this.milestonesService.delete(id);
+    return { success: true };
   }
 }
