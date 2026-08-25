@@ -1,66 +1,44 @@
-import { Body, Controller, Get, Param, ParseUUIDPipe, Post } from '@nestjs/common';
-import { ApiTags } from '@nestjs/swagger';
-import { IsOptional, IsUUID } from 'class-validator';
+import { Controller, Post, Param, Body, UseGuards, Get } from '@nestjs/common';
+import { ApiTags, ApiOperation, ApiBearerAuth } from '@nestjs/swagger';
 import { MaintenancePoolService } from './maintenance-pool.service';
-import { CreatePoolDto } from './dto/create-pool.dto';
-import { IsMoneyAmount } from '../common/validators/money.validator';
-import { IsStellarAddress } from '../common/validators/stellar-address.validator';
+import { CreateMaintenancePoolDto } from './dto/create-maintenance-pool.dto';
+import { DepositDto } from './dto/deposit.dto';
+import { AssignRewardDto } from './dto/assign-reward.dto';
+import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { Idempotent } from '../common/idempotency/idempotent.decorator';
-
-class DepositDto {
-  @IsMoneyAmount()
-  amount: string;
-
-  @IsStellarAddress()
-  funderAddress: string;
-}
-
-class AssignRewardDto {
-  @IsMoneyAmount()
-  amount: string;
-
-  @IsStellarAddress()
-  recipientAddress: string;
-
-  @IsOptional()
-  @IsUUID()
-  recipientId?: string;
-}
+import { CurrentUser } from '../auth/decorators/current-user.decorator';
+import { User } from '../common/entities/user.entity';
 
 @ApiTags('maintenance-pool')
-@Controller('maintenance-pools')
+@ApiBearerAuth()
+@Controller('maintenance-pool')
+@UseGuards(JwtAuthGuard)
 export class MaintenancePoolController {
-  constructor(private readonly poolService: MaintenancePoolService) {}
+  constructor(private readonly maintenancePoolService: MaintenancePoolService) {}
 
   @Post()
-  create(@Body() dto: CreatePoolDto) {
-    return this.poolService.create(dto);
-  }
-
-  @Get()
-  list() {
-    return this.poolService.list();
+  @ApiOperation({ summary: 'Create a new maintenance pool' })
+  async create(@Body() createMaintenancePoolDto: CreateMaintenancePoolDto, @CurrentUser() user: User) {
+    return this.maintenancePoolService.create(createMaintenancePoolDto, user);
   }
 
   @Get(':id')
-  findOne(@Param('id', new ParseUUIDPipe()) id: string) {
-    return this.poolService.findOne(id);
+  @ApiOperation({ summary: 'Get maintenance pool by ID' })
+  async findOne(@Param('id') id: string) {
+    return this.maintenancePoolService.findOne(id);
   }
 
-  @Idempotent('pool.deposit')
   @Post(':id/deposit')
-  deposit(@Param('id', new ParseUUIDPipe()) id: string, @Body() dto: DepositDto) {
-    return this.poolService.deposit(id, dto.amount, dto.funderAddress);
+  @Idempotent()
+  @ApiOperation({ summary: 'Deposit into maintenance pool' })
+  async deposit(@Param('id') id: string, @Body() depositDto: DepositDto, @CurrentUser() user: User) {
+    return this.maintenancePoolService.deposit(id, depositDto, user);
   }
 
-  @Idempotent('pool.assignReward')
   @Post(':id/assign-reward')
-  assignReward(@Param('id', new ParseUUIDPipe()) id: string, @Body() dto: AssignRewardDto) {
-    return this.poolService.assignReward(
-      id,
-      dto.amount,
-      dto.recipientAddress,
-      dto.recipientId,
-    );
+  @Idempotent()
+  @ApiOperation({ summary: 'Assign reward from maintenance pool' })
+  async assignReward(@Param('id') id: string, @Body() assignRewardDto: AssignRewardDto, @CurrentUser() user: User) {
+    return this.maintenancePoolService.assignReward(id, assignRewardDto, user);
   }
 }

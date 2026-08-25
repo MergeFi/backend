@@ -1,68 +1,44 @@
-import { Body, Controller, Get, Param, ParseUUIDPipe, Post } from '@nestjs/common';
-import { ApiTags } from '@nestjs/swagger';
-import { IsOptional, IsUUID } from 'class-validator';
+import { Controller, Post, Param, Body, UseGuards, Get } from '@nestjs/common';
+import { ApiTags, ApiOperation, ApiBearerAuth } from '@nestjs/swagger';
 import { MilestonesService } from './milestones.service';
 import { CreateMilestoneDto } from './dto/create-milestone.dto';
+import { FundMilestoneDto } from './dto/fund-milestone.dto';
+import { ResolveIssueDto } from './dto/resolve-issue.dto';
+import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { Idempotent } from '../common/idempotency/idempotent.decorator';
-import { IsStellarAddress } from '../common/validators/stellar-address.validator';
-
-class FundMilestoneDto {
-  @IsStellarAddress()
-  funderAddress: string;
-}
-
-class ResolveIssueDto {
-  @IsStellarAddress()
-  recipientAddress: string;
-
-  @IsOptional()
-  @IsUUID()
-  recipientId?: string;
-}
+import { CurrentUser } from '../auth/decorators/current-user.decorator';
+import { User } from '../common/entities/user.entity';
 
 @ApiTags('milestones')
+@ApiBearerAuth()
 @Controller('milestones')
+@UseGuards(JwtAuthGuard)
 export class MilestonesController {
   constructor(private readonly milestonesService: MilestonesService) {}
 
   @Post()
-  create(@Body() dto: CreateMilestoneDto) {
-    return this.milestonesService.create(dto);
-  }
-
-  @Get()
-  list() {
-    return this.milestonesService.list();
+  @ApiOperation({ summary: 'Create a new milestone' })
+  async create(@Body() createMilestoneDto: CreateMilestoneDto, @CurrentUser() user: User) {
+    return this.milestonesService.create(createMilestoneDto, user);
   }
 
   @Get(':id')
-  findOne(@Param('id', new ParseUUIDPipe()) id: string) {
+  @ApiOperation({ summary: 'Get milestone by ID' })
+  async findOne(@Param('id') id: string) {
     return this.milestonesService.findOne(id);
   }
 
-  @Idempotent('milestone.fund')
   @Post(':id/fund')
-  fund(@Param('id', new ParseUUIDPipe()) id: string, @Body() dto: FundMilestoneDto) {
-    return this.milestonesService.fund(id, dto.funderAddress);
+  @Idempotent()
+  @ApiOperation({ summary: 'Fund a milestone' })
+  async fund(@Param('id') id: string, @Body() fundMilestoneDto: FundMilestoneDto, @CurrentUser() user: User) {
+    return this.milestonesService.fund(id, fundMilestoneDto, user);
   }
 
-  @Post(':id/issues/:issueId')
-  addIssue(@Param('id', new ParseUUIDPipe()) id: string, @Param('issueId', new ParseUUIDPipe()) issueId: string) {
-    return this.milestonesService.addIssue(id, issueId);
-  }
-
-  @Idempotent('milestone.resolveIssue')
   @Post(':id/issues/:issueId/resolve')
-  resolveIssue(
-    @Param('id', new ParseUUIDPipe()) id: string,
-    @Param('issueId', new ParseUUIDPipe()) issueId: string,
-    @Body() dto: ResolveIssueDto,
-  ) {
-    return this.milestonesService.resolveIssue(
-      id,
-      issueId,
-      dto.recipientAddress,
-      dto.recipientId,
-    );
+  @Idempotent()
+  @ApiOperation({ summary: 'Resolve an issue in a milestone' })
+  async resolveIssue(@Param('id') id: string, @Param('issueId') issueId: string, @Body() resolveIssueDto: ResolveIssueDto, @CurrentUser() user: User) {
+    return this.milestonesService.resolveIssue(id, issueId, resolveIssueDto, user);
   }
 }

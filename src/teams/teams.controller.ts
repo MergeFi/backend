@@ -1,33 +1,35 @@
-import { Body, Controller, Get, Param, ParseUUIDPipe, Patch, Post } from '@nestjs/common';
-import { ApiTags } from '@nestjs/swagger';
+import { Controller, Post, Param, Body, UseGuards, Get } from '@nestjs/common';
+import { ApiTags, ApiOperation, ApiBearerAuth } from '@nestjs/swagger';
 import { TeamsService } from './teams.service';
-import { CreateTeamDto, TeamMemberSplitDto } from './dto/create-team.dto';
+import { CreateTeamDto } from './dto/create-team.dto';
+import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
+import { Idempotent } from '../common/idempotency/idempotent.decorator';
+import { CurrentUser } from '../auth/decorators/current-user.decorator';
+import { User } from '../common/entities/user.entity';
 
 @ApiTags('teams')
+@ApiBearerAuth()
 @Controller('teams')
+@UseGuards(JwtAuthGuard)
 export class TeamsController {
   constructor(private readonly teamsService: TeamsService) {}
 
   @Post()
-  create(@Body() dto: CreateTeamDto) {
-    return this.teamsService.create(dto);
+  @ApiOperation({ summary: 'Create a new team' })
+  async create(@Body() createTeamDto: CreateTeamDto, @CurrentUser() user: User) {
+    return this.teamsService.create(createTeamDto, user);
   }
 
   @Get(':id')
-  findOne(@Param('id', new ParseUUIDPipe()) id: string) {
+  @ApiOperation({ summary: 'Get team by ID' })
+  async findOne(@Param('id') id: string) {
     return this.teamsService.findOne(id);
   }
 
-  @Patch(':id/splits')
-  updateSplits(
-    @Param('id', new ParseUUIDPipe()) id: string,
-    @Body() members: TeamMemberSplitDto[],
-  ) {
-    return this.teamsService.updateSplits(id, members);
-  }
-
   @Post(':id/assign/:bountyId')
-  assign(@Param('id', new ParseUUIDPipe()) id: string, @Param('bountyId', new ParseUUIDPipe()) bountyId: string) {
-    return this.teamsService.assignToBounty(id, bountyId);
+  @Idempotent()
+  @ApiOperation({ summary: 'Assign team to bounty' })
+  async assignToBounty(@Param('id') id: string, @Param('bountyId') bountyId: string, @CurrentUser() user: User) {
+    return this.teamsService.assignToBounty(id, bountyId, user);
   }
 }
