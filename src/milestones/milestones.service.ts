@@ -3,8 +3,8 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
-import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { InjectDataSource, InjectRepository } from '@nestjs/typeorm';
+import { DataSource, Repository } from 'typeorm';
 import { Issue, Milestone } from '../common/entities';
 import { MilestoneStatus } from '../common/enums';
 import { EscrowService } from '../escrow/escrow.service';
@@ -16,6 +16,7 @@ export class MilestonesService {
     @InjectRepository(Milestone)
     private readonly milestoneRepo: Repository<Milestone>,
     @InjectRepository(Issue) private readonly issueRepo: Repository<Issue>,
+    @InjectDataSource() private readonly dataSource: DataSource,
     private readonly escrowService: EscrowService,
   ) {}
 
@@ -68,6 +69,15 @@ export class MilestonesService {
   /** Attaches an already-tracked issue to this milestone. */
   async addIssue(milestoneId: string, issueId: string): Promise<Issue> {
     const milestone = await this.findOne(milestoneId);
+    if (
+      milestone.status !== MilestoneStatus.OPEN &&
+      milestone.status !== MilestoneStatus.FUNDED &&
+      milestone.status !== MilestoneStatus.IN_PROGRESS
+    ) {
+      throw new BadRequestException(
+        `Cannot attach issue to milestone in ${milestone.status} status`,
+      );
+    }
     const issue = await this.issueRepo.findOne({ where: { id: issueId } });
     if (!issue) throw new NotFoundException(`Issue ${issueId} not found`);
     issue.milestoneId = milestone.id;
@@ -78,6 +88,10 @@ export class MilestonesService {
    * Distributes this milestone's budget proportionally as its issues resolve.
    * TODO: support per-issue weighted budgets; currently splits the remaining
    * budget evenly across still-unresolved issues at the time of each call.
+   *
+   * The escrow release, milestone distributed-total update, and issue close
+   * are wrapped in a single DB transaction to prevent desync between the
+   * Payment ledger and `milestone.distributed` (#117).
    */
   async resolveIssue(
     milestoneId: string,
@@ -106,26 +120,33 @@ export class MilestonesService {
       Number(milestone.budget) - Number(milestone.distributed);
     const share = Math.min(remainingBudget / unresolvedCount, remainingBudget);
 
-    const payment = await this.escrowService.releasePartial(
-      milestone.escrowId,
-      share.toFixed(7),
-      recipientAddress,
-      recipientId,
-    );
+    return this.dataSource.transaction(async (mgr) => {
+      const payment = await this.escrowService.releasePartial(
+        milestone.escrowId!,
+        share.toFixed(7),
+        recipientAddress,
+        recipientId,
+      );
 
-    milestone.distributed = (Number(milestone.distributed) + share).toFixed(7);
-    milestone.status =
-      Number(milestone.distributed) >= Number(milestone.budget) - 1e-7
-        ? MilestoneStatus.COMPLETED
-        : MilestoneStatus.IN_PROGRESS;
-    await this.milestoneRepo.save(milestone);
+      const newDistributed = (
+        Number(milestone.distributed) + share
+      ).toFixed(7);
+      const newStatus =
+        Number(newDistributed) >= Number(milestone.budget) - 1e-7
+          ? MilestoneStatus.COMPLETED
+          : MilestoneStatus.IN_PROGRESS;
+      await mgr.update(Milestone, milestoneId, {
+        distributed: newDistributed,
+        status: newStatus,
+      });
 
-    await this.issueRepo.update(issueId, {
-      state: 'closed',
-      closedAt: new Date(),
+      await mgr.update(Issue, issueId, {
+        state: 'closed',
+        closedAt: new Date(),
+      });
+
+      return payment;
     });
-
-    return payment;
   }
 
   async list(): Promise<Milestone[]> {

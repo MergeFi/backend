@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Param, Patch, Post } from '@nestjs/common';
+import { Body, Controller, Get, Param, ParseUUIDPipe, Patch, Post } from '@nestjs/common';
 import { ApiTags } from '@nestjs/swagger';
 import { TeamsService } from './teams.service';
 import { CreateTeamDto, TeamMemberSplitDto } from './dto/create-team.dto';
@@ -14,20 +14,20 @@ export class TeamsController {
   }
 
   @Get(':id')
-  findOne(@Param('id') id: string) {
+  findOne(@Param('id', new ParseUUIDPipe()) id: string) {
     return this.teamsService.findOne(id);
   }
 
   @Patch(':id/splits')
   updateSplits(
-    @Param('id') id: string,
+    @Param('id', new ParseUUIDPipe()) id: string,
     @Body() members: TeamMemberSplitDto[],
   ) {
     return this.teamsService.updateSplits(id, members);
   }
 
   @Post(':id/assign/:bountyId')
-  assign(@Param('id') id: string, @Param('bountyId') bountyId: string) {
+  assign(@Param('id', new ParseUUIDPipe()) id: string, @Param('bountyId', new ParseUUIDPipe()) bountyId: string) {
     return this.teamsService.assignToBounty(id, bountyId);
   }
 }

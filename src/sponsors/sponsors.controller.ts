@@ -1,4 +1,4 @@
-import { Controller, Get, Param } from '@nestjs/common';
+import { Controller, Get, Param, ParseUUIDPipe } from '@nestjs/common';
 import { ApiTags } from '@nestjs/swagger';
 import { SponsorsService } from './sponsors.service';
 
@@ -8,12 +8,12 @@ export class SponsorsController {
   constructor(private readonly sponsorsService: SponsorsService) {}
 
   @Get(':id/dashboard')
-  dashboard(@Param('id') id: string) {
+  dashboard(@Param('id', new ParseUUIDPipe()) id: string) {
     return this.sponsorsService.dashboard(id);
   }
 
   @Get(':id/milestones/progress')
-  milestoneProgress(@Param('id') id: string) {
+  milestoneProgress(@Param('id', new ParseUUIDPipe()) id: string) {
     return this.sponsorsService.milestoneProgress(id);
   }
 }

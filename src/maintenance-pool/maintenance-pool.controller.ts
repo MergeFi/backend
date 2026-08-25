@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Param, Post } from '@nestjs/common';
+import { Body, Controller, Get, Param, ParseUUIDPipe, Post } from '@nestjs/common';
 import { ApiTags } from '@nestjs/swagger';
 import { IsOptional, IsUUID } from 'class-validator';
 import { MaintenancePoolService } from './maintenance-pool.service';
@@ -43,19 +43,19 @@ export class MaintenancePoolController {
   }
 
   @Get(':id')
-  findOne(@Param('id') id: string) {
+  findOne(@Param('id', new ParseUUIDPipe()) id: string) {
     return this.poolService.findOne(id);
   }
 
   @Idempotent('pool.deposit')
   @Post(':id/deposit')
-  deposit(@Param('id') id: string, @Body() dto: DepositDto) {
+  deposit(@Param('id', new ParseUUIDPipe()) id: string, @Body() dto: DepositDto) {
     return this.poolService.deposit(id, dto.amount, dto.funderAddress);
   }
 
   @Idempotent('pool.assignReward')
   @Post(':id/assign-reward')
-  assignReward(@Param('id') id: string, @Body() dto: AssignRewardDto) {
+  assignReward(@Param('id', new ParseUUIDPipe()) id: string, @Body() dto: AssignRewardDto) {
     return this.poolService.assignReward(
       id,
       dto.amount,
