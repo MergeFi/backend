@@ -1,53 +1,50 @@
-import { Body, Controller, Get, Param, ParseEnumPipe, ParseUUIDPipe, Post, Query } from '@nestjs/common';
-import { ApiTags } from '@nestjs/swagger';
+import { Controller, Post, Param, Body, UseGuards, Get } from '@nestjs/common';
+import { ApiTags, ApiOperation, ApiBearerAuth } from '@nestjs/swagger';
 import { BountiesService } from './bounties.service';
-import { CreateBountyDto } from './dto/create-bounty.dto';
 import { ClaimBountyDto } from './dto/claim-bounty.dto';
-import { BountyStatus } from '../common/enums';
+import { CreateBountyDto } from './dto/create-bounty.dto';
+import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { Idempotent } from '../common/idempotency/idempotent.decorator';
-import { IsStellarAddress } from '../common/validators/stellar-address.validator';
-
-class FundBountyDto {
-  @IsStellarAddress()
-  funderAddress: string;
-}
+import { CurrentUser } from '../auth/decorators/current-user.decorator';
+import { User } from '../common/entities/user.entity';
 
 @ApiTags('bounties')
+@ApiBearerAuth()
 @Controller('bounties')
+@UseGuards(JwtAuthGuard)
 export class BountiesController {
   constructor(private readonly bountiesService: BountiesService) {}
 
-  @Idempotent('bounty.create')
   @Post()
-  create(@Body() dto: CreateBountyDto) {
-    return this.bountiesService.create(dto);
-  }
-
-  @Get()
-  list(@Query('status', new ParseEnumPipe(BountyStatus, { optional: true })) status?: BountyStatus) {
-    return this.bountiesService.list(status);
+  @ApiOperation({ summary: 'Create a new bounty' })
+  async create(@Body() createBountyDto: CreateBountyDto, @CurrentUser() user: User) {
+    return this.bountiesService.create(createBountyDto, user);
   }
 
   @Get(':id')
-  findOne(@Param('id', new ParseUUIDPipe()) id: string) {
+  @ApiOperation({ summary: 'Get bounty by ID' })
+  async findOne(@Param('id') id: string) {
     return this.bountiesService.findOne(id);
   }
 
-  @Idempotent('bounty.fund')
   @Post(':id/fund')
-  fund(@Param('id', new ParseUUIDPipe()) id: string, @Body() dto: FundBountyDto) {
-    return this.bountiesService.fund(id, dto.funderAddress);
+  @Idempotent()
+  @ApiOperation({ summary: 'Fund a bounty' })
+  async fund(@Param('id') id: string, @CurrentUser() user: User) {
+    return this.bountiesService.fund(id, user);
   }
 
-  @Idempotent('bounty.claim')
   @Post(':id/claim')
-  claim(@Param('id', new ParseUUIDPipe()) id: string, @Body() dto: ClaimBountyDto) {
-    return this.bountiesService.claim(id, dto.contributorId);
+  @Idempotent()
+  @ApiOperation({ summary: 'Claim a bounty' })
+  async claim(@Param('id') id: string, @Body() claimBountyDto: ClaimBountyDto, @CurrentUser() user: User) {
+    return this.bountiesService.claim(id, claimBountyDto, user);
   }
 
-  @Idempotent('bounty.refund')
   @Post(':id/refund')
-  refund(@Param('id', new ParseUUIDPipe()) id: string) {
-    return this.bountiesService.refund(id);
+  @Idempotent()
+  @ApiOperation({ summary: 'Refund a bounty' })
+  async refund(@Param('id') id: string, @CurrentUser() user: User) {
+    return this.bountiesService.refund(id, user);
   }
 }
