@@ -16,6 +16,7 @@ describe('GithubWebhooksService', () => {
   let bountiesService: {
     markInReview: jest.Mock;
     markMergedAndRelease: jest.Mock;
+    markPrClosedWithoutMerge: jest.Mock;
   };
   let syncService: {
     findRepositoryByGithubId: jest.Mock;
@@ -35,6 +36,7 @@ describe('GithubWebhooksService', () => {
     bountiesService = {
       markInReview: jest.fn().mockResolvedValue(undefined),
       markMergedAndRelease: jest.fn().mockResolvedValue(undefined),
+      markPrClosedWithoutMerge: jest.fn().mockResolvedValue(undefined),
     };
     syncService = {
       findRepositoryByGithubId: jest.fn(),
@@ -120,7 +122,13 @@ describe('GithubWebhooksService', () => {
     expect(event.status).toBe(WebhookEventStatus.PROCESSED);
   });
 
-  it('ignores a closed-but-not-merged pull_request event', async () => {
+  it('handles a closed-but-not-merged PR by moving linked bounties back to CLAIMED', async () => {
+    issueRepo.findOne.mockResolvedValue({
+      id: 'issue-1',
+      bounty: { id: 'bounty-1' },
+    });
+    bountyRepo.findOne.mockResolvedValue({ id: 'bounty-1', status: 'in_review' });
+
     const payload = {
       action: 'closed',
       number: 8,
@@ -132,8 +140,32 @@ describe('GithubWebhooksService', () => {
       },
       repository: { id: 1, full_name: 'a/b' },
     };
-    await service.handleEvent('pull_request', 'delivery-3', payload, true);
+    const event = await service.handleEvent('pull_request', 'delivery-3', payload, true);
+    expect(bountiesService.markPrClosedWithoutMerge).toHaveBeenCalledWith('bounty-1');
     expect(bountiesService.markMergedAndRelease).not.toHaveBeenCalled();
+    expect(event.status).toBe(WebhookEventStatus.PROCESSED);
+  });
+
+  it('skips bounty reset for closed-but-not-merged PR when bounty is not IN_REVIEW', async () => {
+    issueRepo.findOne.mockResolvedValue({
+      id: 'issue-1',
+      bounty: { id: 'bounty-1' },
+    });
+    bountyRepo.findOne.mockResolvedValue({ id: 'bounty-1', status: 'claimed' });
+
+    const payload = {
+      action: 'closed',
+      number: 8,
+      pull_request: {
+        html_url: 'x',
+        number: 8,
+        merged: false,
+        body: 'closes #1',
+      },
+      repository: { id: 1, full_name: 'a/b' },
+    };
+    await service.handleEvent('pull_request', 'delivery-3b', payload, true);
+    expect(bountiesService.markPrClosedWithoutMerge).not.toHaveBeenCalled();
   });
 
   describe('per-linked-issue isolation on a merged PR (#47)', () => {
