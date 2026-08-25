@@ -1,8 +1,5 @@
 import { BadRequestException } from '@nestjs/common';
-import {
-  computeSplitShares,
-  validateSplitPercentages,
-} from './team-split.util';
+import { validateSplitPercentages } from './team-split.util';
 
 describe('team split percentage math', () => {
   it('accepts splits that sum to exactly 100', () => {
@@ -45,24 +42,5 @@ describe('team split percentage math', () => {
 
   it('rejects an empty split list', () => {
     expect(() => validateSplitPercentages([])).toThrow(BadRequestException);
-  });
-
-  it('computeSplitShares divides an amount proportionally', () => {
-    const shares = computeSplitShares(1000, [
-      { percentage: 40 },
-      { percentage: 40 },
-      { percentage: 20 },
-    ]);
-    expect(shares).toEqual([400, 400, 200]);
-  });
-
-  it('computeSplitShares handles uneven thirds without losing precision beyond 7dp', () => {
-    const shares = computeSplitShares(100, [
-      { percentage: 33.33 },
-      { percentage: 33.33 },
-      { percentage: 33.34 },
-    ]);
-    const total = shares.reduce((a, b) => a + b, 0);
-    expect(total).toBeCloseTo(100, 5);
   });
 });

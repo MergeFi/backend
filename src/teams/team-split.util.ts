@@ -21,14 +21,3 @@ export function validateSplitPercentages(splits: SplitLike[]): void {
     );
   }
 }
-
-/** Computes each member's absolute payout share for a given total bounty amount. */
-export function computeSplitShares(
-  totalAmount: number,
-  splits: SplitLike[],
-): number[] {
-  validateSplitPercentages(splits);
-  return splits.map(
-    (s) => Math.round(((totalAmount * s.percentage) / 100) * 1e7) / 1e7,
-  );
-}
