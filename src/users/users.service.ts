@@ -87,14 +87,13 @@ export class UsersService {
     return this.findOneRaw(user.id);
   }
 
-  async addRole(userId: string, role: UserRole): Promise<User> {
-    const user = await this.findOneRaw(userId);
-    if (!user.roles.includes(role)) {
-      user.roles = [...user.roles, role];
-      await this.userRepo.save(user);
-    }
-    return user;
-  }
+  // Role assignment is intentionally out of scope for this version: a User's
+  // `roles` are seeded to [UserRole.CONTRIBUTOR] at creation (upsertFromGithub)
+  // and are not mutated by any API endpoint or admin flow today. The
+  // MAINTAINER / SPONSOR roles remain declared but unreachable until a
+  // guarded role-assignment endpoint (or sponsor-verification flow) is added.
+  // Keeping role mutation out of the public service surface prevents a reader
+  // from mistaking an unused method for a working feature.
 
   async setStellarAddress(
     userId: string,
