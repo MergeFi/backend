@@ -5,9 +5,8 @@ import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
 import helmet from 'helmet';
 import { AppModule } from './app.module';
 import { AppConfig } from './config/configuration';
+import { assertRequiredConfig } from './config/validate-required-config';
 import { GlobalExceptionFilter } from './common/filters/global-exception.filter';
-
-const INSECURE_DEFAULT_JWT_SECRET = 'insecure-dev-secret';
 
 const LOG_LEVEL_MAP: Record<string, string[]> = {
   error: ['error'],
@@ -31,12 +30,18 @@ async function bootstrap() {
   const env = configService.get('env', { infer: true });
   const logLevel = configService.get('logLevel', { infer: true });
   app.useLogger(resolveLogLevels(logLevel));
-  const jwtSecret = configService.get('jwt', { infer: true }).secret;
-  if (env === 'production' && jwtSecret === INSECURE_DEFAULT_JWT_SECRET) {
-    throw new Error(
-      'Refusing to start in production with the default JWT_SECRET. Set a real JWT_SECRET env var.',
-    );
-  }
+
+  // Fail fast and loudly if *any* required-in-production secret is missing —
+  // not just JWT_SECRET. An empty GITHUB_WEBHOOK_SECRET, TREASURY_SECRET,
+  // ESCROW_CONTRACT_ID, GITHUB_CLIENT_SECRET or a default DATABASE_URL all
+  // otherwise let the app boot "healthy" while silently misbehaving (#153).
+  assertRequiredConfig({
+    env,
+    jwt: configService.get('jwt', { infer: true }),
+    github: configService.get('github', { infer: true }),
+    stellar: configService.get('stellar', { infer: true }),
+    database: configService.get('database', { infer: true }),
+  });
 
   app.use(helmet());
   app.enableCors({
