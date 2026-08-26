@@ -80,9 +80,10 @@ export class GithubSyncService {
 
   /** Imports (or refreshes) a single repository and all of its open+closed issues. */
   async syncRepository(owner: string, repo: string): Promise<Repository> {
-    await this.logRateLimitStatus(`before ${owner}/${repo}`);
+    const repoResponse = await this.octokit.repos.get({ owner, repo });
+    this.logRateLimitFromHeaders(`before ${owner}/${repo}`, repoResponse.headers);
 
-    const { data: repoData } = await this.octokit.repos.get({ owner, repo });
+    const { data: repoData } = repoResponse;
 
     let repository = await this.repositoryRepo.findOne({
       where: { githubRepoId: String(repoData.id) },
@@ -106,11 +107,7 @@ export class GithubSyncService {
       : this.repositoryRepo.create(attrs);
     repository = await this.repositoryRepo.save(repository);
 
-    try {
-      await this.syncIssues(repository, owner, repo);
-    } finally {
-      await this.logRateLimitStatus(`after ${owner}/${repo}`);
-    }
+    await this.syncIssues(repository, owner, repo);
     return repository;
   }
 
@@ -145,6 +142,10 @@ export class GithubSyncService {
           );
           if (applied) saved.push(issue);
         }
+        this.logRateLimitFromHeaders(
+          `after ${owner}/${repo} (page ${pagesFetched})`,
+          response.headers,
+        );
       }
     } catch (err) {
       const cause = err as Error;
@@ -249,22 +250,23 @@ export class GithubSyncService {
   }
 
   /**
-   * Logs remaining/limit for the core REST rate-limit budget around large
-   * sync operations (#24), so a mid-sync rate-limit interruption shows up as
-   * an obviously-low "before" number in logs rather than a mystery failure.
-   * Best-effort: a failure to fetch rate-limit status never blocks the sync.
+   * Logs remaining/limit for the core REST rate-limit budget from the
+   * response headers of an already-made API call (#24, #62). Reads the
+   * x-ratelimit-* headers that GitHub includes on every REST response
+   * instead of issuing a dedicated rateLimit.get() request, which would
+   * itself consume quota and accelerate the very exhaustion being monitored.
    */
-  private async logRateLimitStatus(label: string): Promise<void> {
-    try {
-      const { data } = await this.octokit.rest.rateLimit.get();
-      const { limit, remaining, reset } = data.resources.core;
+  private logRateLimitFromHeaders(
+    label: string,
+    headers: Record<string, unknown>,
+  ): void {
+    const remaining = headers['x-ratelimit-remaining'];
+    const limit = headers['x-ratelimit-limit'];
+    const reset = headers['x-ratelimit-reset'];
+    if (remaining != null && limit != null && reset != null) {
       this.logger.log(
         `[rate-limit ${label}] core: ${remaining}/${limit} remaining, ` +
-          `resets at ${new Date(reset * 1000).toISOString()}`,
-      );
-    } catch (err) {
-      this.logger.warn(
-        `Failed to fetch rate-limit status (${label}): ${(err as Error).message}`,
+          `resets at ${new Date(Number(reset) * 1000).toISOString()}`,
       );
     }
   }
