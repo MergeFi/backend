@@ -16,6 +16,13 @@ describe('EscrowService', () => {
     save: jest.Mock;
     find: jest.Mock;
   };
+  let soroban: {
+    invoke: jest.Mock;
+    escrowContractId: string;
+    maintenancePoolContractId: string;
+    tokenContractId: jest.Mock;
+    escrowDeadlineSeconds: number;
+  };
   let soroban: { invoke: jest.Mock };
   let dataSource: { transaction: jest.Mock };
 
@@ -45,6 +52,12 @@ describe('EscrowService', () => {
         returnValue: null,
         status: 'SUCCESS',
       }),
+      // Dry-run defaults: no contract configured, so EscrowService persists a
+      // null contractId and passes an empty options object to invoke().
+      escrowContractId: '',
+      maintenancePoolContractId: '',
+      tokenContractId: jest.fn().mockReturnValue(''),
+      escrowDeadlineSeconds: 7776000,
     };
     // The transaction manager routes save(Entity, data) to the matching repo
     // mock so existing escrowRepo.save / paymentRepo.save assertions still hold.
@@ -78,14 +91,60 @@ describe('EscrowService', () => {
         asset: AssetType.USDC,
         funderAddress: 'GABC...FUNDER',
         bountyId: 'bounty-1',
+        onChainIssueId: '4242',
       });
 
-      expect(soroban.invoke).toHaveBeenCalledWith(
-        'fund',
-        expect.arrayContaining(['GABC...FUNDER', 'bounty-1']),
-      );
+      // escrow::fund(issue_id, sponsor, token, amount, deadline) (#158)
+      const [method, args] = soroban.invoke.mock.calls[0] as [
+        string,
+        unknown[],
+      ];
+      expect(method).toBe('fund');
+      expect(args[0]).toBe(4242n);
+      expect(args[1]).toBe('GABC...FUNDER');
+      expect(args[3]).toBe(1_000_000_000n);
+      expect(typeof args[4]).toBe('bigint');
       expect(escrow.status).toBe(EscrowStatus.LOCKED);
       expect(escrow.fundTxHash).toBe('tx-hash-123');
+    });
+
+    it('sends the token address and a deadline, and persists them on the row (#158)', async () => {
+      soroban.tokenContractId.mockReturnValue('CUSDCTOKEN');
+
+      const deadline = new Date('2026-12-31T00:00:00.000Z');
+      const escrow = await service.fund({
+        amount: '10.0000000',
+        asset: AssetType.USDC,
+        funderAddress: 'GFUNDER',
+        bountyId: 'bounty-1',
+        onChainIssueId: '77',
+        deadline,
+      });
+
+      const [, args] = soroban.invoke.mock.calls[0] as [string, unknown[]];
+      expect(args[2]).toBe('CUSDCTOKEN');
+      expect(args[4]).toBe(BigInt(Math.floor(deadline.getTime() / 1000)));
+      expect(escrow.onChainId).toBe('77');
+      expect(escrow.deadline).toBe(deadline);
+    });
+
+    it('derives a stable numeric on-chain id when the caller supplies none', async () => {
+      const first = await service.fund({
+        amount: '1.0000000',
+        asset: AssetType.USDC,
+        funderAddress: 'GFUNDER',
+        milestoneId: 'milestone-1',
+      });
+      const second = await service.fund({
+        amount: '1.0000000',
+        asset: AssetType.USDC,
+        funderAddress: 'GFUNDER',
+        milestoneId: 'milestone-1',
+      });
+
+      expect(first.onChainId).toMatch(/^\d+$/);
+      expect(first.onChainId).toBe(second.onChainId);
+      expect(() => BigInt(first.onChainId as string)).not.toThrow();
     });
 
     it('persists the denormalized sponsorId on the created escrow row', async () => {
@@ -301,6 +360,7 @@ describe('EscrowService', () => {
       amount: '100.0000000',
       asset: AssetType.USDC,
       milestoneId: 'milestone-1',
+      onChainId: '9100',
     });
 
     it('releases part of a LOCKED escrow and records a Payment while it stays LOCKED below the total', async () => {
@@ -315,6 +375,11 @@ describe('EscrowService', () => {
         'user-1',
       );
 
+      expect(soroban.invoke).toHaveBeenCalledWith(
+        'release',
+        [9100n, 'GRECIPIENT', 300_000_000n],
+        {},
+      );
       expect(soroban.invoke).toHaveBeenCalledWith('release_partial', [
         'milestone-1',
         'GRECIPIENT',
@@ -365,6 +430,12 @@ describe('EscrowService', () => {
 
       await service.releasePartial('escrow-partial', '60.0000000', 'GB');
 
+      expect(soroban.invoke).toHaveBeenNthCalledWith(
+        2,
+        'release',
+        [9100n, 'GB', 600_000_000n],
+        {},
+      );
       expect(soroban.invoke).toHaveBeenNthCalledWith(2, 'release_partial', [
         'milestone-1',
         'GB',
@@ -414,14 +485,70 @@ describe('EscrowService', () => {
         amount: '25.0000000',
         asset: AssetType.USDC,
         bountyId: 'bounty-7',
+        onChainId: '7007',
       });
 
       const escrow = await service.refund('escrow-refund');
 
-      expect(soroban.invoke).toHaveBeenCalledWith('refund', ['bounty-7']);
+      expect(soroban.invoke).toHaveBeenCalledWith('refund', [7007n], {});
       expect(escrow.status).toBe(EscrowStatus.REFUNDED);
       expect(escrow.refundTxHash).toBe('tx-hash-123');
       expect(escrow.refundedAt).toBeInstanceOf(Date);
+    });
+  });
+
+  describe('contract targeting (#157)', () => {
+    it('persists the escrow contract id on a bounty escrow and targets it on fund', async () => {
+      soroban.escrowContractId = 'CESCROW';
+      soroban.maintenancePoolContractId = 'CESCROW';
+
+      const escrow = await service.fund({
+        amount: '100.0000000',
+        asset: AssetType.USDC,
+        funderAddress: 'GFUNDER',
+        bountyId: 'bounty-1',
+      });
+
+      expect(escrow.contractId).toBe('CESCROW');
+      expect(soroban.invoke).toHaveBeenCalledWith('fund', expect.any(Array), {
+        contractId: 'CESCROW',
+      });
+    });
+
+    it('targets the maintenance-pool contract for a pool escrow', async () => {
+      soroban.escrowContractId = 'CESCROW';
+      soroban.maintenancePoolContractId = 'CPOOL';
+
+      const escrow = await service.fund({
+        amount: '100.0000000',
+        asset: AssetType.USDC,
+        funderAddress: 'GFUNDER',
+        maintenancePoolId: 'pool-1',
+      });
+
+      expect(escrow.contractId).toBe('CPOOL');
+      expect(soroban.invoke).toHaveBeenCalledWith('fund', expect.any(Array), {
+        contractId: 'CPOOL',
+      });
+    });
+
+    it('reuses the escrow row contract id on a later release', async () => {
+      escrowRepo.findOne.mockResolvedValue({
+        id: 'escrow-pinned',
+        status: EscrowStatus.LOCKED,
+        amount: '10',
+        asset: AssetType.USDC,
+        bountyId: 'bounty-9',
+        contractId: 'CPINNED',
+      });
+
+      await service.release('escrow-pinned', 'GRECIPIENT', 'user-1');
+
+      expect(soroban.invoke).toHaveBeenCalledWith(
+        'release',
+        expect.any(Array),
+        { contractId: 'CPINNED' },
+      );
     });
   });
 
@@ -488,13 +615,14 @@ describe('EscrowService', () => {
       expect(totalStroops).toBe(1_000_000_000n);
     });
 
-    it('sends basis points on-chain that sum to exactly 10,000', async () => {
+    it('calls the contract release entrypoint with (issue_id, Vec<(Address, u32)>) whose bps sum to 10,000 (#161)', async () => {
       escrowRepo.findOne.mockResolvedValue({
         id: 'escrow-bps',
         status: EscrowStatus.LOCKED,
         amount: '100.0000000',
         asset: AssetType.USDC,
         bountyId: 'bounty-bps',
+        onChainId: '8801',
       });
 
       await service.splitRelease('escrow-bps', [
@@ -503,10 +631,55 @@ describe('EscrowService', () => {
         { recipientAddress: 'GC', percentage: 33.334 },
       ]);
 
-      const invokeCall = soroban.invoke.mock.calls[0] as unknown[];
-      const splitArgs = invokeCall[1] as unknown[];
-      const bps = splitArgs[2] as number[];
-      expect(bps.reduce((a, b) => a + b, 0)).toBe(10_000);
+      const [method, args] = soroban.invoke.mock.calls[0] as [
+        string,
+        unknown[],
+      ];
+      expect(method).toBe('release');
+      expect(args[0]).toBe(8801n);
+      const recipients = args[1] as Array<[string, number]>;
+      expect(recipients.map((r) => r[0])).toEqual(['GA', 'GB', 'GC']);
+      expect(recipients.reduce((sum, r) => sum + r[1], 0)).toBe(10_000);
+    });
+
+    it('never invokes a split_release method (#161)', async () => {
+      escrowRepo.findOne.mockResolvedValue({
+        id: 'escrow-4',
+        status: EscrowStatus.LOCKED,
+        amount: '100',
+        asset: AssetType.USDC,
+        bountyId: 'bounty-4',
+        onChainId: '4004',
+      });
+
+      await service.splitRelease('escrow-4', [
+        { recipientAddress: 'GA', percentage: 50 },
+        { recipientAddress: 'GB', percentage: 50 },
+      ]);
+
+      const methods = soroban.invoke.mock.calls.map((c) => c[0]);
+      expect(methods).not.toContain('split_release');
+    });
+  });
+
+  describe('release convergence (#161)', () => {
+    it('releases a single recipient as the degenerate [(addr, 10000)] split', async () => {
+      escrowRepo.findOne.mockResolvedValue({
+        id: 'escrow-solo',
+        status: EscrowStatus.LOCKED,
+        amount: '50',
+        asset: AssetType.USDC,
+        bountyId: 'bounty-3',
+        onChainId: '3003',
+      });
+
+      await service.release('escrow-solo', 'GRECIPIENT', 'user-1');
+
+      expect(soroban.invoke).toHaveBeenCalledWith(
+        'release',
+        [3003n, [['GRECIPIENT', 10_000]]],
+        {},
+      );
     });
 
     it('writes the escrow status and every recipient Payment in one transaction (#154)', async () => {

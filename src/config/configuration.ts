@@ -1,3 +1,5 @@
+import { AssetType } from '../common/enums';
+
 export interface AppConfig {
   env: string;
   port: number;
@@ -25,7 +27,30 @@ export interface AppConfig {
     sorobanRpcUrl: string;
     networkPassphrase: string;
     escrowContractId: string;
+    /**
+     * Optional separate deployment for maintenance-pool escrows. Falls back
+     * to `escrowContractId` when unset. Threaded through to
+     * `SorobanClientService.invoke(..., { contractId })` by `EscrowService`
+     * so maintenance-pool fund/release/refund calls target this contract
+     * instead of the single bounty escrow contract (#157).
+     */
+    maintenancePoolContractId: string;
     treasurySecret: string;
+    /**
+     * Soroban token (SAC) contract addresses per supported asset. The real
+     * `escrow::fund(issue_id, sponsor, token, amount, deadline)` takes the
+     * token contract as a required argument (#158); this is where that
+     * address is resolved from `Escrow.asset`. Left blank in environments
+     * with no deployed contracts (calls dry-run regardless).
+     */
+    assetContractIds: Record<AssetType, string>;
+    /**
+     * Fallback escrow deadline, in seconds from fund time, used as the real
+     * `escrow::fund`'s `deadline` argument when the funding bounty/milestone
+     * carries no explicit deadline of its own (#158). The contract's
+     * refund-after-deadline mechanism depends on this being set.
+     */
+    escrowDeadlineSeconds: number;
   };
 }
 
@@ -63,6 +88,18 @@ export default (): AppConfig => ({
       process.env.STELLAR_NETWORK_PASSPHRASE ??
       'Test SDF Network ; September 2015',
     escrowContractId: process.env.ESCROW_CONTRACT_ID ?? '',
+    maintenancePoolContractId:
+      process.env.MAINTENANCE_POOL_CONTRACT_ID ??
+      process.env.ESCROW_CONTRACT_ID ??
+      '',
     treasurySecret: process.env.TREASURY_SECRET ?? '',
+    assetContractIds: {
+      USDC: process.env.USDC_TOKEN_CONTRACT_ID ?? '',
+      XLM: process.env.XLM_TOKEN_CONTRACT_ID ?? '',
+    },
+    escrowDeadlineSeconds: parseInt(
+      process.env.ESCROW_DEADLINE_SECONDS ?? '7776000',
+      10,
+    ),
   },
 });

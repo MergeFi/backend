@@ -92,7 +92,7 @@ Design principles:
 | `users` | User + linked `GithubAccount` records, role management, Stellar address linking. |
 | `github` | Repository/issue sync via Octokit (`github-sync.service.ts`) and inbound webhook handling with HMAC-SHA256 signature verification (`github-webhooks.service.ts`, `webhook-signature.util.ts`). On a merged PR, resolves the linked issue → bounty and triggers escrow release. |
 | `bounties` | Paid-issue lifecycle: create, fund, claim, review, merge, pay, refund, expire. State machine in `bounty-state-machine.ts`. |
-| `escrow` | Orchestrates fund/release/split-release/refund against the escrow contract via `SorobanClientService`, and keeps `Escrow`/`Payment` rows in sync. |
+| `escrow` | Orchestrates fund/release/refund against the escrow contract via `SorobanClientService`, and keeps `Escrow`/`Payment` rows in sync. Single-recipient and team-split payouts both go through the contract's one `release(issue_id, recipients)` entrypoint. |
 | `teams` | Team bounties: create a team with percentage splits (e.g. frontend 40 / backend 40 / testing 20), assign it to a bounty, validated to sum to 100%. |
 | `milestones` | Fund an entire milestone's budget up front; distribute it incrementally as issues resolve (`resolveIssue`), splitting the remaining budget across still-open issues. |
 | `maintenance-pool` | Recurring sponsor deposits into a shared pool; maintainers assign rewards out of the running balance for maintenance-type work. |
@@ -135,13 +135,16 @@ See [`.env.example`](./.env.example) for the full annotated list. Highlights:
 | `GITHUB_WEBHOOK_SECRET` | HMAC-SHA256 secret configured on the GitHub webhook. |
 | `STELLAR_NETWORK`, `SOROBAN_RPC_URL`, `STELLAR_NETWORK_PASSPHRASE` | Stellar network config. |
 | `ESCROW_CONTRACT_ID` | Deployed escrow contract ID from `mergefi-contracts`. **Not set in this environment** — see below. |
+| `MAINTENANCE_POOL_CONTRACT_ID` | Optional separate contract for maintenance-pool escrows; falls back to `ESCROW_CONTRACT_ID`. |
+| `USDC_TOKEN_CONTRACT_ID`, `XLM_TOKEN_CONTRACT_ID` | Soroban token (SAC) contract addresses, passed as `escrow::fund`'s required `token` argument. |
+| `ESCROW_DEADLINE_SECONDS` | Fallback `escrow::fund` deadline (seconds from fund time) when the bounty/milestone has none. Default 90 days. |
 | `TREASURY_SECRET` | Platform signer used to submit release/refund transactions. |
 
 ## Escrow / Soroban integration
 
 `src/escrow/soroban-client.service.ts` wraps `@stellar/stellar-sdk`'s
 `rpc.Server` to build, simulate, sign, and submit Soroban contract
-invocations (`fund` / `release` / `split_release` / `refund`) against the
+invocations (`fund` / `release` / `refund`) against the
 escrow contract. `src/escrow/escrow.service.ts` is the orchestration layer:
 it calls the client, then persists `Escrow`/`Payment` rows and drives the
 `Bounty`/`Milestone`/`MaintenancePool` state alongside it.
@@ -155,12 +158,13 @@ rest of the system (state transitions, DB writes, split-percentage math,
 webhook-triggered releases) can still be exercised end-to-end in tests and
 local dev. Once real contracts are deployed:
 
-1. Set `ESCROW_CONTRACT_ID`.
+1. Set `ESCROW_CONTRACT_ID` (and `MAINTENANCE_POOL_CONTRACT_ID` if the pool
+   uses a separate deployment), plus `USDC_TOKEN_CONTRACT_ID` /
+   `XLM_TOKEN_CONTRACT_ID` for the token argument.
 2. Set `TREASURY_SECRET` to a funded Stellar account.
-3. Confirm the contract's `fund`/`release`/`split_release`/`refund` function
-   signatures match the ones documented at the top of
-   `soroban-client.service.ts` (adjust argument encoding there if not —
-   TODOs are marked inline).
+3. Confirm the contract's `fund`/`release`/`refund` function signatures match
+   the ones documented at the top of `soroban-client.service.ts` (adjusted in
+   this change to track `mergefi-contracts`' `contracts/escrow/src/lib.rs`).
 
 No private keys for end users are ever stored — only the platform treasury
 signer, and only as an env var for this MVP (see Roadmap: move to KMS/multi-sig).
@@ -296,7 +300,7 @@ npm run test:e2e
 Unit tests cover critical domains including:
 - `src/bounties/bounty-state-machine.spec.ts` — the bounty lifecycle state machine.
 - `src/teams/team-split.util.spec.ts` — team payout split percentage math.
-- `src/escrow/escrow.service.spec.ts` — escrow fund/release/split-release/refund orchestration (Soroban client mocked).
+- `src/escrow/escrow.service.spec.ts` — escrow fund/release/refund orchestration (Soroban client mocked).
 - `src/github/webhook-signature.util.spec.ts` — GitHub webhook HMAC-SHA256 signature verification.
 - `src/github/github-webhooks.service.spec.ts` — webhook-to-escrow release logic.
 - `src/bounties/bounties.service.spec.ts` — bounty core management.

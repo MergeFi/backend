@@ -58,6 +58,7 @@ export class MilestonesService {
       funderAddress,
       milestoneId: milestone.id,
       sponsorId: milestone.sponsorId,
+      deadline: milestone.deadline,
     });
 
     milestone.escrow = escrow;
