@@ -53,20 +53,29 @@ async function bootstrap() {
   );
   app.useGlobalFilters(new GlobalExceptionFilter());
 
-  const swaggerConfig = new DocumentBuilder()
-    .setTitle('MergeFi API')
-    .setDescription(
-      'Where Open Source Meets Finance — GitHub bounty escrow orchestration on Stellar/Soroban.',
-    )
-    .setVersion('0.1.0')
-    .addBearerAuth()
-    .build();
-  const document = SwaggerModule.createDocument(app, swaggerConfig);
-  SwaggerModule.setup('api/docs', app, document);
+  // The generated OpenAPI document hands anyone a complete, browsable map of
+  // the API (routes, DTO shapes, validation constraints), so it is never
+  // exposed in production — same spirit as the JWT-secret guard above.
+  if (env !== 'production') {
+    const swaggerConfig = new DocumentBuilder()
+      .setTitle('MergeFi API')
+      .setDescription(
+        'Where Open Source Meets Finance — GitHub bounty escrow orchestration on Stellar/Soroban.',
+      )
+      .setVersion('0.1.0')
+      .addBearerAuth()
+      .build();
+    const document = SwaggerModule.createDocument(app, swaggerConfig);
+    SwaggerModule.setup('api/docs', app, document);
+  }
 
   const port = configService.get('port', { infer: true });
   await app.listen(port);
 
-  console.log(`MergeFi backend listening on port ${port} — docs at /api/docs`);
+  console.log(
+    env === 'production'
+      ? `MergeFi backend listening on port ${port}`
+      : `MergeFi backend listening on port ${port} — docs at /api/docs`,
+  );
 }
 void bootstrap();
