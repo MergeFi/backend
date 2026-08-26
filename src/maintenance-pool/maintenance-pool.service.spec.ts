@@ -3,7 +3,7 @@ import { getRepositoryToken } from '@nestjs/typeorm';
 import { BadRequestException, NotFoundException } from '@nestjs/common';
 import { MaintenancePoolService } from './maintenance-pool.service';
 import { EscrowService } from '../escrow/escrow.service';
-import { MaintenancePool } from '../common/entities';
+import { Issue, MaintenancePool } from '../common/entities';
 import { AssetType, MaintenancePoolStatus } from '../common/enums';
 
 describe('MaintenancePoolService', () => {
@@ -15,6 +15,7 @@ describe('MaintenancePoolService', () => {
     find: jest.Mock;
   };
   let escrowService: { fund: jest.Mock; releasePartial: jest.Mock };
+  let issueRepo: { findOne: jest.Mock };
 
   beforeEach(async () => {
     poolRepo = {
@@ -29,11 +30,19 @@ describe('MaintenancePoolService', () => {
       fund: jest.fn(),
       releasePartial: jest.fn(),
     };
+    issueRepo = {
+      findOne: jest.fn().mockResolvedValue({
+        id: 'issue-1',
+        isMaintenanceType: true,
+        repositoryId: 'repository-1',
+      }),
+    };
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         MaintenancePoolService,
         { provide: getRepositoryToken(MaintenancePool), useValue: poolRepo },
+        { provide: getRepositoryToken(Issue), useValue: issueRepo },
         { provide: EscrowService, useValue: escrowService },
       ],
     }).compile();
@@ -215,7 +224,7 @@ describe('MaintenancePoolService', () => {
       });
 
       await expect(
-        service.assignReward('pool-1', '10', 'GRECIPIENT'),
+        service.assignReward('pool-1', 'issue-1', '10', 'GRECIPIENT'),
       ).rejects.toThrow(BadRequestException);
       expect(escrowService.releasePartial).not.toHaveBeenCalled();
     });
@@ -228,7 +237,7 @@ describe('MaintenancePoolService', () => {
       });
 
       await expect(
-        service.assignReward('pool-1', '100', 'GRECIPIENT'),
+        service.assignReward('pool-1', 'issue-1', '100', 'GRECIPIENT'),
       ).rejects.toThrow(BadRequestException);
       expect(escrowService.releasePartial).not.toHaveBeenCalled();
     });
@@ -243,6 +252,7 @@ describe('MaintenancePoolService', () => {
 
       const payment = await service.assignReward(
         'pool-1',
+        'issue-1',
         '30',
         'GRECIPIENT',
         'user-1',
@@ -258,6 +268,43 @@ describe('MaintenancePoolService', () => {
       expect(poolRepo.save).toHaveBeenCalledWith(
         expect.objectContaining({ balance: '70.0000000' }),
       );
+    });
+
+    it('rejects a reward for a non-maintenance issue before releasing funds', async () => {
+      poolRepo.findOne.mockResolvedValue({
+        id: 'pool-1',
+        balance: '100',
+        escrowId: 'escrow-1',
+      });
+      issueRepo.findOne.mockResolvedValue({
+        id: 'issue-1',
+        isMaintenanceType: false,
+        repositoryId: 'repository-1',
+      });
+
+      await expect(
+        service.assignReward('pool-1', 'issue-1', '10', 'GRECIPIENT'),
+      ).rejects.toThrow(BadRequestException);
+      expect(escrowService.releasePartial).not.toHaveBeenCalled();
+    });
+
+    it('rejects an issue outside the pool repository', async () => {
+      poolRepo.findOne.mockResolvedValue({
+        id: 'pool-1',
+        repositoryId: 'repository-1',
+        balance: '100',
+        escrowId: 'escrow-1',
+      });
+      issueRepo.findOne.mockResolvedValue({
+        id: 'issue-1',
+        isMaintenanceType: true,
+        repositoryId: 'repository-2',
+      });
+
+      await expect(
+        service.assignReward('pool-1', 'issue-1', '10', 'GRECIPIENT'),
+      ).rejects.toThrow(BadRequestException);
+      expect(escrowService.releasePartial).not.toHaveBeenCalled();
     });
 
     // Regression baseline for #51 (MaintenancePool.balance is a
@@ -287,8 +334,8 @@ describe('MaintenancePoolService', () => {
       escrowService.releasePartial.mockResolvedValue({ id: 'payment-x' });
 
       await Promise.all([
-        service.assignReward('pool-1', '100', 'GRECIPIENT_A'),
-        service.assignReward('pool-1', '200', 'GRECIPIENT_B'),
+        service.assignReward('pool-1', 'issue-1', '100', 'GRECIPIENT_A'),
+        service.assignReward('pool-1', 'issue-1', '200', 'GRECIPIENT_B'),
       ]);
 
       // Both concurrent calls read balance=1000 before either wrote back,
