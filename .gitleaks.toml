@@ -1,0 +1,38 @@
+# gitleaks configuration for the CI "Scan for Hardcoded Secrets" step (#155).
+#
+# Extends gitleaks' maintained default rule set (AWS keys, generic
+# high-entropy tokens, DB connection strings, Slack/Discord webhooks, JWTs,
+# private keys, ...) and adds a project rule for Stellar secret keys, which
+# the previous hand-rolled grep specifically looked for.
+#
+# The allowlist below only covers deliberately-fake values in tests,
+# examples, and SDK mocks. It must never be widened to silence a real
+# finding in application code or in git history.
+
+[extend]
+useDefault = true
+
+[[rules]]
+id = "stellar-secret-key"
+description = "Stellar / Soroban secret seed (S... 56 chars, base32 alphabet)"
+regex = '''\bS[A-D][A-Z2-7]{54}\b'''
+keywords = ["S"]
+
+[allowlist]
+description = "Fake credentials in tests, examples and mocks"
+paths = [
+  '''\.env\.example$''',
+  '''(^|/)test/''',
+  '''\.spec\.ts$''',
+  '''\.e2e-spec\.ts$''',
+  '''\.mock\.(js|ts)$''',
+  '''(^|/)test/mocks/''',
+]
+regexes = [
+  # Placeholder values shipped in .env.example / docs.
+  '''change-me[a-z-]*''',
+  '''your-[a-z-]+''',
+  '''insecure-dev-secret''',
+  # Well-known local Postgres dev DSN used throughout the repo.
+  '''postgres:postgres@localhost''',
+]
