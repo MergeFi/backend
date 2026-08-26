@@ -2,6 +2,7 @@ import {
   Column,
   CreateDateColumn,
   Entity,
+  Index,
   JoinColumn,
   ManyToOne,
   OneToOne,
@@ -38,6 +39,7 @@ export class Bounty {
   claimedBy: User | null;
 
   @Column({ type: 'varchar', nullable: true })
+  @Index('IDX_bounties_claimedById')
   claimedById: string | null;
 
   /** Set when the bounty payout is split across a team instead of one contributor. */

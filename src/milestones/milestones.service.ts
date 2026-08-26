@@ -6,7 +6,7 @@ import {
 import { InjectDataSource, InjectRepository } from '@nestjs/typeorm';
 import { DataSource, Repository } from 'typeorm';
 import { Issue, Milestone } from '../common/entities';
-import { MilestoneStatus } from '../common/enums';
+import { IssueState, MilestoneStatus } from '../common/enums';
 import { EscrowService } from '../escrow/escrow.service';
 import { CreateMilestoneDto } from './dto/create-milestone.dto';
 
@@ -145,9 +145,7 @@ export class MilestonesService {
         recipientId,
       );
 
-      const newDistributed = (
-        Number(milestone.distributed) + share
-      ).toFixed(7);
+      const newDistributed = (Number(milestone.distributed) + share).toFixed(7);
       const newStatus =
         Number(newDistributed) >= Number(milestone.budget) - 1e-7
           ? MilestoneStatus.COMPLETED
@@ -158,7 +156,7 @@ export class MilestonesService {
       });
 
       await mgr.update(Issue, issueId, {
-        state: 'closed',
+        state: IssueState.CLOSED,
         closedAt: new Date(),
       });
 

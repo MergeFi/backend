@@ -3,6 +3,7 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { Octokit } from '@octokit/rest';
 import { Repository as TypeOrmRepository } from 'typeorm';
 import { Issue, Repository } from '../common/entities';
+import { IssueState } from '../common/enums';
 import { GITHUB_OCTOKIT } from './octokit.provider';
 
 const MAINTENANCE_LABELS = ['maintenance', 'dependencies', 'chore', 'docs'];
@@ -81,7 +82,10 @@ export class GithubSyncService {
   /** Imports (or refreshes) a single repository and all of its open+closed issues. */
   async syncRepository(owner: string, repo: string): Promise<Repository> {
     const repoResponse = await this.octokit.repos.get({ owner, repo });
-    this.logRateLimitFromHeaders(`before ${owner}/${repo}`, repoResponse.headers);
+    this.logRateLimitFromHeaders(
+      `before ${owner}/${repo}`,
+      repoResponse.headers,
+    );
 
     const { data: repoData } = repoResponse;
 
@@ -202,7 +206,7 @@ export class GithubSyncService {
       number: raw.number,
       title: raw.title,
       body: raw.body ?? null,
-      state: raw.state as 'open' | 'closed',
+      state: raw.state as IssueState,
       labels,
       githubUrl: raw.html_url,
       authorLogin: raw.user?.login ?? null,

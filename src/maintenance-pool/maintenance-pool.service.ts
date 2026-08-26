@@ -5,7 +5,7 @@ import {
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
-import { MaintenancePool } from '../common/entities';
+import { Issue, MaintenancePool } from '../common/entities';
 import { MaintenancePoolStatus } from '../common/enums';
 import { EscrowService } from '../escrow/escrow.service';
 import { CreatePoolDto } from './dto/create-pool.dto';
@@ -21,6 +21,8 @@ export class MaintenancePoolService {
   constructor(
     @InjectRepository(MaintenancePool)
     private readonly poolRepo: Repository<MaintenancePool>,
+    @InjectRepository(Issue)
+    private readonly issueRepo: Repository<Issue>,
     private readonly escrowService: EscrowService,
   ) {}
 
@@ -82,11 +84,24 @@ export class MaintenancePoolService {
   /** Maintainer assigns a reward from the pool's balance for completed maintenance work. */
   async assignReward(
     id: string,
+    issueId: string,
     amount: string,
     recipientAddress: string,
     recipientId?: string,
   ) {
     const pool = await this.findOne(id);
+    const issue = await this.issueRepo.findOne({ where: { id: issueId } });
+    if (!issue) throw new NotFoundException(`Issue ${issueId} not found`);
+    if (!issue.isMaintenanceType) {
+      throw new BadRequestException(
+        `Issue ${issueId} is not eligible for maintenance-pool rewards`,
+      );
+    }
+    if (pool.repositoryId && pool.repositoryId !== issue.repositoryId) {
+      throw new BadRequestException(
+        `Issue ${issueId} does not belong to pool ${id}'s repository`,
+      );
+    }
     if (!pool.escrowId) {
       throw new BadRequestException(`Pool ${id} has no funded escrow yet`);
     }

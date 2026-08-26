@@ -4,6 +4,11 @@ export enum UserRole {
   SPONSOR = 'sponsor',
 }
 
+export enum IssueState {
+  OPEN = 'open',
+  CLOSED = 'closed',
+}
+
 /**
  * Lifecycle of a paid issue (bounty).
  *
