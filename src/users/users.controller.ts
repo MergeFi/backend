@@ -1,4 +1,13 @@
-import { Body, Controller, Get, Param, ParseUUIDPipe, Patch, UseGuards } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Get,
+  Param,
+  ParseUUIDPipe,
+  Patch,
+  Req,
+  UseGuards,
+} from '@nestjs/common';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { IsString } from 'class-validator';
 import { UsersService } from './users.service';
@@ -34,7 +43,12 @@ export class UsersController {
   setStellarAddress(
     @Param('id', new ParseUUIDPipe()) id: string,
     @Body() dto: SetStellarAddressDto,
+    @Req() req: { user: { userId: string } },
   ) {
-    return this.usersService.setStellarAddress(id, dto.stellarAddress);
+    return this.usersService.setStellarAddress(
+      id,
+      dto.stellarAddress,
+      req.user.userId,
+    );
   }
 }

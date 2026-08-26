@@ -1,13 +1,13 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { getRepositoryToken } from '@nestjs/typeorm';
-import { NotFoundException } from '@nestjs/common';
+import { ForbiddenException, NotFoundException } from '@nestjs/common';
 import { UsersService } from './users.service';
 import { GithubAccount, User } from '../common/entities';
 import { UserRole } from '../common/enums';
 
 describe('UsersService', () => {
   let service: UsersService;
-  let userRepo: { findOne: jest.Mock; save: jest.Mock; create: jest.Mock };
+  let userRepo: { findOne: jest.Mock; save: jest.Mock; create: jest.Mock; find: jest.Mock };
   let githubAccountRepo: {
     findOne: jest.Mock;
     save: jest.Mock;
@@ -19,6 +19,7 @@ describe('UsersService', () => {
       findOne: jest.fn(),
       save: jest.fn((u: Partial<User>) => Promise.resolve({ id: 'u1', ...u })),
       create: jest.fn((u: Partial<User>) => u),
+      find: jest.fn(),
     };
     githubAccountRepo = {
       findOne: jest.fn(),
@@ -217,10 +218,10 @@ describe('UsersService', () => {
       ).rejects.toThrow(NotFoundException);
     });
 
-    it('sets stellarAddress on the given user and persists it', async () => {
+    it('sets stellarAddress on the given user and persists it for own id', async () => {
       userRepo.findOne.mockResolvedValue({ id: 'u1', stellarAddress: null });
 
-      const user = await service.setStellarAddress('u1', 'GNEWADDRESS');
+      const user = await service.setStellarAddress('u1', 'GNEWADDRESS', 'u1');
 
       expect(user.stellarAddress).toBe('GNEWADDRESS');
       expect(userRepo.save).toHaveBeenCalledWith(
@@ -228,34 +229,33 @@ describe('UsersService', () => {
       );
     });
 
-    // Note on #39 (UsersController.setStellarAddress is authenticated but
-    // not authorized: any logged-in user can overwrite another user's
-    // payout address): UsersService.setStellarAddress(userId, address) has
-    // no notion of "who is asking" in its own signature — by design it sets
-    // whichever userId it's given. The IDOR itself lives one layer up, in
-    // UsersController#setStellarAddress binding :id straight from the URL
-    // param instead of the authenticated req.user.id (see
-    // src/users/users.controller.ts). That controller has no spec file
-    // today and is out of this issue's listed scope (only
-    // users.service.spec.ts is asked for here) — a
-    // users.controller.spec.ts with the cross-user rejection test belongs
-    // with #39's fix, since only the controller layer has enough
-    // information (the authenticated caller's identity) to write a
-    // meaningful assertion for it. Documented here so the boundary isn't
-    // silently lost.
-    it('[documents scope of #39] setStellarAddress itself has no caller/authorization concept — see users.controller.ts', async () => {
-      userRepo.findOne.mockResolvedValue({
-        id: 'victim',
-        stellarAddress: 'GOLD',
+    it('rejects a contributor overwriting someone else and never writes', async () => {
+      userRepo.findOne.mockImplementation(({ where: { id } }: { where: { id: string } }) => {
+        if (id === 'victim') return Promise.resolve({ id: 'victim', stellarAddress: 'GOLD', roles: [UserRole.CONTRIBUTOR] });
+        if (id === 'attacker') return Promise.resolve({ id: 'attacker', stellarAddress: null, roles: [UserRole.CONTRIBUTOR] });
+        return Promise.resolve(null);
       });
 
-      // Nothing about this call's parameters distinguishes "the account
-      // owner is changing their own address" from "some other authenticated
-      // user is overwriting someone else's" — both look identical to the
-      // service.
-      const user = await service.setStellarAddress('victim', 'GATTACKER');
+      await expect(
+        service.setStellarAddress('victim', 'GATTACKER', 'attacker'),
+      ).rejects.toThrow(ForbiddenException);
 
-      expect(user.stellarAddress).toBe('GATTACKER');
+      expect(userRepo.save).not.toHaveBeenCalled();
+    });
+
+    it('allows a maintainer to change another user address', async () => {
+      userRepo.findOne.mockImplementation(({ where: { id } }: { where: { id: string } }) => {
+        if (id === 'victim') return Promise.resolve({ id: 'victim', stellarAddress: 'GOLD', roles: [UserRole.CONTRIBUTOR] });
+        if (id === 'maintainer') return Promise.resolve({ id: 'maintainer', stellarAddress: null, roles: [UserRole.CONTRIBUTOR, UserRole.MAINTAINER] });
+        return Promise.resolve(null);
+      });
+
+      const user = await service.setStellarAddress('victim', 'GMAINTAINER_SET', 'maintainer');
+
+      expect(user.stellarAddress).toBe('GMAINTAINER_SET');
+      expect(userRepo.save).toHaveBeenCalledWith(
+        expect.objectContaining({ id: 'victim', stellarAddress: 'GMAINTAINER_SET' }),
+      );
     });
   });
 
