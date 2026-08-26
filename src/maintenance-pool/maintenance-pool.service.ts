@@ -29,6 +29,7 @@ export class MaintenancePoolService {
       name: dto.name,
       repositoryId: dto.repositoryId ?? null,
       createdById: dto.createdById ?? null,
+      monthlyDeposit: dto.monthlyDeposit,
       asset: dto.asset,
       status: MaintenancePoolStatus.ACTIVE,
     });
@@ -72,7 +73,9 @@ export class MaintenancePoolService {
     }
 
     pool.balance = (Number(pool.balance) + Number(amount)).toFixed(7);
-    pool.monthlyDeposit = amount;
+    // monthlyDeposit is deliberately left untouched here: it records the
+    // sponsor's standing recurring commitment (set at pool creation), not
+    // "whatever the last deposit happened to be" (#93).
     return this.poolRepo.save(pool);
   }
 
