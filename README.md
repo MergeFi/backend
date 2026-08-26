@@ -267,9 +267,15 @@ docker build --target runner -t mergefi-backend:latest .
 #### Production Guardrails (Important):
 - **Least Privilege**: The container runs under the non-root `node` user (`USER node`).
 - **Production Mode**: The final image forces `NODE_ENV=production`.
-- **JWT Secret Enforcer**: If the application boots in production with the default `JWT_SECRET=insecure-dev-secret` (or is missing entirely), the startup hook in `src/main.ts` will crash the container. You **must** provide a secure custom `JWT_SECRET` when running the production container:
+- **Required-secret Enforcer**: When `NODE_ENV=production`, `assertRequiredConfig` (`src/config/validate-required-config.ts`, called from `src/main.ts`) crashes the container at boot — listing every problem at once — unless all of `JWT_SECRET` (not the `insecure-dev-secret` default), `DATABASE_URL` (not the local `postgres:postgres@localhost` default), `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET`, `GITHUB_WEBHOOK_SECRET`, `ESCROW_CONTRACT_ID` and `TREASURY_SECRET` are set to real values. This closes the silent-failure gap where, for example, an empty `GITHUB_WEBHOOK_SECRET` made the app boot "healthy" while rejecting 100% of webhook deliveries. You **must** provide these when running the production container, e.g.:
   ```bash
-  docker run -p 3000:3000 -e JWT_SECRET="your-highly-secure-random-jwt-key" mergefi-backend:latest
+  docker run -p 3000:3000 \
+    -e JWT_SECRET="your-highly-secure-random-jwt-key" \
+    -e DATABASE_URL="postgresql://user:pass@db-host:5432/mergefi" \
+    -e GITHUB_CLIENT_ID=... -e GITHUB_CLIENT_SECRET=... \
+    -e GITHUB_WEBHOOK_SECRET=... \
+    -e ESCROW_CONTRACT_ID=... -e TREASURY_SECRET=... \
+    mergefi-backend:latest
   ```
 
 ### 4. Running Tests
@@ -320,7 +326,8 @@ npm run migration:revert
 - [ ] Move GitHub sync from a static PAT to a GitHub App installation-token flow for multi-org, least-privilege access.
 - [ ] Deploy the real escrow contract from `mergefi-contracts` and drop the Soroban dry-run fallback.
 - [ ] Replace the single `TREASURY_SECRET` signer with a proper signing service (KMS / multi-sig) before handling real funds.
-- [ ] Add a scheduled job for `BountiesService.expireOverdue()` (deadline sweeps) and recurring `MaintenancePool` deposits.
+- [x] ~~Add a scheduled job for `BountiesService.expireOverdue()` (deadline sweeps).~~ See `BountyExpiryScheduler` (hourly `@Cron`).
+- [ ] Add a scheduled job for recurring `MaintenancePool` deposits.
 - [ ] Add role-based authorization guards (currently JWT-authenticated but not role-scoped) to maintainer/sponsor-only endpoints.
 - [ ] Add pagination/filtering to list endpoints (bounties, milestones, pools) as data volume grows.
 - [ ] Weighted (not just even) per-issue milestone budget distribution.
