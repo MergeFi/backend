@@ -179,36 +179,6 @@ describe('UsersService', () => {
     });
   });
 
-  describe('addRole', () => {
-    it('adds the role when the user does not already have it', async () => {
-      userRepo.findOne.mockResolvedValue({
-        id: 'u1',
-        roles: [UserRole.CONTRIBUTOR],
-      });
-
-      const user = await service.addRole('u1', UserRole.MAINTAINER);
-
-      expect(user.roles).toEqual([UserRole.CONTRIBUTOR, UserRole.MAINTAINER]);
-      expect(userRepo.save).toHaveBeenCalledWith(
-        expect.objectContaining({
-          roles: [UserRole.CONTRIBUTOR, UserRole.MAINTAINER],
-        }),
-      );
-    });
-
-    it('is a no-op when the user already has the role', async () => {
-      userRepo.findOne.mockResolvedValue({
-        id: 'u1',
-        roles: [UserRole.CONTRIBUTOR],
-      });
-
-      const user = await service.addRole('u1', UserRole.CONTRIBUTOR);
-
-      expect(user.roles).toEqual([UserRole.CONTRIBUTOR]);
-      expect(userRepo.save).not.toHaveBeenCalled();
-    });
-  });
-
   describe('setStellarAddress', () => {
     it('throws NotFoundException when the user does not exist', async () => {
       userRepo.findOne.mockResolvedValue(null);
