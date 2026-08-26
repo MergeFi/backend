@@ -4,6 +4,12 @@ on:
   pull_request:
     branches:
       - main
+  # Also run on commits that land on main by any path (admin bypass,
+  # misconfigured or not-yet-enabled branch protection), so the secret scan,
+  # lint, build and tests still gate the default branch (#156).
+  push:
+    branches:
+      - main
 
 jobs:
   ci:

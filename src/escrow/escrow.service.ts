@@ -229,7 +229,11 @@ export class EscrowService {
       escrow,
       'releasePartial',
       () =>
-        this.soroban.invoke('release', [
+        // Distinct on-chain method name from release()'s two-arg `release`
+        // (#159): a partial release carries an amount and is a different
+        // contract entrypoint, not an overload — so a contract implementer
+        // isn't left guessing which arg shape `release` is authoritative.
+        this.soroban.invoke('release_partial', [
           escrow.milestoneId ?? escrow.bountyId ?? escrow.id,
           recipientAddress,
           this.toStroops(amount),

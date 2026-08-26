@@ -2,12 +2,24 @@ import {
   Column,
   CreateDateColumn,
   Entity,
+  Index,
   PrimaryGeneratedColumn,
 } from 'typeorm';
 import { WebhookEventStatus } from '../enums';
 
-/** Audit log of every inbound webhook, verified or not, for replay/debugging. */
+/**
+ * Audit log of every inbound webhook, verified or not, for replay/debugging.
+ *
+ * This is an append-only, never-pruned table (unlike `IdempotencyKey`, which
+ * has TTL cleanup), so operational reads must not full-scan it (#149):
+ *  - `IDX_webhook_events_type_status` serves "by event type / status"
+ *    breakdowns (e.g. a metrics job, an admin triage list).
+ *  - `IDX_webhook_events_status_received_at` serves the "recent FAILED
+ *    events" query — filter on `status`, order by `receivedAt DESC`.
+ */
 @Entity('webhook_events')
+@Index('IDX_webhook_events_type_status', ['eventType', 'status'])
+@Index('IDX_webhook_events_status_received_at', ['status', 'receivedAt'])
 export class WebhookEvent {
   @PrimaryGeneratedColumn('uuid')
   id: string;
