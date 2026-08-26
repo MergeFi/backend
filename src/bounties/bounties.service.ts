@@ -37,7 +37,11 @@ export class BountiesService {
 
   /** Sponsor funds the bounty: locks the amount in the escrow contract and moves OPEN -> FUNDED. */
   async fund(id: string, funderAddress: string): Promise<Bounty> {
-    const bounty = await this.findOne(id);
+    const bounty = await this.bountyRepo.findOne({
+      where: { id },
+      relations: { issue: true },
+    });
+    if (!bounty) throw new NotFoundException(`Bounty ${id} not found`);
     assertTransition(bounty.status, BountyStatus.FUNDED);
 
     const escrow = await this.escrowService.fund({
@@ -46,6 +50,9 @@ export class BountiesService {
       funderAddress,
       bountyId: bounty.id,
       sponsorId: bounty.sponsorId,
+      // The on-chain escrow contract is keyed by the GitHub issue id (#158).
+      onChainIssueId: bounty.issue?.githubIssueId ?? null,
+      deadline: bounty.deadline,
     });
 
     bounty.escrow = escrow;

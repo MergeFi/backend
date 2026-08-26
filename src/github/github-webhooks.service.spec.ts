@@ -168,6 +168,73 @@ describe('GithubWebhooksService', () => {
     expect(bountiesService.markPrClosedWithoutMerge).not.toHaveBeenCalled();
   });
 
+  describe('PR opened / reopened (#168)', () => {
+    it('moves a linked CLAIMED bounty to IN_REVIEW when its PR is opened', async () => {
+      issueRepo.findOne.mockResolvedValue({
+        id: 'issue-1',
+        bounty: { id: 'bounty-1' },
+      });
+      bountyRepo.findOne.mockResolvedValue({
+        id: 'bounty-1',
+        status: 'claimed',
+      });
+
+      const payload = {
+        action: 'opened',
+        number: 5,
+        pull_request: {
+          html_url: 'https://github.com/acme/repo/pull/5',
+          number: 5,
+          merged: false,
+          body: 'Fixes #21',
+        },
+        repository: { id: 999, full_name: 'acme/repo' },
+      };
+
+      const event = await service.handleEvent(
+        'pull_request',
+        'delivery-open',
+        payload,
+        true,
+      );
+
+      expect(bountiesService.markInReview).toHaveBeenCalledWith(
+        'bounty-1',
+        'https://github.com/acme/repo/pull/5',
+        5,
+      );
+      expect(bountiesService.markMergedAndRelease).not.toHaveBeenCalled();
+      expect(event.status).toBe(WebhookEventStatus.PROCESSED);
+    });
+
+    it('leaves a bounty that is not CLAIMED untouched on a reopened PR', async () => {
+      issueRepo.findOne.mockResolvedValue({
+        id: 'issue-1',
+        bounty: { id: 'bounty-1' },
+      });
+      bountyRepo.findOne.mockResolvedValue({
+        id: 'bounty-1',
+        status: 'in_review',
+      });
+
+      const payload = {
+        action: 'reopened',
+        number: 6,
+        pull_request: {
+          html_url: 'x',
+          number: 6,
+          merged: false,
+          body: 'closes #22',
+        },
+        repository: { id: 1, full_name: 'a/b' },
+      };
+
+      await service.handleEvent('pull_request', 'delivery-reopen', payload, true);
+
+      expect(bountiesService.markInReview).not.toHaveBeenCalled();
+    });
+  });
+
   describe('per-linked-issue isolation on a merged PR (#47)', () => {
     function mockIssueAndBounty(
       byNumber: Record<number, { bountyId: string; status: string }>,

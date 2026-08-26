@@ -1,5 +1,6 @@
 import { ConfigService } from '@nestjs/config';
 import { nativeToScVal, rpc } from '@stellar/stellar-sdk';
+import { AssetType } from '../common/enums';
 import { AppConfig } from '../config/configuration';
 import { SorobanClientService } from './soroban-client.service';
 
@@ -15,7 +16,10 @@ const baseStellarConfig: StellarConfig = {
   sorobanRpcUrl: 'http://localhost:8000/rpc',
   networkPassphrase: 'Test SDF Network ; September 2015',
   escrowContractId: '',
+  maintenancePoolContractId: '',
   treasurySecret: '',
+  assetContractIds: { USDC: '', XLM: '' },
+  escrowDeadlineSeconds: 7776000,
 };
 
 function makeService(
@@ -68,6 +72,39 @@ describe('SorobanClientService', () => {
           treasurySecret: 'SSECRET',
         }).isConfigured(),
       ).toBe(true);
+    });
+  });
+
+  describe('contract resolvers (#157)', () => {
+    it('exposes the configured escrow contract id', () => {
+      expect(makeService({ escrowContractId: 'CESCROW' }).escrowContractId).toBe(
+        'CESCROW',
+      );
+    });
+
+    it('returns the dedicated maintenance-pool contract id when set', () => {
+      expect(
+        makeService({
+          escrowContractId: 'CESCROW',
+          maintenancePoolContractId: 'CPOOL',
+        }).maintenancePoolContractId,
+      ).toBe('CPOOL');
+    });
+
+    it('falls back to the escrow contract id when no pool deployment is configured', () => {
+      expect(
+        makeService({ escrowContractId: 'CESCROW' }).maintenancePoolContractId,
+      ).toBe('CESCROW');
+    });
+
+    it('resolves per-asset token contract ids and the deadline window', () => {
+      const service = makeService({
+        assetContractIds: { USDC: 'CUSDC', XLM: 'CXLM' },
+        escrowDeadlineSeconds: 1234,
+      });
+      expect(service.tokenContractId(AssetType.USDC)).toBe('CUSDC');
+      expect(service.tokenContractId(AssetType.XLM)).toBe('CXLM');
+      expect(service.escrowDeadlineSeconds).toBe(1234);
     });
   });
 
@@ -275,6 +312,37 @@ describe('SorobanClientService', () => {
 
       expect(nativeToScValMock).toHaveBeenCalledWith(42);
       expect(encoded).toBe(42);
+    });
+
+    it('encodes a [address, basisPoints] pair as an (Address, u32) tuple (#161)', () => {
+      const address =
+        'GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAVAWHV';
+
+      const encoded = (
+        service as unknown as { toScVal(v: unknown): unknown }
+      ).toScVal([address, 5000]);
+
+      expect(nativeToScValMock).toHaveBeenCalledWith(5000, { type: 'u32' });
+      expect(encoded).toEqual([address, 5000]);
+    });
+
+    it('encodes a Vec<(Address, u32)> recipients list element-by-element (#161)', () => {
+      const a =
+        'GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAVAWHV';
+      const b =
+        'GBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBAAAA';
+
+      const encoded = (
+        service as unknown as { toScVal(v: unknown): unknown }
+      ).toScVal([
+        [a, 6000],
+        [b, 4000],
+      ]);
+
+      expect(encoded).toEqual([
+        [a, 6000],
+        [b, 4000],
+      ]);
     });
   });
 });

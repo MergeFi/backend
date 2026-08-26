@@ -159,6 +159,10 @@ export class GithubWebhooksService {
   private async handlePullRequest(
     payload: GithubPullRequestPayload,
   ): Promise<LinkedIssueOutcome[]> {
+    if (payload.action === 'opened' || payload.action === 'reopened') {
+      return this.handlePullRequestOpened(payload);
+    }
+
     if (payload.action === 'closed' && !payload.pull_request.merged) {
       return this.handlePullRequestClosedWithoutMerge(payload);
     }
@@ -268,6 +272,65 @@ export class GithubWebhooksService {
   private extractLinkedIssueNumbers(body: string): number[] {
     const matches = [...body.matchAll(CLOSING_KEYWORD_RE)];
     return matches.map((m) => parseInt(m[3], 10));
+  }
+
+  /**
+   * When a PR is opened (or reopened) against a linked issue, move that
+   * issue's bounty from CLAIMED to IN_REVIEW at the moment the PR actually
+   * exists — rather than only synthetically at merge time (#168). Bounties
+   * not in CLAIMED are left untouched (idempotent no-op), matching the
+   * merged-PR branch's own `markInReview` guard.
+   */
+  private async handlePullRequestOpened(
+    payload: GithubPullRequestPayload,
+  ): Promise<LinkedIssueOutcome[]> {
+    const issueNumbers = [
+      ...new Set(
+        this.extractLinkedIssueNumbers(payload.pull_request.body ?? ''),
+      ),
+    ];
+    if (issueNumbers.length === 0) {
+      return [];
+    }
+
+    const outcomes: LinkedIssueOutcome[] = [];
+    for (const number of issueNumbers) {
+      try {
+        const issue = await this.issueRepo.findOne({
+          where: {
+            number,
+            repository: { githubRepoId: String(payload.repository.id) },
+          },
+          relations: { repository: true, bounty: true },
+        });
+        if (!issue?.bounty) {
+          outcomes.push({ issueNumber: number, outcome: 'skipped' });
+          continue;
+        }
+
+        const bounty = await this.bountyRepo.findOne({
+          where: { id: issue.bounty.id },
+        });
+        if (!bounty || bounty.status !== BountyStatus.CLAIMED) {
+          outcomes.push({ issueNumber: number, outcome: 'skipped' });
+          continue;
+        }
+
+        await this.bountiesService.markInReview(
+          bounty.id,
+          payload.pull_request.html_url,
+          payload.pull_request.number,
+        );
+        outcomes.push({ issueNumber: number, outcome: 'succeeded' });
+      } catch (err) {
+        outcomes.push({
+          issueNumber: number,
+          outcome: 'failed',
+          error: (err as Error).message,
+        });
+      }
+    }
+    return outcomes;
   }
 
   /**

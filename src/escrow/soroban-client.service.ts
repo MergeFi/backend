@@ -11,6 +11,7 @@ import {
   rpc,
   scValToNative,
 } from '@stellar/stellar-sdk';
+import { AssetType } from '../common/enums';
 import { AppConfig } from '../config/configuration';
 
 export interface ContractInvocationResult {
@@ -24,18 +25,20 @@ export interface ContractInvocationResult {
  * Thin wrapper around the Stellar/Soroban RPC client used to invoke the
  * escrow smart contract deployed by the sibling `mergefi-contracts` repo.
  *
- * TODO(mergefi-contracts): this client assumes a contract exposing
- * `fund`, `release`, `refund`, `split_release` and `withdraw` functions with
- * the signatures documented below. Adjust argument encoding once the real
- * contract interface (from the Soroban contract's generated bindings) is
- * available. Until ESCROW_CONTRACT_ID is configured, calls run in
- * "simulate-only" dry-run mode and never submit a real transaction.
+ * The bounty/milestone escrow signatures below track `mergefi-contracts`'
+ * `contracts/escrow/src/lib.rs`. Adjust argument encoding once the real
+ * generated bindings are available. Until ESCROW_CONTRACT_ID is configured,
+ * calls run in "simulate-only" dry-run mode and never submit a real
+ * transaction.
  *
- * Expected bounty/milestone escrow interface (Rust, illustrative):
- *   fn fund(env: Env, funder: Address, bounty_id: BytesN<32>, amount: i128, token: Address)
- *   fn release(env: Env, bounty_id: BytesN<32>, recipient: Address) -> i128
- *   fn split_release(env: Env, bounty_id: BytesN<32>, recipients: Vec<Address>, bps: Vec<u32>) -> i128
- *   fn refund(env: Env, bounty_id: BytesN<32>) -> i128
+ * Bounty/milestone escrow interface (Rust):
+ *   fn fund(env, issue_id: u64, sponsor: Address, token: Address, amount: i128, deadline: u64) -> Result<(), Error>
+ *   fn release(env, issue_id: u64, recipients: Vec<(Address, u32)>) -> Result<(), Error>
+ *   fn refund(env, issue_id: u64) -> Result<(), Error>
+ *
+ * `release` is the single payout entrypoint — a lone recipient is just the
+ * degenerate `[(addr, 10_000)]` case of the same `(address, basis_points)`
+ * vector a team split uses; there is no separate `split_release` (#161).
  *
  * The `mergefi-maintenance-pool` contract is a distinct deposit/withdraw
  * model (no lock step, no split): a running on-chain balance topped up by
@@ -64,6 +67,32 @@ export class SorobanClientService {
     return Boolean(
       this.stellar.escrowContractId && this.stellar.treasurySecret,
     );
+  }
+
+  /** Deployed contract ID for single-issue bounty/milestone escrows. */
+  get escrowContractId(): string {
+    return this.stellar.escrowContractId;
+  }
+
+  /**
+   * Deployed contract ID for maintenance-pool escrows, falling back to the
+   * bounty escrow contract when no separate pool deployment is configured
+   * (#157).
+   */
+  get maintenancePoolContractId(): string {
+    return (
+      this.stellar.maintenancePoolContractId || this.stellar.escrowContractId
+    );
+  }
+
+  /** Soroban token (SAC) contract address for a supported escrow asset (#158). */
+  tokenContractId(asset: AssetType): string {
+    return this.stellar.assetContractIds[asset] ?? '';
+  }
+
+  /** Fallback escrow deadline, in seconds from now, for escrow::fund (#158). */
+  get escrowDeadlineSeconds(): number {
+    return this.stellar.escrowDeadlineSeconds;
   }
 
   private getTreasuryKeypair(): Keypair | null {
@@ -176,7 +205,19 @@ export class SorobanClientService {
     );
   }
 
-  private toScVal(value: unknown) {
+  private toScVal(value: unknown): unknown {
+    if (Array.isArray(value)) {
+      // Vec<...> arguments, including the Vec<(Address, u32)> recipients
+      // list escrow::release takes. A [address, basisPoints] pair encodes
+      // as an (Address, u32) tuple; anything else element-by-element (#161).
+      if (this.isRecipientTuple(value)) {
+        return nativeToScVal([
+          new Address(value[0]).toScVal(),
+          nativeToScVal(value[1], { type: 'u32' }),
+        ]);
+      }
+      return nativeToScVal(value.map((element) => this.toScVal(element)));
+    }
     if (
       typeof value === 'string' &&
       value.length >= 32 &&
@@ -193,5 +234,14 @@ export class SorobanClientService {
       return nativeToScVal(value, { type: 'i128' });
     }
     return nativeToScVal(value);
+  }
+
+  /** A `[stellarAddress, basisPoints]` pair destined for a `(Address, u32)` tuple. */
+  private isRecipientTuple(value: unknown[]): value is [string, number] {
+    return (
+      value.length === 2 &&
+      typeof value[0] === 'string' &&
+      typeof value[1] === 'number'
+    );
   }
 }

@@ -13,6 +13,8 @@ function makeEscrow(overrides: Partial<Escrow> = {}): Escrow {
     maintenancePoolId: null,
     sponsorId: 'sponsor_1',
     contractId: null,
+    onChainId: null,
+    deadline: null,
     amount: '100.0000000',
     asset: AssetType.USDC,
     status: EscrowStatus.FAILED,

@@ -90,6 +90,28 @@ describe('BountiesService', () => {
     expect(bounty.status).toBe(BountyStatus.FUNDED);
   });
 
+  it('threads the linked GitHub issue id and deadline into escrow.fund (#158)', async () => {
+    const deadline = new Date('2026-12-01T00:00:00.000Z');
+    bountyRepo.findOne.mockResolvedValue({
+      id: 'b1',
+      status: BountyStatus.OPEN,
+      amount: '100',
+      asset: AssetType.USDC,
+      sponsorId: 'sponsor-1',
+      deadline,
+      issue: { githubIssueId: '2891234567' },
+    });
+
+    await service.fund('b1', 'GFUNDER');
+
+    expect(escrowService.fund).toHaveBeenCalledWith(
+      expect.objectContaining({
+        onChainIssueId: '2891234567',
+        deadline,
+      }),
+    );
+  });
+
   it('rejects funding a bounty that is already FUNDED', async () => {
     bountyRepo.findOne.mockResolvedValue({
       id: 'b1',
