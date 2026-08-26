@@ -5,12 +5,19 @@ import { EscrowService } from './escrow.service';
 import { SorobanClientService } from './soroban-client.service';
 import { Escrow, Payment, User } from '../common/entities';
 import { AssetType, EscrowStatus } from '../common/enums';
+import { Escrow, Payment } from '../common/entities';
+import { AssetType, EscrowStatus, PaymentStatus } from '../common/enums';
 
 describe('EscrowService', () => {
   let service: EscrowService;
   let escrowRepo: { create: jest.Mock; save: jest.Mock; findOne: jest.Mock };
   let paymentRepo: { create: jest.Mock; save: jest.Mock };
   let userRepo: { find: jest.Mock };
+  let paymentRepo: {
+    create: jest.Mock;
+    save: jest.Mock;
+    find: jest.Mock;
+  };
   let soroban: { invoke: jest.Mock };
 
   beforeEach(async () => {
@@ -25,6 +32,7 @@ describe('EscrowService', () => {
         ...data,
       })),
       save: jest.fn((data: Partial<Payment>) => Promise.resolve(data)),
+      find: jest.fn().mockResolvedValue([]),
     };
     userRepo = {
       find: jest
@@ -222,6 +230,137 @@ describe('EscrowService', () => {
           amount: '50',
         }),
       );
+    });
+  });
+
+  describe('releasePartial', () => {
+    const lockedEscrow = () => ({
+      id: 'escrow-partial',
+      status: EscrowStatus.LOCKED,
+      amount: '100.0000000',
+      asset: AssetType.USDC,
+      milestoneId: 'milestone-1',
+    });
+
+    it('releases part of a LOCKED escrow and records a Payment while it stays LOCKED below the total', async () => {
+      const escrow = lockedEscrow();
+      escrowRepo.findOne.mockResolvedValue(escrow);
+      paymentRepo.find.mockResolvedValue([]);
+
+      const payment = await service.releasePartial(
+        'escrow-partial',
+        '30.0000000',
+        'GRECIPIENT',
+        'user-1',
+      );
+
+      expect(soroban.invoke).toHaveBeenCalledWith('release', [
+        'milestone-1',
+        'GRECIPIENT',
+        300_000_000n,
+      ]);
+      expect(paymentRepo.save).toHaveBeenCalledWith(
+        expect.objectContaining({
+          escrowId: 'escrow-partial',
+          recipientId: 'user-1',
+          recipientAddress: 'GRECIPIENT',
+          amount: '30.0000000',
+          asset: AssetType.USDC,
+          status: PaymentStatus.CONFIRMED,
+        }),
+      );
+      expect(payment.amount).toBe('30.0000000');
+      expect(escrow.status).toBe(EscrowStatus.LOCKED);
+      expect(escrowRepo.save).not.toHaveBeenCalled();
+    });
+
+    it('flips the escrow to RELEASED when a single partial release covers the full amount', async () => {
+      escrowRepo.findOne.mockResolvedValue(lockedEscrow());
+      paymentRepo.find.mockResolvedValue([]);
+
+      await service.releasePartial(
+        'escrow-partial',
+        '100.0000000',
+        'GRECIPIENT',
+      );
+
+      expect(escrowRepo.save).toHaveBeenCalledWith(
+        expect.objectContaining({
+          id: 'escrow-partial',
+          status: EscrowStatus.RELEASED,
+          releaseTxHash: 'tx-hash-123',
+        }),
+      );
+    });
+
+    it('completes a partial-then-partial sequence only once the cumulative total reaches the amount', async () => {
+      escrowRepo.findOne.mockResolvedValue(lockedEscrow());
+      paymentRepo.find
+        .mockResolvedValueOnce([])
+        .mockResolvedValueOnce([{ amount: '40.0000000' }]);
+
+      await service.releasePartial('escrow-partial', '40.0000000', 'GA');
+      expect(escrowRepo.save).not.toHaveBeenCalled();
+
+      await service.releasePartial('escrow-partial', '60.0000000', 'GB');
+
+      expect(soroban.invoke).toHaveBeenNthCalledWith(2, 'release', [
+        'milestone-1',
+        'GB',
+        600_000_000n,
+      ]);
+      expect(escrowRepo.save).toHaveBeenCalledWith(
+        expect.objectContaining({
+          status: EscrowStatus.RELEASED,
+          releasedAt: expect.any(Date),
+        }),
+      );
+    });
+
+    it('rejects a release that would exceed the remaining balance after prior partials', async () => {
+      escrowRepo.findOne.mockResolvedValue(lockedEscrow());
+      paymentRepo.find.mockResolvedValue([{ amount: '50.0000000' }]);
+
+      await expect(
+        service.releasePartial('escrow-partial', '60.0000000', 'GRECIPIENT'),
+      ).rejects.toThrow(BadRequestException);
+
+      expect(soroban.invoke).not.toHaveBeenCalled();
+      expect(paymentRepo.save).not.toHaveBeenCalled();
+      expect(escrowRepo.save).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('refund', () => {
+    it('rejects refunding an escrow that is not LOCKED', async () => {
+      escrowRepo.findOne.mockResolvedValue({
+        id: 'escrow-pending',
+        status: EscrowStatus.PENDING,
+        amount: '10',
+        asset: AssetType.USDC,
+      });
+
+      await expect(service.refund('escrow-pending')).rejects.toThrow(
+        BadRequestException,
+      );
+      expect(soroban.invoke).not.toHaveBeenCalled();
+    });
+
+    it('refunds a LOCKED escrow to the original funder', async () => {
+      escrowRepo.findOne.mockResolvedValue({
+        id: 'escrow-refund',
+        status: EscrowStatus.LOCKED,
+        amount: '25.0000000',
+        asset: AssetType.USDC,
+        bountyId: 'bounty-7',
+      });
+
+      const escrow = await service.refund('escrow-refund');
+
+      expect(soroban.invoke).toHaveBeenCalledWith('refund', ['bounty-7']);
+      expect(escrow.status).toBe(EscrowStatus.REFUNDED);
+      expect(escrow.refundTxHash).toBe('tx-hash-123');
+      expect(escrow.refundedAt).toBeInstanceOf(Date);
     });
   });
 

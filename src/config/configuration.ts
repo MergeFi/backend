@@ -22,15 +22,10 @@ export interface AppConfig {
   };
   stellar: {
     network: string;
-    horizonUrl: string;
     sorobanRpcUrl: string;
     networkPassphrase: string;
     escrowContractId: string;
-    maintenancePoolContractId: string;
-    treasuryAddress: string;
     treasurySecret: string;
-    usdcAssetCode: string;
-    usdcAssetIssuer: string;
   };
 }
 
@@ -62,21 +57,12 @@ export default (): AppConfig => ({
   },
   stellar: {
     network: process.env.STELLAR_NETWORK ?? 'testnet',
-    horizonUrl:
-      process.env.HORIZON_URL ?? 'https://horizon-testnet.stellar.org',
     sorobanRpcUrl:
       process.env.SOROBAN_RPC_URL ?? 'https://soroban-testnet.stellar.org',
     networkPassphrase:
       process.env.STELLAR_NETWORK_PASSPHRASE ??
       'Test SDF Network ; September 2015',
     escrowContractId: process.env.ESCROW_CONTRACT_ID ?? '',
-    maintenancePoolContractId:
-      process.env.MAINTENANCE_POOL_CONTRACT_ID ??
-      process.env.ESCROW_CONTRACT_ID ??
-      '',
-    treasuryAddress: process.env.TREASURY_ADDRESS ?? '',
     treasurySecret: process.env.TREASURY_SECRET ?? '',
-    usdcAssetCode: process.env.USDC_ASSET_CODE ?? 'USDC',
-    usdcAssetIssuer: process.env.USDC_ASSET_ISSUER ?? '',
   },
 });

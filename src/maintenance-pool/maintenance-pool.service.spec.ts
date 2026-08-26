@@ -104,6 +104,7 @@ describe('MaintenancePoolService', () => {
         id: 'pool-1',
         status: MaintenancePoolStatus.ACTIVE,
         balance: '0',
+        monthlyDeposit: '500',
         asset: AssetType.USDC,
         escrowId: null,
       });
@@ -124,7 +125,28 @@ describe('MaintenancePoolService', () => {
       );
       expect(pool.escrowId).toBe('escrow-1');
       expect(pool.balance).toBe('100.0000000');
-      expect(pool.monthlyDeposit).toBe('100');
+    });
+
+    // #93: monthlyDeposit records the sponsor's standing recurring
+    // commitment (set at pool creation), so an ad-hoc deposit must never
+    // overwrite it with the latest single deposit amount.
+    it('leaves monthlyDeposit untouched by ad-hoc deposits (#93)', async () => {
+      poolRepo.findOne.mockResolvedValue({
+        id: 'pool-1',
+        status: MaintenancePoolStatus.ACTIVE,
+        balance: '100',
+        monthlyDeposit: '500',
+        asset: AssetType.USDC,
+        escrowId: 'escrow-1',
+      });
+      escrowService.fund.mockResolvedValue({
+        id: 'escrow-2',
+        status: 'locked',
+      });
+
+      const pool = await service.deposit('pool-1', '50', 'GFUNDER');
+
+      expect(pool.monthlyDeposit).toBe('500');
     });
 
     it('accumulates balance across deposits', async () => {

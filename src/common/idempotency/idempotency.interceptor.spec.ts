@@ -10,10 +10,12 @@ import { firstValueFrom, lastValueFrom, of, throwError } from 'rxjs';
 import { IdempotencyKey } from '../entities/idempotency-key.entity';
 import { IdempotencyKeyStatus } from '../enums';
 import { IDEMPOTENCY_SCOPE_KEY } from './idempotent.decorator';
-import { IdempotencyInterceptor } from './idempotency.interceptor';
+import {
+  IdempotencyInterceptor,
+  STALE_PROCESSING_MS,
+} from './idempotency.interceptor';
 
 const PG_UNIQUE_VIOLATION = '23505';
-const STALE_PROCESSING_MS = 30 * 1000;
 
 function uniqueViolationError(): Error & { driverError: { code: string } } {
   return Object.assign(
