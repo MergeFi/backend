@@ -80,21 +80,12 @@ jobs:
           NODE_ENV: test
         run: npm run test:cov
 
-      - name: Run E2E Tests (Conditional)
+      # The e2e specs run entirely against the local Postgres service and a
+      # mocked Stellar SDK; none of them use GITHUB_CLIENT_ID/SECRET. The step
+      # used to be gated on those (never-configured) secrets, so `npm run
+      # test:e2e` had never actually executed in CI (#164). Run it always.
+      - name: Run E2E Tests
         env:
           DATABASE_URL: postgresql://postgres:postgres@localhost:5432/mergefi
           NODE_ENV: test
-          # Map GitHub Secrets if configured in the repository
-          GITHUB_CLIENT_ID: ${{ secrets.GITHUB_CLIENT_ID }}
-          GITHUB_CLIENT_SECRET: ${{ secrets.GITHUB_CLIENT_SECRET }}
-        run: |
-          if [ -z "$GITHUB_CLIENT_ID" ] || [ -z "$GITHUB_CLIENT_SECRET" ]; then
-            echo "=========================================================================="
-            echo "WARNING: Skipping E2E tests because external GitHub OAuth secrets are not"
-            echo "configured in the repository settings (GITHUB_CLIENT_ID / GITHUB_CLIENT_SECRET)."
-            echo "To enable E2E tests in CI, please set these secrets in GitHub."
-            echo "=========================================================================="
-          else
-            npm run test:e2e
-          fi
-        shell: bash
+        run: npm run test:e2e
