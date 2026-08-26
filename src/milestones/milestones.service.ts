@@ -133,6 +133,18 @@ export class MilestonesService {
       );
     }
 
+    // Pay out each issue at most once. The real mergefi-milestones contract
+    // tracks a per-issue allocation and `release_issue` can only be called
+    // once per issue_id; here the resolved issue is moved to CLOSED in the
+    // transaction below, so resolving an already-CLOSED issue (while other
+    // issues are still open) must be rejected rather than double-paying it
+    // (#162).
+    if (issue.state !== 'open') {
+      throw new BadRequestException(
+        `Issue ${issueId} has already been resolved for milestone ${milestoneId}`,
+      );
+    }
+
     const unresolvedCount = openIssues.length;
     const remainingBudget =
       Number(milestone.budget) - Number(milestone.distributed);

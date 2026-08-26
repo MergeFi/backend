@@ -18,7 +18,7 @@ export class MaintenancePool {
   @PrimaryGeneratedColumn('uuid')
   id: string;
 
-  @Column()
+  @Column({ type: 'varchar', length: 100 })
   name: string;
 
   @ManyToOne(() => Repository, { onDelete: 'CASCADE', nullable: true })

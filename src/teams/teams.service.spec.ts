@@ -8,7 +8,7 @@ import { BountyStatus } from '../common/enums';
 describe('TeamsService', () => {
   let service: TeamsService;
   let teamRepo: { findOne: jest.Mock; save: jest.Mock; create: jest.Mock };
-  let splitRepo: { save: jest.Mock; create: jest.Mock };
+  let splitRepo: { save: jest.Mock; create: jest.Mock; delete: jest.Mock };
   let bountyRepo: { findOne: jest.Mock; save: jest.Mock };
 
   beforeEach(async () => {
@@ -21,9 +21,12 @@ describe('TeamsService', () => {
     };
     splitRepo = {
       create: jest.fn((s: Partial<TeamMemberSplit>) => s),
-      save: jest.fn((s: Partial<TeamMemberSplit>) =>
-        Promise.resolve({ id: `split-${s.userId}`, ...s }),
+      save: jest.fn((s: Partial<TeamMemberSplit> | Partial<TeamMemberSplit>[]) =>
+        Array.isArray(s)
+          ? Promise.resolve(s.map((x) => ({ id: `split-${x.userId}`, ...x })))
+          : Promise.resolve({ id: `split-${s.userId}`, ...s }),
       ),
+      delete: jest.fn().mockResolvedValue(undefined),
     };
     bountyRepo = {
       findOne: jest.fn(),
@@ -67,22 +70,23 @@ describe('TeamsService', () => {
       expect(teamRepo.save).toHaveBeenCalledWith(
         expect.objectContaining({ name: 'Team A', createdById: 'creator-1' }),
       );
-      expect(splitRepo.save).toHaveBeenCalledTimes(2);
+      // One batched save with the whole array, not one call per member (#150).
+      expect(splitRepo.save).toHaveBeenCalledTimes(1);
       expect(splitRepo.save).toHaveBeenCalledWith(
-        expect.objectContaining({
-          teamId: 't1',
-          userId: 'u1',
-          role: 'frontend',
-          percentage: '60.00',
-        }),
-      );
-      expect(splitRepo.save).toHaveBeenCalledWith(
-        expect.objectContaining({
-          teamId: 't1',
-          userId: 'u2',
-          role: null,
-          percentage: '40.00',
-        }),
+        expect.arrayContaining([
+          expect.objectContaining({
+            teamId: 't1',
+            userId: 'u1',
+            role: 'frontend',
+            percentage: '60.00',
+          }),
+          expect.objectContaining({
+            teamId: 't1',
+            userId: 'u2',
+            role: null,
+            percentage: '40.00',
+          }),
+        ]),
       );
       expect(team.splits).toHaveLength(2);
     });

@@ -1,6 +1,7 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { getRepositoryToken } from '@nestjs/typeorm';
 import { BadRequestException } from '@nestjs/common';
+import { DataSource } from 'typeorm';
 import { EscrowService } from './escrow.service';
 import { SorobanClientService } from './soroban-client.service';
 import { Escrow, Payment, User } from '../common/entities';
@@ -22,6 +23,8 @@ describe('EscrowService', () => {
     tokenContractId: jest.Mock;
     escrowDeadlineSeconds: number;
   };
+  let soroban: { invoke: jest.Mock };
+  let dataSource: { transaction: jest.Mock };
 
   beforeEach(async () => {
     escrowRepo = {
@@ -56,6 +59,16 @@ describe('EscrowService', () => {
       tokenContractId: jest.fn().mockReturnValue(''),
       escrowDeadlineSeconds: 7776000,
     };
+    // The transaction manager routes save(Entity, data) to the matching repo
+    // mock so existing escrowRepo.save / paymentRepo.save assertions still hold.
+    const manager = {
+      save: jest.fn((entity: unknown, data: unknown) =>
+        entity === Payment ? paymentRepo.save(data) : escrowRepo.save(data),
+      ),
+    };
+    dataSource = {
+      transaction: jest.fn((fn: (m: typeof manager) => unknown) => fn(manager)),
+    };
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
@@ -63,6 +76,7 @@ describe('EscrowService', () => {
         { provide: getRepositoryToken(Escrow), useValue: escrowRepo },
         { provide: getRepositoryToken(Payment), useValue: paymentRepo },
         { provide: getRepositoryToken(User), useValue: userRepo },
+        { provide: DataSource, useValue: dataSource },
         { provide: SorobanClientService, useValue: soroban },
       ],
     }).compile();
@@ -279,12 +293,63 @@ describe('EscrowService', () => {
       const escrow = await service.release('escrow-3', 'GRECIPIENT', 'user-1');
 
       expect(escrow.status).toBe(EscrowStatus.RELEASED);
+      // Distinct from releasePartial's 'release_partial' method name (#159).
+      expect(soroban.invoke).toHaveBeenCalledWith('release', [
+        'bounty-3',
+        'GRECIPIENT',
+      ]);
       expect(paymentRepo.save).toHaveBeenCalledWith(
         expect.objectContaining({
           recipientAddress: 'GRECIPIENT',
           amount: '50',
         }),
       );
+    });
+
+    it('writes the escrow status and the Payment in one transaction (#154)', async () => {
+      escrowRepo.findOne.mockResolvedValue({
+        id: 'escrow-3',
+        status: EscrowStatus.LOCKED,
+        amount: '50',
+        asset: AssetType.USDC,
+        bountyId: 'bounty-3',
+      });
+
+      await service.release('escrow-3', 'GRECIPIENT', 'user-1');
+
+      expect(dataSource.transaction).toHaveBeenCalledTimes(1);
+    });
+
+    it('rejects a recipientId with no matching user before invoking Soroban (#154)', async () => {
+      escrowRepo.findOne.mockResolvedValue({
+        id: 'escrow-3',
+        status: EscrowStatus.LOCKED,
+        amount: '50',
+        asset: AssetType.USDC,
+        bountyId: 'bounty-3',
+      });
+      userRepo.find.mockResolvedValue([]);
+
+      await expect(
+        service.release('escrow-3', 'GRECIPIENT', 'ghost-user'),
+      ).rejects.toThrow(BadRequestException);
+      expect(soroban.invoke).not.toHaveBeenCalled();
+      expect(dataSource.transaction).not.toHaveBeenCalled();
+    });
+
+    it('propagates a Payment-insert failure out of the transaction (#154)', async () => {
+      escrowRepo.findOne.mockResolvedValue({
+        id: 'escrow-3',
+        status: EscrowStatus.LOCKED,
+        amount: '50',
+        asset: AssetType.USDC,
+        bountyId: 'bounty-3',
+      });
+      paymentRepo.save.mockRejectedValueOnce(new Error('FK violation'));
+
+      await expect(
+        service.release('escrow-3', 'GRECIPIENT', 'user-1'),
+      ).rejects.toThrow('FK violation');
     });
   });
 
@@ -315,6 +380,11 @@ describe('EscrowService', () => {
         [9100n, 'GRECIPIENT', 300_000_000n],
         {},
       );
+      expect(soroban.invoke).toHaveBeenCalledWith('release_partial', [
+        'milestone-1',
+        'GRECIPIENT',
+        300_000_000n,
+      ]);
       expect(paymentRepo.save).toHaveBeenCalledWith(
         expect.objectContaining({
           escrowId: 'escrow-partial',
@@ -366,6 +436,11 @@ describe('EscrowService', () => {
         [9100n, 'GB', 600_000_000n],
         {},
       );
+      expect(soroban.invoke).toHaveBeenNthCalledWith(2, 'release_partial', [
+        'milestone-1',
+        'GB',
+        600_000_000n,
+      ]);
       expect(escrowRepo.save).toHaveBeenCalledWith(
         expect.objectContaining({
           status: EscrowStatus.RELEASED,
@@ -605,6 +680,43 @@ describe('EscrowService', () => {
         [3003n, [['GRECIPIENT', 10_000]]],
         {},
       );
+    });
+
+    it('writes the escrow status and every recipient Payment in one transaction (#154)', async () => {
+      escrowRepo.findOne.mockResolvedValue({
+        id: 'escrow-4',
+        status: EscrowStatus.LOCKED,
+        amount: '100',
+        asset: AssetType.USDC,
+        bountyId: 'bounty-4',
+      });
+
+      await service.splitRelease('escrow-4', [
+        { recipientAddress: 'GA', percentage: 50 },
+        { recipientAddress: 'GB', percentage: 50 },
+      ]);
+
+      expect(dataSource.transaction).toHaveBeenCalledTimes(1);
+    });
+
+    it('propagates a mid-loop Payment failure out of the split transaction (#154)', async () => {
+      escrowRepo.findOne.mockResolvedValue({
+        id: 'escrow-4',
+        status: EscrowStatus.LOCKED,
+        amount: '100',
+        asset: AssetType.USDC,
+        bountyId: 'bounty-4',
+      });
+      paymentRepo.save
+        .mockResolvedValueOnce({ id: 'payment-1' })
+        .mockRejectedValueOnce(new Error('FK violation on recipient 2'));
+
+      await expect(
+        service.splitRelease('escrow-4', [
+          { recipientAddress: 'GA', percentage: 50 },
+          { recipientAddress: 'GB', percentage: 50 },
+        ]),
+      ).rejects.toThrow('FK violation on recipient 2');
     });
   });
 });

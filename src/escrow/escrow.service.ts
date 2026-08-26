@@ -4,8 +4,8 @@ import {
   Logger,
   NotFoundException,
 } from '@nestjs/common';
-import { InjectRepository } from '@nestjs/typeorm';
-import { In, Repository } from 'typeorm';
+import { InjectDataSource, InjectRepository } from '@nestjs/typeorm';
+import { DataSource, In, Repository } from 'typeorm';
 import { Escrow, Payment, User } from '../common/entities';
 import { AssetType, EscrowStatus, PaymentStatus } from '../common/enums';
 import {
@@ -23,6 +23,9 @@ import {
   splitStroops,
   TOTAL_BASIS_POINTS,
 } from './split-math.util';
+import { validatePercentageSplits } from '../common/validators/split-percentage.validator';
+import { SorobanClientService } from './soroban-client.service';
+import { apportionBasisPoints, splitStroops } from './split-math.util';
 
 export interface FundEscrowInput {
   amount: string;
@@ -71,6 +74,7 @@ export class EscrowService {
     @InjectRepository(Payment)
     private readonly paymentRepo: Repository<Payment>,
     @InjectRepository(User) private readonly userRepo: Repository<User>,
+    @InjectDataSource() private readonly dataSource: DataSource,
     private readonly soroban: SorobanClientService,
   ) {}
 
@@ -136,21 +140,29 @@ export class EscrowService {
       [recipientAddress, TOTAL_BASIS_POINTS],
     ]);
 
-    escrow.status = EscrowStatus.RELEASED;
-    escrow.releaseTxHash = result.txHash;
-    escrow.releasedAt = new Date();
-    await this.escrowRepo.save(escrow);
+    // The on-chain release already succeeded; the local ledger must record
+    // (escrow -> RELEASED) and the Payment row atomically, or neither, so a
+    // Payment-insert failure can never leave a permanently-mismarked escrow
+    // with no record of who was paid (#154).
+    await this.dataSource.transaction(async (manager) => {
+      escrow.status = EscrowStatus.RELEASED;
+      escrow.releaseTxHash = result.txHash;
+      escrow.releasedAt = new Date();
+      await manager.save(Escrow, escrow);
 
-    const payment = this.paymentRepo.create({
-      escrowId: escrow.id,
-      recipientId: recipientId ?? null,
-      recipientAddress,
-      amount: escrow.amount,
-      asset: escrow.asset,
-      status: PaymentStatus.CONFIRMED,
-      txHash: result.txHash,
+      await manager.save(
+        Payment,
+        this.paymentRepo.create({
+          escrowId: escrow.id,
+          recipientId: recipientId ?? null,
+          recipientAddress,
+          amount: escrow.amount,
+          asset: escrow.asset,
+          status: PaymentStatus.CONFIRMED,
+          txHash: result.txHash,
+        }),
+      );
     });
-    await this.paymentRepo.save(payment);
 
     return escrow;
   }
@@ -189,27 +201,36 @@ export class EscrowService {
     const shares = splitStroops(totalStroops, bps);
     this.reconcileSplitResult(escrow.id, totalStroops, result.returnValue);
 
-    escrow.status = EscrowStatus.RELEASED;
-    escrow.releaseTxHash = result.txHash;
-    escrow.releasedAt = new Date();
-    escrow.metadata = { ...(escrow.metadata ?? {}), splitRelease: result };
-    await this.escrowRepo.save(escrow);
-
+    // Atomic: the escrow flips to RELEASED and every recipient's Payment row
+    // is written in one transaction, so a mid-loop insert failure can no
+    // longer leave a RELEASED escrow with only some recipients recorded
+    // (#154).
     const payments: Payment[] = [];
-    for (let i = 0; i < recipients.length; i++) {
-      const recipient = recipients[i];
-      const payment = this.paymentRepo.create({
-        escrowId: escrow.id,
-        recipientId: recipient.recipientId ?? null,
-        recipientAddress: recipient.recipientAddress,
-        amount: stroopsToAmount(shares[i]),
-        asset: escrow.asset,
-        splitPercentage: (bps[i] / 100).toFixed(2),
-        status: PaymentStatus.CONFIRMED,
-        txHash: result.txHash,
-      });
-      payments.push(await this.paymentRepo.save(payment));
-    }
+    await this.dataSource.transaction(async (manager) => {
+      escrow.status = EscrowStatus.RELEASED;
+      escrow.releaseTxHash = result.txHash;
+      escrow.releasedAt = new Date();
+      escrow.metadata = { ...(escrow.metadata ?? {}), splitRelease: result };
+      await manager.save(Escrow, escrow);
+
+      for (let i = 0; i < recipients.length; i++) {
+        const recipient = recipients[i];
+        const payment = await manager.save(
+          Payment,
+          this.paymentRepo.create({
+            escrowId: escrow.id,
+            recipientId: recipient.recipientId ?? null,
+            recipientAddress: recipient.recipientAddress,
+            amount: stroopsToAmount(shares[i]),
+            asset: escrow.asset,
+            splitPercentage: (bps[i] / 100).toFixed(2),
+            status: PaymentStatus.CONFIRMED,
+            txHash: result.txHash,
+          }),
+        );
+        payments.push(payment);
+      }
+    });
     return payments;
   }
 
@@ -259,26 +280,42 @@ export class EscrowService {
           ],
           this.contractOpts(escrow),
         ),
+        // Distinct on-chain method name from release()'s two-arg `release`
+        // (#159): a partial release carries an amount and is a different
+        // contract entrypoint, not an overload — so a contract implementer
+        // isn't left guessing which arg shape `release` is authoritative.
+        this.soroban.invoke('release_partial', [
+          escrow.milestoneId ?? escrow.bountyId ?? escrow.id,
+          recipientAddress,
+          this.toStroops(amount),
+        ]),
     );
 
-    const payment = await this.paymentRepo.save(
-      this.paymentRepo.create({
-        escrowId: escrow.id,
-        recipientId: recipientId ?? null,
-        recipientAddress,
-        amount,
-        asset: escrow.asset,
-        status: PaymentStatus.CONFIRMED,
-        txHash: result.txHash,
-      }),
-    );
+    // The Payment insert and the (conditional) escrow-status flip share one
+    // transaction so the two can't diverge — same guarantee as release()
+    // and splitRelease() (#154).
+    let payment!: Payment;
+    await this.dataSource.transaction(async (manager) => {
+      payment = await manager.save(
+        Payment,
+        this.paymentRepo.create({
+          escrowId: escrow.id,
+          recipientId: recipientId ?? null,
+          recipientAddress,
+          amount,
+          asset: escrow.asset,
+          status: PaymentStatus.CONFIRMED,
+          txHash: result.txHash,
+        }),
+      );
 
-    if (releasedSoFar + requested >= Number(escrow.amount) - 1e-7) {
-      escrow.status = EscrowStatus.RELEASED;
-      escrow.releaseTxHash = result.txHash;
-      escrow.releasedAt = new Date();
-      await this.escrowRepo.save(escrow);
-    }
+      if (releasedSoFar + requested >= Number(escrow.amount) - 1e-7) {
+        escrow.status = EscrowStatus.RELEASED;
+        escrow.releaseTxHash = result.txHash;
+        escrow.releasedAt = new Date();
+        await manager.save(Escrow, escrow);
+      }
+    });
 
     return payment;
   }
@@ -377,10 +414,11 @@ export class EscrowService {
 
   /**
    * recipientId and recipientAddress must describe the same payee: whenever a
-   * user id is supplied, its address is required to match the Stellar address
-   * on file for that user (#92). Without this cross-check, on-chain funds
-   * could go to an unrelated address while Payment rows attribute them to the
-   * given user id.
+   * user id is supplied, the user must exist and its address must match the
+   * Stellar address on file (#92). Runs before the Soroban invocation so a
+   * client-trusted, non-existent recipientId is rejected up front rather
+   * than surfacing as a foreign-key violation on the Payment insert *after*
+   * funds have already moved on-chain (#154).
    */
   private async assertRecipientsMatchUsers(
     recipients: { recipientAddress: string; recipientId?: string }[],
@@ -399,8 +437,13 @@ export class EscrowService {
 
     for (const r of recipients) {
       if (!r.recipientId) continue;
-      const onFile = byId.get(r.recipientId)?.stellarAddress ?? null;
-      if (!onFile || onFile !== r.recipientAddress) {
+      const user = byId.get(r.recipientId);
+      if (!user) {
+        throw new BadRequestException(
+          `recipientId ${r.recipientId} does not correspond to a known user`,
+        );
+      }
+      if (user.stellarAddress !== r.recipientAddress) {
         throw new BadRequestException(
           `recipientAddress does not match the Stellar address on file for user ${r.recipientId}`,
         );
@@ -537,21 +580,13 @@ export class EscrowService {
   }
 
   /** Validates that split percentages sum to 100.00, within floating point tolerance. */
+   * Validates that split percentages sum to 100.00 (within tolerance), with
+   * every entry in `(0, 100]`. Delegates to the shared
+   * {@link validatePercentageSplits} — the same implementation
+   * `TeamsService` uses for `CreateTeamDto.members` (#167).
+   */
   assertValidSplits(recipients: SplitRecipient[]): void {
-    if (recipients.length === 0) {
-      throw new BadRequestException(
-        'At least one recipient is required for a split release',
-      );
-    }
-    const total = recipients.reduce((sum, r) => sum + r.percentage, 0);
-    if (Math.abs(total - 100) > 0.01) {
-      throw new BadRequestException(
-        `Split percentages must sum to 100, got ${total.toFixed(2)}`,
-      );
-    }
-    if (recipients.some((r) => r.percentage <= 0)) {
-      throw new BadRequestException('Split percentages must be positive');
-    }
+    validatePercentageSplits(recipients, 'split release');
   }
 
   /**
