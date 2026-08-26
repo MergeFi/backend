@@ -4,6 +4,12 @@ on:
   pull_request:
     branches:
       - main
+  # Also run on commits that land on main by any path (admin bypass,
+  # misconfigured or not-yet-enabled branch protection), so the secret scan,
+  # lint, build and tests still gate the default branch (#156).
+  push:
+    branches:
+      - main
 
 jobs:
   ci:
@@ -27,6 +33,11 @@ jobs:
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
+        with:
+          # Full history so the secret scan can inspect every commit, not
+          # just the working tree — a credential committed and later removed
+          # is invisible to a shallow checkout (#155).
+          fetch-depth: 0
 
       - name: Setup Node.js v24
         uses: actions/setup-node@v4
@@ -34,29 +45,20 @@ jobs:
           node-version: 24
           cache: 'npm'
 
-      - name: Scan for Hardcoded Secrets
+      - name: Scan for Hardcoded Secrets (gitleaks, full history)
+        env:
+          GITLEAKS_VERSION: 8.28.0
         run: |
-          echo "Scanning codebase for potential hardcoded secrets..."
-          
-          # Detect Stellar Secret Keys (starts with S, 56 characters, uppercase A-Z, digits 2-7)
-          if grep -r -E "\bS[A-D][A-Z2-7]{54}\b" --exclude-dir={node_modules,dist,coverage,.git} .; then
-            echo "::error::Potential Stellar Secret Key detected in codebase!"
-            exit 1
-          fi
-          
-          # Detect PEM Private Keys
-          if grep -r -E "(-+BEGIN [A-Z ]+ PRIVATE KEY-+)" --exclude-dir={node_modules,dist,coverage,.git} .; then
-            echo "::error::Potential PEM Private Key detected in codebase!"
-            exit 1
-          fi
-          
-          # Detect GitHub Personal Access Tokens (Legacy and Fine-grained)
-          if grep -r -E "(ghp_[a-zA-Z0-9]{36}|github_pat_[a-zA-Z0-9]{82})" --exclude-dir={node_modules,dist,coverage,.git} .; then
-            echo "::error::Potential GitHub Token detected in codebase!"
-            exit 1
-          fi
-          
-          echo "Secret scan completed. No secrets detected."
+          set -euo pipefail
+          echo "Downloading gitleaks v${GITLEAKS_VERSION}..."
+          curl -sSfL \
+            "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz" \
+            | tar -xz gitleaks
+          # `gitleaks git` walks the full commit history (not just the current
+          # tree) using gitleaks' maintained rule set — AWS keys, generic
+          # high-entropy tokens, connection strings, webhook URLs, JWTs, etc.
+          # — replacing the three hand-rolled regexes this step used to run.
+          ./gitleaks git . --redact --verbose --exit-code 1
         shell: bash
 
       - name: Install Dependencies
@@ -89,3 +91,15 @@ jobs:
           DATABASE_URL: postgresql://postgres:postgres@localhost:5432/mergefi
           NODE_ENV: test
         run: npm run test:e2e
+        run: |
+          # The e2e specs build their TestingModule from mocked providers and
+          # overrideGuard(...)-stubbed auth — none drive a real passport-github2
+          # handshake, so GITHUB_CLIENT_ID/SECRET were never the right gate
+          # (#165). What they actually need is a reachable Postgres, which the
+          # `postgres` service container above always provides.
+          if [ -z "${DATABASE_URL:-}" ]; then
+            echo "Skipping E2E tests: DATABASE_URL is not set."
+            exit 0
+          fi
+          npm run test:e2e
+        shell: bash
