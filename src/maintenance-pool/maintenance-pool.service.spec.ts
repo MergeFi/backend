@@ -14,7 +14,7 @@ describe('MaintenancePoolService', () => {
     create: jest.Mock;
     find: jest.Mock;
   };
-  let escrowService: { fund: jest.Mock; releasePartial: jest.Mock };
+  let escrowService: { fund: jest.Mock; poolWithdraw: jest.Mock };
   let issueRepo: { findOne: jest.Mock };
 
   beforeEach(async () => {
@@ -28,7 +28,7 @@ describe('MaintenancePoolService', () => {
     };
     escrowService = {
       fund: jest.fn(),
-      releasePartial: jest.fn(),
+      poolWithdraw: jest.fn(),
     };
     issueRepo = {
       findOne: jest.fn().mockResolvedValue({
@@ -226,7 +226,7 @@ describe('MaintenancePoolService', () => {
       await expect(
         service.assignReward('pool-1', 'issue-1', '10', 'GRECIPIENT'),
       ).rejects.toThrow(BadRequestException);
-      expect(escrowService.releasePartial).not.toHaveBeenCalled();
+      expect(escrowService.poolWithdraw).not.toHaveBeenCalled();
     });
 
     it('rejects when the requested amount exceeds the pool balance', async () => {
@@ -239,7 +239,7 @@ describe('MaintenancePoolService', () => {
       await expect(
         service.assignReward('pool-1', 'issue-1', '100', 'GRECIPIENT'),
       ).rejects.toThrow(BadRequestException);
-      expect(escrowService.releasePartial).not.toHaveBeenCalled();
+      expect(escrowService.poolWithdraw).not.toHaveBeenCalled();
     });
 
     it('releases the reward and decrements the balance', async () => {
@@ -248,7 +248,7 @@ describe('MaintenancePoolService', () => {
         balance: '100',
         escrowId: 'escrow-1',
       });
-      escrowService.releasePartial.mockResolvedValue({ id: 'payment-1' });
+      escrowService.poolWithdraw.mockResolvedValue({ id: 'payment-1' });
 
       const payment = await service.assignReward(
         'pool-1',
@@ -258,7 +258,7 @@ describe('MaintenancePoolService', () => {
         'user-1',
       );
 
-      expect(escrowService.releasePartial).toHaveBeenCalledWith(
+      expect(escrowService.poolWithdraw).toHaveBeenCalledWith(
         'escrow-1',
         '30',
         'GRECIPIENT',
@@ -285,7 +285,7 @@ describe('MaintenancePoolService', () => {
       await expect(
         service.assignReward('pool-1', 'issue-1', '10', 'GRECIPIENT'),
       ).rejects.toThrow(BadRequestException);
-      expect(escrowService.releasePartial).not.toHaveBeenCalled();
+      expect(escrowService.poolWithdraw).not.toHaveBeenCalled();
     });
 
     it('rejects an issue outside the pool repository', async () => {
@@ -304,7 +304,7 @@ describe('MaintenancePoolService', () => {
       await expect(
         service.assignReward('pool-1', 'issue-1', '10', 'GRECIPIENT'),
       ).rejects.toThrow(BadRequestException);
-      expect(escrowService.releasePartial).not.toHaveBeenCalled();
+      expect(escrowService.poolWithdraw).not.toHaveBeenCalled();
     });
 
     // Regression baseline for #51 (MaintenancePool.balance is a
@@ -331,7 +331,7 @@ describe('MaintenancePoolService', () => {
         sharedPoolRow.balance = pool.balance;
         return Promise.resolve(pool);
       });
-      escrowService.releasePartial.mockResolvedValue({ id: 'payment-x' });
+      escrowService.poolWithdraw.mockResolvedValue({ id: 'payment-x' });
 
       await Promise.all([
         service.assignReward('pool-1', 'issue-1', '100', 'GRECIPIENT_A'),
