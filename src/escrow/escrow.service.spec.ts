@@ -4,14 +4,11 @@ import { BadRequestException } from '@nestjs/common';
 import { EscrowService } from './escrow.service';
 import { SorobanClientService } from './soroban-client.service';
 import { Escrow, Payment, User } from '../common/entities';
-import { AssetType, EscrowStatus } from '../common/enums';
-import { Escrow, Payment } from '../common/entities';
 import { AssetType, EscrowStatus, PaymentStatus } from '../common/enums';
 
 describe('EscrowService', () => {
   let service: EscrowService;
   let escrowRepo: { create: jest.Mock; save: jest.Mock; findOne: jest.Mock };
-  let paymentRepo: { create: jest.Mock; save: jest.Mock };
   let userRepo: { find: jest.Mock };
   let paymentRepo: {
     create: jest.Mock;
@@ -224,6 +221,11 @@ describe('EscrowService', () => {
       const escrow = await service.release('escrow-3', 'GRECIPIENT', 'user-1');
 
       expect(escrow.status).toBe(EscrowStatus.RELEASED);
+      // Distinct from releasePartial's 'release_partial' method name (#159).
+      expect(soroban.invoke).toHaveBeenCalledWith('release', [
+        'bounty-3',
+        'GRECIPIENT',
+      ]);
       expect(paymentRepo.save).toHaveBeenCalledWith(
         expect.objectContaining({
           recipientAddress: 'GRECIPIENT',
@@ -254,7 +256,7 @@ describe('EscrowService', () => {
         'user-1',
       );
 
-      expect(soroban.invoke).toHaveBeenCalledWith('release', [
+      expect(soroban.invoke).toHaveBeenCalledWith('release_partial', [
         'milestone-1',
         'GRECIPIENT',
         300_000_000n,
@@ -304,7 +306,7 @@ describe('EscrowService', () => {
 
       await service.releasePartial('escrow-partial', '60.0000000', 'GB');
 
-      expect(soroban.invoke).toHaveBeenNthCalledWith(2, 'release', [
+      expect(soroban.invoke).toHaveBeenNthCalledWith(2, 'release_partial', [
         'milestone-1',
         'GB',
         600_000_000n,

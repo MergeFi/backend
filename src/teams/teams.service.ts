@@ -24,16 +24,17 @@ export class TeamsService {
       }),
     );
 
-    team.splits = await Promise.all(
+    // One batched save (inside TypeORM's implicit transaction) rather than
+    // N independently-committing INSERTs — a mid-way failure now rolls back
+    // to zero splits instead of leaving a partial, invalid set (#150).
+    team.splits = await this.splitRepo.save(
       dto.members.map((m) =>
-        this.splitRepo.save(
-          this.splitRepo.create({
-            teamId: team.id,
-            userId: m.userId,
-            role: m.role ?? null,
-            percentage: m.percentage.toFixed(2),
-          }),
-        ),
+        this.splitRepo.create({
+          teamId: team.id,
+          userId: m.userId,
+          role: m.role ?? null,
+          percentage: m.percentage.toFixed(2),
+        }),
       ),
     );
 
@@ -60,17 +61,15 @@ export class TeamsService {
     // Remove existing splits
     await this.splitRepo.delete({ teamId: team.id });
 
-    // Create new splits
-    team.splits = await Promise.all(
+    // Create new splits — one batched save, same rationale as create() (#150).
+    team.splits = await this.splitRepo.save(
       members.map((m) =>
-        this.splitRepo.save(
-          this.splitRepo.create({
-            teamId: team.id,
-            userId: m.userId,
-            role: m.role ?? null,
-            percentage: m.percentage.toFixed(2),
-          }),
-        ),
+        this.splitRepo.create({
+          teamId: team.id,
+          userId: m.userId,
+          role: m.role ?? null,
+          percentage: m.percentage.toFixed(2),
+        }),
       ),
     );
 
