@@ -43,6 +43,19 @@ export interface ContractInvocationResult {
  * live balance — see `EscrowService.poolWithdraw` (#163):
  *   fn deposit(env: Env, sponsor: Address, pool_id: BytesN<32>, amount: i128, token: Address)
  *   fn withdraw(env: Env, pool_id: BytesN<32>, recipient: Address, amount: i128) -> i128
+ *
+ * The `mergefi-milestones` contract is a two-step allocate/release model with
+ * no "partially drain one locked escrow" primitive (#160, #162):
+ * `create_milestone()` opens a budget pool, `allocate(milestone_id, issue_id,
+ * amount)` reserves a slice of the unallocated remainder for one issue
+ * (admin-only, rejects over-allocation), and `release_issue(milestone_id,
+ * issue_id, recipients)` pays out that issue's already-reserved slice.
+ * `MilestonesService.resolveIssue` therefore needs per-issue allocation
+ * tracking rather than repeated `releasePartial` calls against a single
+ * ever-LOCKED escrow row:
+ *   fn create_milestone(env: Env, sponsor: Address, milestone_id: BytesN<32>, budget: i128, token: Address)
+ *   fn allocate(env: Env, milestone_id: BytesN<32>, issue_id: BytesN<32>, amount: i128)
+ *   fn release_issue(env: Env, milestone_id: BytesN<32>, issue_id: BytesN<32>, recipients: Vec<(Address, u32)>) -> i128
  */
 @Injectable()
 export class SorobanClientService {
