@@ -28,6 +28,10 @@ describe('apportionBasisPoints', () => {
   it('rejects an empty percentage list', () => {
     expect(() => apportionBasisPoints([])).toThrow(BadRequestException);
   });
+
+  it('rejects percentages that do not sum to 100', () => {
+    expect(() => apportionBasisPoints([10, 10])).toThrow(BadRequestException);
+  });
 });
 
 describe('splitStroops', () => {

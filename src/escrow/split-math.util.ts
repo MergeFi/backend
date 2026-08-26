@@ -19,6 +19,13 @@ export function apportionBasisPoints(percentages: number[]): number[] {
     throw new BadRequestException('At least one percentage is required');
   }
 
+  const sum = percentages.reduce((total, p) => total + p, 0);
+  if (Math.abs(sum - 100) > 0.01) {
+    throw new BadRequestException(
+      `Percentages must sum to 100, got ${sum.toFixed(2)}`,
+    );
+  }
+
   const bps = percentages.map((p) => Math.round(p * 100));
   const delta = TOTAL_BASIS_POINTS - bps.reduce((sum, b) => sum + b, 0);
 
