@@ -135,6 +135,11 @@ export class SorobanClientService {
     }
 
     const result = await this.pollTransaction(send.hash);
+    if (result.status !== rpc.Api.GetTransactionStatus.SUCCESS) {
+      throw new Error(
+        `Soroban transaction ${send.hash} did not succeed on-chain (status: ${result.status})`,
+      );
+    }
 
     return {
       txHash: send.hash,

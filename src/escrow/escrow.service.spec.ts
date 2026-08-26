@@ -3,13 +3,14 @@ import { getRepositoryToken } from '@nestjs/typeorm';
 import { BadRequestException } from '@nestjs/common';
 import { EscrowService } from './escrow.service';
 import { SorobanClientService } from './soroban-client.service';
-import { Escrow, Payment } from '../common/entities';
+import { Escrow, Payment, User } from '../common/entities';
 import { AssetType, EscrowStatus } from '../common/enums';
 
 describe('EscrowService', () => {
   let service: EscrowService;
   let escrowRepo: { create: jest.Mock; save: jest.Mock; findOne: jest.Mock };
   let paymentRepo: { create: jest.Mock; save: jest.Mock };
+  let userRepo: { find: jest.Mock };
   let soroban: { invoke: jest.Mock };
 
   beforeEach(async () => {
@@ -25,6 +26,11 @@ describe('EscrowService', () => {
       })),
       save: jest.fn((data: Partial<Payment>) => Promise.resolve(data)),
     };
+    userRepo = {
+      find: jest
+        .fn()
+        .mockResolvedValue([{ id: 'user-1', stellarAddress: 'GRECIPIENT' }]),
+    };
     soroban = {
       invoke: jest.fn().mockResolvedValue({
         txHash: 'tx-hash-123',
@@ -39,6 +45,7 @@ describe('EscrowService', () => {
         EscrowService,
         { provide: getRepositoryToken(Escrow), useValue: escrowRepo },
         { provide: getRepositoryToken(Payment), useValue: paymentRepo },
+        { provide: getRepositoryToken(User), useValue: userRepo },
         { provide: SorobanClientService, useValue: soroban },
       ],
     }).compile();

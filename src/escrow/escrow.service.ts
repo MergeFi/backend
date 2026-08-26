@@ -5,8 +5,8 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
-import { Escrow, Payment } from '../common/entities';
+import { In, Repository } from 'typeorm';
+import { Escrow, Payment, User } from '../common/entities';
 import { AssetType, EscrowStatus, PaymentStatus } from '../common/enums';
 import {
   amountToStroops,
@@ -48,6 +48,7 @@ export class EscrowService {
     @InjectRepository(Escrow) private readonly escrowRepo: Repository<Escrow>,
     @InjectRepository(Payment)
     private readonly paymentRepo: Repository<Payment>,
+    @InjectRepository(User) private readonly userRepo: Repository<User>,
     private readonly soroban: SorobanClientService,
   ) {}
 
@@ -100,14 +101,17 @@ export class EscrowService {
   ): Promise<Escrow> {
     const escrow = await this.getOrThrow(escrowId);
     this.assertLocked(escrow);
+    await this.assertRecipientsMatchUsers([{ recipientAddress, recipientId }]);
 
-    const result = await this.soroban.invoke('release', [
-      escrow.bountyId ??
-        escrow.milestoneId ??
-        escrow.maintenancePoolId ??
-        escrow.id,
-      recipientAddress,
-    ]);
+    const result = await this.invokeOnLockedEscrow(escrow, 'release', () =>
+      this.soroban.invoke('release', [
+        escrow.bountyId ??
+          escrow.milestoneId ??
+          escrow.maintenancePoolId ??
+          escrow.id,
+        recipientAddress,
+      ]),
+    );
 
     escrow.status = EscrowStatus.RELEASED;
     escrow.releaseTxHash = result.txHash;
@@ -146,17 +150,20 @@ export class EscrowService {
     const escrow = await this.getOrThrow(escrowId);
     this.assertLocked(escrow);
     this.assertValidSplits(recipients);
+    await this.assertRecipientsMatchUsers(recipients);
 
     const totalStroops = amountToStroops(escrow.amount);
     // Single source of truth for the split: integer basis points summing to
     // exactly 10,000 (100.00%), used both on-chain and to derive the ledger.
     const bps = apportionBasisPoints(recipients.map((r) => r.percentage));
 
-    const result = await this.soroban.invoke('split_release', [
-      escrow.bountyId ?? escrow.milestoneId ?? escrow.id,
-      recipients.map((r) => r.recipientAddress),
-      bps,
-    ]);
+    const result = await this.invokeOnLockedEscrow(escrow, 'splitRelease', () =>
+      this.soroban.invoke('split_release', [
+        escrow.bountyId ?? escrow.milestoneId ?? escrow.id,
+        recipients.map((r) => r.recipientAddress),
+        bps,
+      ]),
+    );
 
     const shares = splitStroops(totalStroops, bps);
     this.reconcileSplitResult(escrow.id, totalStroops, result.returnValue);
@@ -216,11 +223,18 @@ export class EscrowService {
       );
     }
 
-    const result = await this.soroban.invoke('release', [
-      escrow.milestoneId ?? escrow.bountyId ?? escrow.id,
-      recipientAddress,
-      this.toStroops(amount),
-    ]);
+    await this.assertRecipientsMatchUsers([{ recipientAddress, recipientId }]);
+
+    const result = await this.invokeOnLockedEscrow(
+      escrow,
+      'releasePartial',
+      () =>
+        this.soroban.invoke('release', [
+          escrow.milestoneId ?? escrow.bountyId ?? escrow.id,
+          recipientAddress,
+          this.toStroops(amount),
+        ]),
+    );
 
     const payment = await this.paymentRepo.save(
       this.paymentRepo.create({
@@ -249,12 +263,14 @@ export class EscrowService {
     const escrow = await this.getOrThrow(escrowId);
     this.assertLocked(escrow);
 
-    const result = await this.soroban.invoke('refund', [
-      escrow.bountyId ??
-        escrow.milestoneId ??
-        escrow.maintenancePoolId ??
-        escrow.id,
-    ]);
+    const result = await this.invokeOnLockedEscrow(escrow, 'refund', () =>
+      this.soroban.invoke('refund', [
+        escrow.bountyId ??
+          escrow.milestoneId ??
+          escrow.maintenancePoolId ??
+          escrow.id,
+      ]),
+    );
 
     escrow.status = EscrowStatus.REFUNDED;
     escrow.refundTxHash = result.txHash;
@@ -277,6 +293,66 @@ export class EscrowService {
       throw new BadRequestException(
         `Escrow ${escrow.id} is not in LOCKED state (current: ${escrow.status})`,
       );
+    }
+  }
+
+  /**
+   * recipientId and recipientAddress must describe the same payee: whenever a
+   * user id is supplied, its address is required to match the Stellar address
+   * on file for that user (#92). Without this cross-check, on-chain funds
+   * could go to an unrelated address while Payment rows attribute them to the
+   * given user id.
+   */
+  private async assertRecipientsMatchUsers(
+    recipients: { recipientAddress: string; recipientId?: string }[],
+  ): Promise<void> {
+    const ids = [
+      ...new Set(
+        recipients
+          .map((r) => r.recipientId)
+          .filter((id): id is string => Boolean(id)),
+      ),
+    ];
+    if (ids.length === 0) return;
+
+    const users = await this.userRepo.find({ where: { id: In(ids) } });
+    const byId = new Map(users.map((u) => [u.id, u]));
+
+    for (const r of recipients) {
+      if (!r.recipientId) continue;
+      const onFile = byId.get(r.recipientId)?.stellarAddress ?? null;
+      if (!onFile || onFile !== r.recipientAddress) {
+        throw new BadRequestException(
+          `recipientAddress does not match the Stellar address on file for user ${r.recipientId}`,
+        );
+      }
+    }
+  }
+
+  /**
+   * Runs a Soroban invocation against an already-LOCKED escrow and records a
+   * thrown failure in escrow.metadata so failed attempts are queryable state
+   * rather than only a server log line (#89). The status deliberately stays
+   * LOCKED — the funds are still held and the operation can be retried.
+   */
+  private async invokeOnLockedEscrow<T>(
+    escrow: Escrow,
+    operation: string,
+    call: () => Promise<T>,
+  ): Promise<T> {
+    try {
+      return await call();
+    } catch (err) {
+      escrow.metadata = {
+        ...(escrow.metadata ?? {}),
+        lastFailure: {
+          operation,
+          error: (err as Error).message,
+          at: new Date().toISOString(),
+        },
+      };
+      await this.escrowRepo.save(escrow);
+      throw err;
     }
   }
 
