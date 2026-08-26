@@ -7,6 +7,7 @@ import {
   IsString,
   IsUUID,
   Max,
+  MaxLength,
   Min,
   ValidateNested,
 } from 'class-validator';
@@ -16,9 +17,10 @@ export class TeamMemberSplitDto {
   @IsUUID()
   userId: string;
 
-  @ApiProperty({ required: false, example: 'frontend' })
+  @ApiProperty({ required: false, example: 'frontend', maxLength: 50 })
   @IsOptional()
   @IsString()
+  @MaxLength(50)
   role?: string;
 
   @ApiProperty({ example: 40, minimum: 0.01, maximum: 100 })

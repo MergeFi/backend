@@ -82,10 +82,15 @@ jobs:
           NODE_ENV: test
         run: npm run test:cov
 
+      # The e2e specs run entirely against the local Postgres service and a
+      # mocked Stellar SDK; none of them use GITHUB_CLIENT_ID/SECRET. The step
+      # used to be gated on those (never-configured) secrets, so `npm run
+      # test:e2e` had never actually executed in CI (#164). Run it always.
       - name: Run E2E Tests
         env:
           DATABASE_URL: postgresql://postgres:postgres@localhost:5432/mergefi
           NODE_ENV: test
+        run: npm run test:e2e
         run: |
           # The e2e specs build their TestingModule from mocked providers and
           # overrideGuard(...)-stubbed auth — none drive a real passport-github2

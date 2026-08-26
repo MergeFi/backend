@@ -27,7 +27,7 @@ export class Milestone {
   @Column()
   repositoryId: string;
 
-  @Column()
+  @Column({ type: 'varchar', length: 200 })
   title: string;
 
   @Column({ type: 'text', nullable: true })

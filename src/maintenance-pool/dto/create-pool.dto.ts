@@ -1,5 +1,5 @@
 import { ApiProperty } from '@nestjs/swagger';
-import { IsOptional, IsString, IsUUID } from 'class-validator';
+import { IsOptional, IsString, IsUUID, MaxLength } from 'class-validator';
 import { AssetType } from '../../common/enums';
 import {
   IsMoneyAmount,
@@ -7,8 +7,9 @@ import {
 } from '../../common/validators/money.validator';
 
 export class CreatePoolDto {
-  @ApiProperty()
+  @ApiProperty({ maxLength: 100 })
   @IsString()
+  @MaxLength(100)
   name: string;
 
   @ApiProperty({ required: false })
