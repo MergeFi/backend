@@ -25,17 +25,24 @@ export interface ContractInvocationResult {
  * escrow smart contract deployed by the sibling `mergefi-contracts` repo.
  *
  * TODO(mergefi-contracts): this client assumes a contract exposing
- * `fund`, `release`, `refund`, and `split_release` functions with the
- * signatures documented below. Adjust argument encoding once the real
+ * `fund`, `release`, `refund`, `split_release` and `withdraw` functions with
+ * the signatures documented below. Adjust argument encoding once the real
  * contract interface (from the Soroban contract's generated bindings) is
  * available. Until ESCROW_CONTRACT_ID is configured, calls run in
  * "simulate-only" dry-run mode and never submit a real transaction.
  *
- * Expected contract interface (Rust, illustrative):
+ * Expected bounty/milestone escrow interface (Rust, illustrative):
  *   fn fund(env: Env, funder: Address, bounty_id: BytesN<32>, amount: i128, token: Address)
  *   fn release(env: Env, bounty_id: BytesN<32>, recipient: Address) -> i128
  *   fn split_release(env: Env, bounty_id: BytesN<32>, recipients: Vec<Address>, bps: Vec<u32>) -> i128
  *   fn refund(env: Env, bounty_id: BytesN<32>) -> i128
+ *
+ * The `mergefi-maintenance-pool` contract is a distinct deposit/withdraw
+ * model (no lock step, no split): a running on-chain balance topped up by
+ * any sponsor via repeated `deposit()`, paid out by an admin against the
+ * live balance — see `EscrowService.poolWithdraw` (#163):
+ *   fn deposit(env: Env, sponsor: Address, pool_id: BytesN<32>, amount: i128, token: Address)
+ *   fn withdraw(env: Env, pool_id: BytesN<32>, recipient: Address, amount: i128) -> i128
  */
 @Injectable()
 export class SorobanClientService {
