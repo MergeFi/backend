@@ -258,6 +258,57 @@ export class EscrowService {
     return payment;
   }
 
+  /**
+   * Pays a reward out of a maintenance pool's running balance.
+   *
+   * The real `mergefi-maintenance-pool` contract has no
+   * LOCKED-escrow-with-partial-release concept: it accrues an on-chain
+   * `balance` through repeated `deposit()` calls and pays out via
+   * `withdraw(pool_id, recipient, amount)` against the live balance, with no
+   * pre-`lock` step and no "fully released" terminal state (#163).
+   *
+   * So unlike {@link releasePartial} — which is milestone-shaped: it checks
+   * the cumulative payouts against a fixed locked `escrow.amount` and flips
+   * the escrow to RELEASED once they reach it — this call:
+   *   - invokes the pool contract's `withdraw`, not `release`;
+   *   - leaves the escrow row LOCKED (it mirrors an open, still-funded pool,
+   *     not a one-off lock that closes out);
+   *   - does not enforce a ceiling here. The spendable balance is tracked by
+   *     `MaintenancePoolService` on `pool.balance` and checked there before
+   *     this is called.
+   */
+  async poolWithdraw(
+    escrowId: string,
+    amount: string,
+    recipientAddress: string,
+    recipientId?: string,
+  ): Promise<Payment> {
+    const escrow = await this.getOrThrow(escrowId);
+    this.assertLocked(escrow);
+    this.assertValidAmount(amount);
+    await this.assertRecipientsMatchUsers([{ recipientAddress, recipientId }]);
+
+    const result = await this.invokeOnLockedEscrow(escrow, 'poolWithdraw', () =>
+      this.soroban.invoke('withdraw', [
+        escrow.maintenancePoolId ?? escrow.id,
+        recipientAddress,
+        this.toStroops(amount),
+      ]),
+    );
+
+    return this.paymentRepo.save(
+      this.paymentRepo.create({
+        escrowId: escrow.id,
+        recipientId: recipientId ?? null,
+        recipientAddress,
+        amount,
+        asset: escrow.asset,
+        status: PaymentStatus.CONFIRMED,
+        txHash: result.txHash,
+      }),
+    );
+  }
+
   /** Refunds the full escrowed amount back to the original funder. */
   async refund(escrowId: string): Promise<Escrow> {
     const escrow = await this.getOrThrow(escrowId);
