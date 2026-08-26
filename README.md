@@ -133,11 +133,9 @@ See [`.env.example`](./.env.example) for the full annotated list. Highlights:
 | `GITHUB_CLIENT_ID` / `_SECRET`, `GITHUB_OAUTH_CALLBACK_URL` | GitHub OAuth login app. |
 | `GITHUB_API_TOKEN` | Token used by Octokit for repo/issue sync (PAT for now; see roadmap). |
 | `GITHUB_WEBHOOK_SECRET` | HMAC-SHA256 secret configured on the GitHub webhook. |
-| `STELLAR_NETWORK`, `HORIZON_URL`, `SOROBAN_RPC_URL`, `STELLAR_NETWORK_PASSPHRASE` | Stellar network config. |
+| `STELLAR_NETWORK`, `SOROBAN_RPC_URL`, `STELLAR_NETWORK_PASSPHRASE` | Stellar network config. |
 | `ESCROW_CONTRACT_ID` | Deployed escrow contract ID from `mergefi-contracts`. **Not set in this environment** — see below. |
-| `MAINTENANCE_POOL_CONTRACT_ID` | Optional separate contract for the maintenance pool; falls back to `ESCROW_CONTRACT_ID`. |
-| `TREASURY_ADDRESS` / `TREASURY_SECRET` | Platform signer used to submit release/refund transactions. |
-| `USDC_ASSET_CODE` / `USDC_ASSET_ISSUER` | Stablecoin asset identity on Stellar. |
+| `TREASURY_SECRET` | Platform signer used to submit release/refund transactions. |
 
 ## Escrow / Soroban integration
 
@@ -157,8 +155,8 @@ rest of the system (state transitions, DB writes, split-percentage math,
 webhook-triggered releases) can still be exercised end-to-end in tests and
 local dev. Once real contracts are deployed:
 
-1. Set `ESCROW_CONTRACT_ID` (and `MAINTENANCE_POOL_CONTRACT_ID` if separate).
-2. Set `TREASURY_ADDRESS` / `TREASURY_SECRET` to a funded Stellar account.
+1. Set `ESCROW_CONTRACT_ID`.
+2. Set `TREASURY_SECRET` to a funded Stellar account.
 3. Confirm the contract's `fund`/`release`/`split_release`/`refund` function
    signatures match the ones documented at the top of
    `soroban-client.service.ts` (adjust argument encoding there if not —

@@ -3,6 +3,7 @@ import {
   Column,
   CreateDateColumn,
   Entity,
+  Index,
   JoinColumn,
   OneToMany,
   OneToOne,
@@ -39,6 +40,7 @@ import { AssetType, EscrowStatus } from '../enums';
  * in EscrowService.fund (see assertExactlyOneParent).
  */
 @Entity('escrows')
+@Index('IDX_escrow_sponsor_status', ['sponsorId', 'status'])
 @Check(
   'CHK_escrow_at_most_one_parent',
   `(
