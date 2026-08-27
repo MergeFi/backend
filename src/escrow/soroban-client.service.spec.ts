@@ -285,6 +285,30 @@ describe('SorobanClientService', () => {
       expect(nativeToScValMock).not.toHaveBeenCalled();
     });
 
+    it('encodes a Buffer as BytesN bytes (#45)', () => {
+      const hash = Buffer.from('a'.repeat(32));
+
+      const encoded = (
+        service as unknown as { toScVal(v: unknown): unknown }
+      ).toScVal(hash);
+
+      expect(nativeToScValMock).toHaveBeenCalledWith(hash, { type: 'bytes' });
+      expect(encoded).toEqual(hash);
+    });
+
+    it('encodes a Uint8Array as BytesN bytes (#45)', () => {
+      const hash = new Uint8Array(32).fill(7);
+
+      const encoded = (
+        service as unknown as { toScVal(v: unknown): unknown }
+      ).toScVal(hash);
+
+      expect(nativeToScValMock).toHaveBeenCalledWith(Buffer.from(hash), {
+        type: 'bytes',
+      });
+      expect(encoded).toEqual(Buffer.from(hash));
+    });
+
     it('encodes bigints as i128', () => {
       const encoded = (
         service as unknown as { toScVal(v: unknown): unknown }
