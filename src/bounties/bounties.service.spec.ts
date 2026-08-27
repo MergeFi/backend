@@ -270,4 +270,46 @@ describe('BountiesService', () => {
       InvalidBountyTransitionError,
     );
   });
+
+  it('lists bounties with repository and language filters', async () => {
+    const qb = {
+      leftJoinAndSelect: jest.fn().mockReturnThis(),
+      andWhere: jest.fn().mockReturnThis(),
+      getMany: jest.fn().mockResolvedValue([]),
+    };
+    bountyRepo.createQueryBuilder.mockReturnValue(qb);
+
+    await service.list({
+      status: BountyStatus.OPEN,
+      difficulty: BountyDifficulty.BEGINNER,
+      asset: AssetType.USDC,
+      repositoryId: 'repo-1',
+      primaryLanguage: 'TypeScript',
+    });
+
+    expect(bountyRepo.createQueryBuilder).toHaveBeenCalledWith('bounty');
+    expect(qb.leftJoinAndSelect).toHaveBeenCalledWith('bounty.issue', 'issue');
+    expect(qb.leftJoinAndSelect).toHaveBeenCalledWith(
+      'issue.repository',
+      'repository',
+    );
+    expect(qb.andWhere).toHaveBeenCalledWith('bounty.status = :status', {
+      status: BountyStatus.OPEN,
+    });
+    expect(qb.andWhere).toHaveBeenCalledWith(
+      'bounty.difficulty = :difficulty',
+      { difficulty: BountyDifficulty.BEGINNER },
+    );
+    expect(qb.andWhere).toHaveBeenCalledWith('bounty.asset = :asset', {
+      asset: AssetType.USDC,
+    });
+    expect(qb.andWhere).toHaveBeenCalledWith(
+      'issue.repositoryId = :repositoryId',
+      { repositoryId: 'repo-1' },
+    );
+    expect(qb.andWhere).toHaveBeenCalledWith(
+      'repository.primaryLanguage = :primaryLanguage',
+      { primaryLanguage: 'TypeScript' },
+    );
+  });
 });

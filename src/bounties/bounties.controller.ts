@@ -13,7 +13,7 @@ import { ApiTags } from '@nestjs/swagger';
 import { BountiesService } from './bounties.service';
 import { CreateBountyDto } from './dto/create-bounty.dto';
 import { ClaimBountyDto } from './dto/claim-bounty.dto';
-import { BountyStatus } from '../common/enums';
+import { AssetType, BountyDifficulty, BountyStatus } from '../common/enums';
 import { Idempotent } from '../common/idempotency/idempotent.decorator';
 import { IsStellarAddress } from '../common/validators/stellar-address.validator';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
@@ -43,8 +43,20 @@ export class BountiesController {
   list(
     @Query('status', new ParseEnumPipe(BountyStatus, { optional: true }))
     status?: BountyStatus,
+    @Query('difficulty', new ParseEnumPipe(BountyDifficulty, { optional: true }))
+    difficulty?: BountyDifficulty,
+    @Query('asset', new ParseEnumPipe(AssetType, { optional: true }))
+    asset?: AssetType,
+    @Query('repositoryId') repositoryId?: string,
+    @Query('primaryLanguage') primaryLanguage?: string,
   ) {
-    return this.bountiesService.list(status);
+    return this.bountiesService.list({
+      status,
+      difficulty,
+      asset,
+      repositoryId,
+      primaryLanguage,
+    });
   }
 
   @Get(':id')
