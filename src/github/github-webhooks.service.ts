@@ -8,8 +8,13 @@ import { AppConfig } from '../config/configuration';
 import { verifyGithubSignature } from './webhook-signature.util';
 import { BountiesService } from '../bounties/bounties.service';
 import { GithubSyncService, RawGithubIssue } from './github-sync.service';
+import {
+  validateIssuesEventPayload,
+  validatePullRequestPayload,
+  WebhookPayloadValidationError,
+} from './github-webhook-payload.util';
 
-interface GithubPullRequestPayload {
+export interface GithubPullRequestPayload {
   action: string;
   number: number;
   pull_request: {
@@ -22,7 +27,7 @@ interface GithubPullRequestPayload {
   repository: { id: number; full_name: string };
 }
 
-interface GithubIssuesEventPayload {
+export interface GithubIssuesEventPayload {
   action: string;
   issue: RawGithubIssue;
   repository: { id: number; full_name: string };
@@ -96,24 +101,34 @@ export class GithubWebhooksService {
     try {
       if (eventType === 'pull_request') {
         const outcomes = await this.handlePullRequest(
-          payload as unknown as GithubPullRequestPayload,
+          validatePullRequestPayload(payload),
         );
         this.applyPullRequestOutcomes(event, outcomes);
       } else {
         if (eventType === 'issues') {
-          await this.handleIssueEvent(
-            payload as unknown as GithubIssuesEventPayload,
-          );
+          await this.handleIssueEvent(validateIssuesEventPayload(payload));
         }
         event.status = WebhookEventStatus.PROCESSED;
         event.processedAt = new Date();
       }
     } catch (err) {
-      event.status = WebhookEventStatus.FAILED;
-      event.error = (err as Error).message;
-      this.logger.error(
-        `Failed to process webhook ${deliveryId}: ${event.error}`,
-      );
+      if (err instanceof WebhookPayloadValidationError) {
+        // Distinct from a processing-logic failure (#28): the payload
+        // never had a shape any handler could act on, so no business
+        // logic ran at all — record that plainly rather than folding it
+        // into the same FAILED bucket a real processing error uses.
+        event.status = WebhookEventStatus.INVALID_PAYLOAD;
+        event.error = err.message;
+        this.logger.warn(
+          `Rejected webhook delivery ${deliveryId} — invalid payload: ${event.error}`,
+        );
+      } else {
+        event.status = WebhookEventStatus.FAILED;
+        event.error = (err as Error).message;
+        this.logger.error(
+          `Failed to process webhook ${deliveryId}: ${event.error}`,
+        );
+      }
     }
 
     return this.webhookEventRepo.save(event);
