@@ -13,6 +13,9 @@ describe('MaintenancePoolService', () => {
     save: jest.Mock;
     create: jest.Mock;
     find: jest.Mock;
+    update: jest.Mock;
+    increment: jest.Mock;
+    decrement: jest.Mock;
   };
   let escrowService: { fund: jest.Mock; poolWithdraw: jest.Mock };
   let issueRepo: { findOne: jest.Mock };
@@ -25,6 +28,9 @@ describe('MaintenancePoolService', () => {
       ),
       findOne: jest.fn(),
       find: jest.fn(),
+      update: jest.fn().mockResolvedValue({ affected: 1 }),
+      increment: jest.fn().mockResolvedValue({ affected: 1 }),
+      decrement: jest.fn().mockResolvedValue({ affected: 1 }),
     };
     escrowService = {
       fund: jest.fn(),
@@ -109,14 +115,30 @@ describe('MaintenancePoolService', () => {
     });
 
     it('funds a new escrow and sets escrowId on the first deposit', async () => {
-      poolRepo.findOne.mockResolvedValue({
+      // A stateful row, mutated by `update`/`increment` exactly as the real
+      // atomic SQL statements would mutate the Postgres row — lets us assert
+      // on the final re-fetched state returned by deposit().
+      const row = {
         id: 'pool-1',
         status: MaintenancePoolStatus.ACTIVE,
         balance: '0',
         monthlyDeposit: '500',
         asset: AssetType.USDC,
-        escrowId: null,
-      });
+        escrowId: null as string | null,
+      };
+      poolRepo.findOne.mockImplementation(() => Promise.resolve(row));
+      poolRepo.update.mockImplementation(
+        (_id: string, partial: Partial<typeof row>) => {
+          Object.assign(row, partial);
+          return Promise.resolve({ affected: 1 });
+        },
+      );
+      poolRepo.increment.mockImplementation(
+        (_where: { id: string }, column: 'balance', value: number) => {
+          row[column] = (Number(row[column]) + value).toFixed(7);
+          return Promise.resolve({ affected: 1 });
+        },
+      );
       escrowService.fund.mockResolvedValue({
         id: 'escrow-1',
         status: 'locked',
@@ -159,13 +181,20 @@ describe('MaintenancePoolService', () => {
     });
 
     it('accumulates balance across deposits', async () => {
-      poolRepo.findOne.mockResolvedValue({
+      const row = {
         id: 'pool-1',
         status: MaintenancePoolStatus.ACTIVE,
         balance: '100',
         asset: AssetType.USDC,
         escrowId: 'escrow-1',
-      });
+      };
+      poolRepo.findOne.mockImplementation(() => Promise.resolve(row));
+      poolRepo.increment.mockImplementation(
+        (_where: { id: string }, column: 'balance', value: number) => {
+          row[column] = (Number(row[column]) + value).toFixed(7);
+          return Promise.resolve({ affected: 1 });
+        },
+      );
       escrowService.fund.mockResolvedValue({
         id: 'escrow-2',
         status: 'locked',
@@ -265,8 +294,10 @@ describe('MaintenancePoolService', () => {
         'user-1',
       );
       expect(payment).toEqual({ id: 'payment-1' });
-      expect(poolRepo.save).toHaveBeenCalledWith(
-        expect.objectContaining({ balance: '70.0000000' }),
+      expect(poolRepo.decrement).toHaveBeenCalledWith(
+        { id: 'pool-1' },
+        'balance',
+        30,
       );
     });
 
@@ -307,19 +338,15 @@ describe('MaintenancePoolService', () => {
       expect(escrowService.poolWithdraw).not.toHaveBeenCalled();
     });
 
-    // Regression baseline for #51 (MaintenancePool.balance is a
-    // hand-maintained running total with a lost-update race across
-    // concurrent deposit/assignReward calls): reproduces the race
-    // deterministically by backing findOne()/save() with a single shared
-    // mutable record, matching how the real Postgres row works — both
-    // concurrent calls read the same starting balance before either writes
-    // back, because assignReward never re-reads or locks the row between
-    // its initial findOne() and its final save(). Once #51 lands a fix
-    // (e.g. an atomic UPDATE ... SET balance = balance - $1, or a
-    // pessimistic lock/transaction around read-modify-write), this test's
-    // "loses one of the two decrements" assertion is expected to flip to
-    // "balance reflects both decrements".
-    it('[current behavior, see #51] two concurrent assignReward calls lose one balance decrement', async () => {
+    // Regression test for #51 (MaintenancePool.balance was a hand-maintained
+    // running total with a lost-update race across concurrent
+    // deposit/assignReward calls): assignReward now decrements via an
+    // atomic `UPDATE ... SET balance = balance - $1` (poolRepo.decrement)
+    // instead of a read-modify-write save(), so each concurrent call's
+    // decrement applies relative to the row's *current* value at write
+    // time — not a value cached from an earlier read — and neither
+    // decrement is lost.
+    it('two concurrent assignReward calls both apply — no lost decrement (#51)', async () => {
       const sharedPoolRow: { balance: string; escrowId: string } = {
         balance: '1000.0000000',
         escrowId: 'escrow-1',
@@ -327,10 +354,14 @@ describe('MaintenancePoolService', () => {
       poolRepo.findOne.mockImplementation(() =>
         Promise.resolve({ id: 'pool-1', ...sharedPoolRow }),
       );
-      poolRepo.save.mockImplementation((pool: { balance: string }) => {
-        sharedPoolRow.balance = pool.balance;
-        return Promise.resolve(pool);
-      });
+      poolRepo.decrement.mockImplementation(
+        (_where: { id: string }, column: 'balance', value: number) => {
+          sharedPoolRow[column] = (
+            Number(sharedPoolRow[column]) - value
+          ).toFixed(7);
+          return Promise.resolve({ affected: 1 });
+        },
+      );
       escrowService.poolWithdraw.mockResolvedValue({ id: 'payment-x' });
 
       await Promise.all([
@@ -338,12 +369,7 @@ describe('MaintenancePoolService', () => {
         service.assignReward('pool-1', 'issue-1', '200', 'GRECIPIENT_B'),
       ]);
 
-      // Both concurrent calls read balance=1000 before either wrote back,
-      // so whichever save() lands last overwrites the other's decrement —
-      // the final balance reflects only ONE of the two rewards, not both.
-      // A correct implementation would settle at 1000 - 100 - 200 = 700.
-      expect(sharedPoolRow.balance).not.toBe('700.0000000');
-      expect(['900.0000000', '800.0000000']).toContain(sharedPoolRow.balance);
+      expect(sharedPoolRow.balance).toBe('700.0000000');
     });
   });
 });

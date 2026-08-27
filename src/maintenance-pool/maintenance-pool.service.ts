@@ -62,8 +62,7 @@ export class MaintenancePoolService {
         funderAddress,
         maintenancePoolId: pool.id,
       });
-      pool.escrow = escrow;
-      pool.escrowId = escrow.id;
+      await this.poolRepo.update(pool.id, { escrowId: escrow.id });
     } else {
       // Subsequent deposits top up the existing on-chain escrow balance.
       await this.escrowService.fund({
@@ -74,11 +73,14 @@ export class MaintenancePoolService {
       });
     }
 
-    pool.balance = (Number(pool.balance) + Number(amount)).toFixed(7);
-    // monthlyDeposit is deliberately left untouched here: it records the
-    // sponsor's standing recurring commitment (set at pool creation), not
-    // "whatever the last deposit happened to be" (#93).
-    return this.poolRepo.save(pool);
+    // Atomic DB-level increment instead of read-modify-write — concurrent
+    // deposits/rewards on the same pool no longer clobber each other's
+    // balance update (#51). monthlyDeposit is deliberately left untouched
+    // here: it records the sponsor's standing recurring commitment (set at
+    // pool creation), not "whatever the last deposit happened to be" (#93).
+    await this.poolRepo.increment({ id: pool.id }, 'balance', Number(amount));
+
+    return this.findOne(id);
   }
 
   /** Maintainer assigns a reward from the pool's balance for completed maintenance work. */
@@ -122,8 +124,10 @@ export class MaintenancePoolService {
       recipientId,
     );
 
-    pool.balance = (Number(pool.balance) - Number(amount)).toFixed(7);
-    await this.poolRepo.save(pool);
+    // Atomic DB-level decrement instead of read-modify-write — concurrent
+    // reward assignments on the same pool no longer clobber each other's
+    // balance update (#51).
+    await this.poolRepo.decrement({ id: pool.id }, 'balance', Number(amount));
 
     return payment;
   }
