@@ -92,11 +92,30 @@ describe('EscrowController (#19 metadata leak)', () => {
     expect(JSON.stringify(result)).not.toContain('internal RPC detail');
   });
 
+  it('fund() forwards the DTO to EscrowService', async () => {
+    const dto = {
+      amount: '100',
+      asset: AssetType.USDC,
+      funderAddress: 'GFUNDER',
+      bountyId: 'bounty_1',
+    };
+
+    await controller.fund(dto);
+
+    expect(escrowService.fund).toHaveBeenCalledWith(dto);
+  });
+
   it('findOne() (GET /escrow/:id) never returns metadata to the client', async () => {
     const result = await controller.findOne('esc_1');
 
     expect(result).not.toHaveProperty('metadata');
     expect(JSON.stringify(result)).not.toContain('internal RPC detail');
+  });
+
+  it('findOne() forwards the id to EscrowService', async () => {
+    await controller.findOne('esc_1');
+
+    expect(escrowService.findOne).toHaveBeenCalledWith('esc_1');
   });
 
   it('release() never returns metadata to the client', async () => {
@@ -107,9 +126,40 @@ describe('EscrowController (#19 metadata leak)', () => {
     expect(result).not.toHaveProperty('metadata');
   });
 
+  it('release() forwards the parsed id and DTO fields to EscrowService', async () => {
+    await controller.release('esc_1', {
+      recipientAddress: 'GRECIPIENT',
+      recipientId: 'user_1',
+    });
+
+    expect(escrowService.release).toHaveBeenCalledWith(
+      'esc_1',
+      'GRECIPIENT',
+      'user_1',
+    );
+  });
+
   it('refund() never returns metadata to the client', async () => {
     const result = await controller.refund('esc_1');
 
     expect(result).not.toHaveProperty('metadata');
+  });
+
+  it('refund() forwards the id to EscrowService', async () => {
+    await controller.refund('esc_1');
+
+    expect(escrowService.refund).toHaveBeenCalledWith('esc_1');
+  });
+
+  it('splitRelease() forwards the parsed id and recipients to EscrowService', async () => {
+    await controller.splitRelease('esc_1', {
+      recipients: [
+        { recipientId: 'u1', recipientAddress: 'G1', percentage: 60 },
+      ],
+    });
+
+    expect(escrowService.splitRelease).toHaveBeenCalledWith('esc_1', [
+      { recipientId: 'u1', recipientAddress: 'G1', percentage: 60 },
+    ]);
   });
 });

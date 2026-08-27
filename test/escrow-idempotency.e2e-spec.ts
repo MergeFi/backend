@@ -134,19 +134,22 @@ describe('Escrow idempotency: cross-resource key reuse (#54)', () => {
     );
 
     const releaseA = await request(app.getHttpServer())
-      .post('/escrow/escrow-A/release')
+      .post('/escrow/11111111-1111-4111-8111-111111111111/release')
       .set('Idempotency-Key', IDEMPOTENCY_KEY)
       .send({ recipientAddress: 'GADDRESSA' })
       .expect(201);
 
-    expect(releaseA.body).toMatchObject({ id: 'escrow-A', status: 'released' });
+    expect(releaseA.body).toMatchObject({
+      id: '11111111-1111-4111-8111-111111111111',
+      status: 'released',
+    });
     expect(escrowService.release).toHaveBeenCalledTimes(1);
 
     // Same Idempotency-Key, but a genuinely different resource (#54's
     // reproduction) — must not replay escrow A's cached response as if it
     // were escrow B's.
     const releaseB = await request(app.getHttpServer())
-      .post('/escrow/escrow-B/release')
+      .post('/escrow/22222222-2222-4222-8222-222222222222/release')
       .set('Idempotency-Key', IDEMPOTENCY_KEY)
       .send({ recipientAddress: 'GADDRESSB' })
       .expect(422);
@@ -160,10 +163,21 @@ describe('Escrow idempotency: cross-resource key reuse (#54)', () => {
     // executing.
     expect(escrowService.release).toHaveBeenCalledTimes(1);
     expect(escrowService.release).not.toHaveBeenCalledWith(
-      'escrow-B',
+      '22222222-2222-4222-8222-222222222222',
       expect.anything(),
       expect.anything(),
     );
+  });
+
+  it('requires Idempotency-Key on an @Idempotent route through the real Nest HTTP stack', async () => {
+    await request(app.getHttpServer())
+      .post('/escrow/44444444-4444-4444-8444-444444444444/release')
+      .send({ recipientAddress: 'GADDRESSD' })
+      .expect(400)
+      .expect(({ body }) => {
+        expect(body.message).toMatch(/Idempotency-Key/i);
+      });
+    expect(escrowService.release).not.toHaveBeenCalled();
   });
 
   it('still replays correctly when the same key is retried against the same escrow and body', async () => {
@@ -174,13 +188,13 @@ describe('Escrow idempotency: cross-resource key reuse (#54)', () => {
     });
 
     const first = await request(app.getHttpServer())
-      .post('/escrow/escrow-C/release')
+      .post('/escrow/33333333-3333-4333-8333-333333333333/release')
       .set('Idempotency-Key', key)
       .send({ recipientAddress: 'GADDRESSC' })
       .expect(201);
 
     const retry = await request(app.getHttpServer())
-      .post('/escrow/escrow-C/release')
+      .post('/escrow/33333333-3333-4333-8333-333333333333/release')
       .set('Idempotency-Key', key)
       .send({ recipientAddress: 'GADDRESSC' })
       .expect(201);

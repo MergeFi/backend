@@ -17,6 +17,11 @@ export interface SponsorDashboard {
   recentPayments: Payment[];
 }
 
+export interface SponsorDashboardOptions {
+  limit?: number;
+  offset?: number;
+}
+
 @Injectable()
 export class SponsorsService {
   constructor(
@@ -107,7 +112,10 @@ export class SponsorsService {
     }));
   }
 
-  async dashboard(sponsorId: string): Promise<SponsorDashboard> {
+  async dashboard(
+    sponsorId: string,
+    options: SponsorDashboardOptions = {},
+  ): Promise<SponsorDashboard> {
     const [activeBounties, totalSpent, budgetLocked, activeMilestones] =
       await Promise.all([
         this.activeBounties(sponsorId),
@@ -126,7 +134,8 @@ export class SponsorsService {
       .innerJoin('payment.escrow', 'escrow')
       .where('escrow.sponsorId = :sponsorId', { sponsorId })
       .orderBy('payment.createdAt', 'DESC')
-      .take(20)
+      .take(options.limit ?? 20)
+      .skip(options.offset ?? 0)
       .getMany();
 
     return {

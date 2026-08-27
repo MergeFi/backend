@@ -2,7 +2,12 @@ import { Test, TestingModule } from '@nestjs/testing';
 import { getRepositoryToken } from '@nestjs/typeorm';
 import { SponsorsService } from './sponsors.service';
 import { Bounty, Escrow, Milestone, Payment } from '../common/entities';
-import { EscrowStatus, PaymentStatus } from '../common/enums';
+import {
+  BountyStatus,
+  EscrowStatus,
+  MilestoneStatus,
+  PaymentStatus,
+} from '../common/enums';
 
 /**
  * Minimal fluent mock of TypeORM's QueryBuilder: every chainable method
@@ -17,6 +22,7 @@ function createMockQueryBuilder(result: { raw?: unknown; many?: unknown[] }) {
     innerJoin: jest.fn().mockReturnThis(),
     orderBy: jest.fn().mockReturnThis(),
     take: jest.fn().mockReturnThis(),
+    skip: jest.fn().mockReturnThis(),
     getRawOne: jest.fn().mockResolvedValue(result.raw),
     getMany: jest.fn().mockResolvedValue(result.many ?? []),
   };
@@ -138,6 +144,109 @@ describe('SponsorsService', () => {
         'escrow.sponsorId = :sponsorId',
         { sponsorId: 'sponsor-1' },
       );
+    });
+
+    it('uses the default 20-payment window when no paging params are provided', async () => {
+      bountyRepo.createQueryBuilder.mockReturnValue(
+        createMockQueryBuilder({ many: [] }),
+      );
+      escrowRepo.createQueryBuilder.mockReturnValue(
+        createMockQueryBuilder({ raw: { total: '0' } }),
+      );
+      const paymentsQb = createMockQueryBuilder({ many: [] });
+      paymentRepo.createQueryBuilder.mockReturnValue(paymentsQb);
+
+      await service.dashboard('sponsor-1');
+
+      expect(paymentsQb.take).toHaveBeenCalledWith(20);
+      expect(paymentsQb.skip).toHaveBeenCalledWith(0);
+    });
+
+    it('passes through pagination params to recentPayments', async () => {
+      bountyRepo.createQueryBuilder.mockReturnValue(
+        createMockQueryBuilder({ many: [] }),
+      );
+      escrowRepo.createQueryBuilder.mockReturnValue(
+        createMockQueryBuilder({ raw: { total: '0' } }),
+      );
+      const paymentsQb = createMockQueryBuilder({ many: [] });
+      paymentRepo.createQueryBuilder.mockReturnValue(paymentsQb);
+
+      await service.dashboard('sponsor-1', { limit: 5, offset: 40 });
+
+      expect(paymentsQb.take).toHaveBeenCalledWith(5);
+      expect(paymentsQb.skip).toHaveBeenCalledWith(40);
+    });
+  });
+
+  describe('activeBounties', () => {
+    it('excludes terminal bounty statuses', async () => {
+      const qb = createMockQueryBuilder({ many: [] });
+      bountyRepo.createQueryBuilder.mockReturnValue(qb);
+
+      await service.activeBounties('sponsor-1');
+
+      expect(bountyRepo.createQueryBuilder).toHaveBeenCalledWith('bounty');
+      expect(qb.where).toHaveBeenCalledWith('bounty.sponsorId = :sponsorId', {
+        sponsorId: 'sponsor-1',
+      });
+      expect(qb.andWhere).toHaveBeenCalledWith(
+        'bounty.status NOT IN (:...terminal)',
+        {
+          terminal: [
+            BountyStatus.PAID,
+            BountyStatus.REFUNDED,
+            BountyStatus.EXPIRED,
+          ],
+        },
+      );
+    });
+  });
+
+  describe('activeMilestones', () => {
+    it('matches funded or in-progress milestones for the sponsor', async () => {
+      const milestones = [{ id: 'm1' }, { id: 'm2' }];
+      milestoneRepo.find.mockResolvedValue(milestones);
+
+      const result = await service.activeMilestones('sponsor-1');
+
+      expect(milestoneRepo.find).toHaveBeenCalledWith({
+        where: [
+          { sponsorId: 'sponsor-1', status: MilestoneStatus.FUNDED },
+          { sponsorId: 'sponsor-1', status: MilestoneStatus.IN_PROGRESS },
+        ],
+      });
+      expect(result).toBe(milestones);
+    });
+  });
+
+  describe('milestoneProgress', () => {
+    it('computes distributed / budget for each milestone', async () => {
+      milestoneRepo.find.mockResolvedValue([
+        { id: 'm1', title: 'One', budget: '100.0000000', distributed: '25.0000000' },
+      ]);
+
+      await expect(service.milestoneProgress('sponsor-1')).resolves.toEqual([
+        {
+          milestoneId: 'm1',
+          title: 'One',
+          progress: 0.25,
+        },
+      ]);
+    });
+
+    it('guards against division by zero when budget is zero', async () => {
+      milestoneRepo.find.mockResolvedValue([
+        { id: 'm1', title: 'Zero', budget: '0', distributed: '50.0000000' },
+      ]);
+
+      await expect(service.milestoneProgress('sponsor-1')).resolves.toEqual([
+        {
+          milestoneId: 'm1',
+          title: 'Zero',
+          progress: 0,
+        },
+      ]);
     });
   });
 });
