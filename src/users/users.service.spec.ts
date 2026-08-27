@@ -104,13 +104,18 @@ describe('UsersService', () => {
 
     it('creates a new User + GithubAccount when neither exists', async () => {
       githubAccountRepo.findOne.mockResolvedValue(null);
-      userRepo.findOne
-        .mockResolvedValueOnce(null) // lookup by username before create
-        .mockResolvedValueOnce({
-          id: 'u1',
-          username: 'octocat',
-          githubAccount: { id: 'ga1' },
-        }); // findOneRaw at the end
+      userRepo.findOne.mockImplementation(async ({ where }: any) => {
+        if (where?.username === 'octocat') return null;
+        if (where?.email === 'octocat@example.com') return null;
+        if (where?.id === 'u1') {
+          return {
+            id: 'u1',
+            username: 'octocat',
+            githubAccount: { id: 'ga1' },
+          };
+        }
+        return null;
+      });
 
       const user = await service.upsertFromGithub(input);
 
@@ -127,17 +132,30 @@ describe('UsersService', () => {
       expect(user.id).toBe('u1');
     });
 
-    it('links to an existing user found by username instead of creating a duplicate', async () => {
+    it('prevents username-based takeover: creates a new user when username is taken by another GitHub identity', async () => {
       githubAccountRepo.findOne.mockResolvedValue(null);
-      userRepo.findOne
-        .mockResolvedValueOnce({ id: 'existing-user', username: 'octocat' })
-        .mockResolvedValueOnce({ id: 'existing-user', username: 'octocat' });
+      // 'octocat' is already owned by Alice; Bob (gh-1) must not be linked to her.
+      userRepo.findOne.mockImplementation(async ({ where }: any) => {
+        if (where?.username === 'octocat')
+          return { id: 'alice-id', username: 'octocat' };
+        if (where?.username === 'octocat-1') return null;
+        if (where?.email === 'octocat@example.com') return null;
+        if (where?.id === 'u1') {
+          return { id: 'u1', username: 'octocat-1', githubAccount: { id: 'ga1' } };
+        }
+        return null;
+      });
 
       await service.upsertFromGithub(input);
 
-      expect(userRepo.create).not.toHaveBeenCalled();
+      expect(userRepo.create).toHaveBeenCalledWith(
+        expect.objectContaining({ username: 'octocat-1' }),
+      );
       expect(githubAccountRepo.create).toHaveBeenCalledWith(
-        expect.objectContaining({ userId: 'existing-user' }),
+        expect.objectContaining({ githubId: 'gh-1', userId: 'u1' }),
+      );
+      expect(githubAccountRepo.create).not.toHaveBeenCalledWith(
+        expect.objectContaining({ userId: 'alice-id' }),
       );
     });
 
@@ -148,9 +166,21 @@ describe('UsersService', () => {
         userId: 'u1',
         accessToken: 'old-token',
         refreshToken: 'old-refresh',
+        login: 'octocat',
       };
       githubAccountRepo.findOne.mockResolvedValue(account);
-      userRepo.findOne.mockResolvedValue({ id: 'u1', username: 'octocat' });
+      userRepo.findOne.mockImplementation(async ({ where }: any) => {
+        if (where?.id === 'u1') {
+          return {
+            id: 'u1',
+            username: 'octocat',
+            displayName: 'The Octocat',
+            avatarUrl: 'https://example.com/a.png',
+            email: 'octocat@example.com',
+          };
+        }
+        return null;
+      });
 
       await service.upsertFromGithub(input);
 
@@ -159,15 +189,72 @@ describe('UsersService', () => {
         expect.objectContaining({
           accessToken: 'token-abc',
           refreshToken: 'refresh-abc',
+          login: 'octocat',
         }),
       );
     });
 
+    it('syncs stale User profile fields from the fresh GitHub profile on re-login', async () => {
+      const account = {
+        id: 'ga1',
+        githubId: 'gh-1',
+        userId: 'u1',
+        accessToken: 'old-token',
+        refreshToken: 'old-refresh',
+        login: 'old-name',
+        avatarUrl: 'https://example.com/old.png',
+        profileUrl: 'https://github.com/old-name',
+      };
+      githubAccountRepo.findOne.mockResolvedValue(account);
+      const staleUser = {
+        id: 'u1',
+        username: 'old-name',
+        displayName: 'Old Name',
+        avatarUrl: 'https://example.com/old.png',
+        email: 'old@example.com',
+      };
+      const updatedUser = {
+        ...staleUser,
+        username: 'octocat',
+        displayName: 'The Octocat',
+        avatarUrl: 'https://example.com/a.png',
+        email: 'octocat@example.com',
+      };
+      // findOneRaw first call returns stale, second call after save returns updated
+      userRepo.findOne
+        .mockResolvedValueOnce(staleUser) // first findOneRaw for sync
+        .mockResolvedValueOnce(null) // check username uniqueness for "octocat"
+        .mockResolvedValueOnce(null) // check email uniqueness
+        .mockResolvedValueOnce(updatedUser); // final findOneRaw
+      userRepo.save.mockImplementation(async (u: any) => u);
+
+      const user = await service.upsertFromGithub(input);
+
+      expect(githubAccountRepo.save).toHaveBeenCalledWith(
+        expect.objectContaining({
+          login: 'octocat',
+          avatarUrl: 'https://example.com/a.png',
+        }),
+      );
+      expect(userRepo.save).toHaveBeenCalledWith(
+        expect.objectContaining({
+          username: 'octocat',
+          displayName: 'The Octocat',
+          avatarUrl: 'https://example.com/a.png',
+          email: 'octocat@example.com',
+        }),
+      );
+      expect(user.username).toBe('octocat');
+    });
+
     it('stores a null refreshToken when GitHub does not return one', async () => {
       githubAccountRepo.findOne.mockResolvedValue(null);
-      userRepo.findOne
-        .mockResolvedValueOnce(null)
-        .mockResolvedValueOnce({ id: 'u1', username: 'octocat' });
+      userRepo.findOne.mockImplementation(async ({ where }: any) => {
+        if (where?.username === 'octocat') return null;
+        if (where?.email === 'octocat@example.com') return null;
+        if (where?.id === 'u1') return { id: 'u1', username: 'octocat' };
+        return null;
+      });
 
       const { refreshToken, ...inputWithoutRefresh } = input;
       void refreshToken;

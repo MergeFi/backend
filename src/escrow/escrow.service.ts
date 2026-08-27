@@ -579,7 +579,7 @@ export class EscrowService {
     return this.soroban.tokenContractId(asset);
   }
 
-  /** Validates that split percentages sum to 100.00, within floating point tolerance. */
+  /**
    * Validates that split percentages sum to 100.00 (within tolerance), with
    * every entry in `(0, 100]`. Delegates to the shared
    * {@link validatePercentageSplits} — the same implementation
