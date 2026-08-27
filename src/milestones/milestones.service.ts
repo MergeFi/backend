@@ -67,7 +67,16 @@ export class MilestonesService {
     return this.milestoneRepo.save(milestone);
   }
 
-  /** Attaches an already-tracked issue to this milestone. */
+  /**
+   * Attaches an already-tracked issue to this milestone.
+   *
+   * A milestone is scoped to a single repository (`repositoryId`, required
+   * at creation); its budget is split proportionally across whatever's
+   * attached in `resolveIssue`, with no per-issue repository check there
+   * either. Rejecting a repository mismatch here, before attachment, is
+   * this method's only opportunity to keep that budget scoped to the work
+   * it was actually funded for (#59).
+   */
   async addIssue(milestoneId: string, issueId: string): Promise<Issue> {
     const milestone = await this.findOne(milestoneId);
     if (
@@ -81,6 +90,12 @@ export class MilestonesService {
     }
     const issue = await this.issueRepo.findOne({ where: { id: issueId } });
     if (!issue) throw new NotFoundException(`Issue ${issueId} not found`);
+    if (issue.repositoryId !== milestone.repositoryId) {
+      throw new BadRequestException(
+        `Issue ${issueId} belongs to repository ${issue.repositoryId}, ` +
+          `but milestone ${milestoneId} is scoped to repository ${milestone.repositoryId}`,
+      );
+    }
     issue.milestoneId = milestone.id;
     return this.issueRepo.save(issue);
   }
