@@ -1,0 +1,1 @@
+Solution proposal for Analytics payout heatmap and top-clients queries likely load unbounded result sets into memory with no pagination
