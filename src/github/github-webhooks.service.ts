@@ -30,7 +30,7 @@ interface GithubIssuesEventPayload {
 
 /** Matches "Fixes #123", "Closes #45", "Resolves owner/repo#45" etc. in a PR body. */
 const CLOSING_KEYWORD_RE =
-  /\b(close[sd]?|fix(e[sd])?|resolve[sd]?)\b\s*:?\s*(?:[\w.-]+\/[\w.-]+)?#(\d+)/gi;
+  /\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\b\s*:?\s*(?<repo>[\w.-]+\/[\w.-]+)?#(?<number>\d+)/gi;
 
 /**
  * The outcome of processing one issue number linked from a merged PR's
@@ -179,7 +179,10 @@ export class GithubWebhooksService {
     // rather than a real one (#47).
     const issueNumbers = [
       ...new Set(
-        this.extractLinkedIssueNumbers(payload.pull_request.body ?? ''),
+        this.extractLinkedIssueNumbers(
+          payload.pull_request.body ?? '',
+          payload.repository.full_name,
+        ),
       ),
     ];
     if (issueNumbers.length === 0) {
@@ -269,9 +272,31 @@ export class GithubWebhooksService {
     }
   }
 
-  private extractLinkedIssueNumbers(body: string): number[] {
+  /**
+   * A closing keyword may optionally be qualified with an owner/repo, e.g.
+   * "Fixes some-other-org/some-other-repo#45". When that qualifier is
+   * present, it must match the webhook's own repository — otherwise the
+   * reference is for an issue in a different repository entirely and must
+   * not be resolved against this one (compared case-insensitively, as
+   * GitHub owner/repo names are).
+   */
+  private extractLinkedIssueNumbers(
+    body: string,
+    repoFullName: string,
+  ): number[] {
     const matches = [...body.matchAll(CLOSING_KEYWORD_RE)];
-    return matches.map((m) => parseInt(m[3], 10));
+    const numbers: number[] = [];
+    for (const m of matches) {
+      const repoQualifier = m.groups?.repo;
+      if (
+        repoQualifier &&
+        repoQualifier.toLowerCase() !== repoFullName.toLowerCase()
+      ) {
+        continue;
+      }
+      numbers.push(parseInt(m.groups!.number, 10));
+    }
+    return numbers;
   }
 
   /**
@@ -286,7 +311,10 @@ export class GithubWebhooksService {
   ): Promise<LinkedIssueOutcome[]> {
     const issueNumbers = [
       ...new Set(
-        this.extractLinkedIssueNumbers(payload.pull_request.body ?? ''),
+        this.extractLinkedIssueNumbers(
+          payload.pull_request.body ?? '',
+          payload.repository.full_name,
+        ),
       ),
     ];
     if (issueNumbers.length === 0) {
@@ -342,7 +370,10 @@ export class GithubWebhooksService {
   ): Promise<LinkedIssueOutcome[]> {
     const issueNumbers = [
       ...new Set(
-        this.extractLinkedIssueNumbers(payload.pull_request.body ?? ''),
+        this.extractLinkedIssueNumbers(
+          payload.pull_request.body ?? '',
+          payload.repository.full_name,
+        ),
       ),
     ];
     if (issueNumbers.length === 0) {

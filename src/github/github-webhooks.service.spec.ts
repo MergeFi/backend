@@ -344,6 +344,65 @@ describe('GithubWebhooksService', () => {
     });
   });
 
+  describe('owner/repo-qualified closing keywords', () => {
+    it('resolves a closing keyword qualified with the webhook\'s own owner/repo', async () => {
+      issueRepo.findOne.mockResolvedValue({
+        id: 'issue-1',
+        bounty: { id: 'bounty-1' },
+      });
+      bountyRepo.findOne.mockResolvedValue({ id: 'bounty-1', status: 'claimed' });
+
+      const payload = {
+        action: 'closed',
+        number: 11,
+        pull_request: {
+          html_url: 'https://github.com/acme/repo/pull/11',
+          number: 11,
+          merged: true,
+          body: 'Fixes acme/repo#42',
+        },
+        repository: { id: 999, full_name: 'acme/repo' },
+      };
+
+      const event = await service.handleEvent(
+        'pull_request',
+        'delivery-same-repo-qualified',
+        payload,
+        true,
+      );
+
+      expect(bountiesService.markMergedAndRelease).toHaveBeenCalledWith(
+        'bounty-1',
+      );
+      expect(event.status).toBe(WebhookEventStatus.PROCESSED);
+    });
+
+    it('does not resolve a closing keyword qualified with a different owner/repo against this repository', async () => {
+      const payload = {
+        action: 'closed',
+        number: 12,
+        pull_request: {
+          html_url: 'https://github.com/acme/repo/pull/12',
+          number: 12,
+          merged: true,
+          body: 'Fixes some-other-org/some-other-repo#45',
+        },
+        repository: { id: 999, full_name: 'acme/repo' },
+      };
+
+      const event = await service.handleEvent(
+        'pull_request',
+        'delivery-cross-repo-qualified',
+        payload,
+        true,
+      );
+
+      expect(issueRepo.findOne).not.toHaveBeenCalled();
+      expect(bountiesService.markMergedAndRelease).not.toHaveBeenCalled();
+      expect(event.status).toBe(WebhookEventStatus.PROCESSED);
+    });
+  });
+
   describe('"issues" webhook events (#24)', () => {
     const payload = {
       action: 'edited',
