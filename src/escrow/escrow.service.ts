@@ -254,12 +254,15 @@ export class EscrowService {
     const existingPayments = await this.paymentRepo.find({
       where: { escrowId: escrow.id },
     });
-    const releasedSoFar = existingPayments.reduce(
-      (sum, p) => sum + Number(p.amount),
-      0,
+    // Compare in stroops (BigInt) rather than Number to avoid IEEE-754
+    // precision loss / epsilon-fudge factors on financial amounts (#5).
+    const releasedSoFarStroops = existingPayments.reduce(
+      (sum, p) => sum + amountToStroops(p.amount),
+      0n,
     );
-    const requested = Number(amount);
-    if (releasedSoFar + requested > Number(escrow.amount) + 1e-7) {
+    const requestedStroops = amountToStroops(amount);
+    const escrowStroops = amountToStroops(escrow.amount);
+    if (releasedSoFarStroops + requestedStroops > escrowStroops) {
       throw new BadRequestException(
         `Partial release of ${amount} would exceed remaining escrow balance`,
       );
@@ -309,7 +312,7 @@ export class EscrowService {
         }),
       );
 
-      if (releasedSoFar + requested >= Number(escrow.amount) - 1e-7) {
+      if (releasedSoFarStroops + requestedStroops >= escrowStroops) {
         escrow.status = EscrowStatus.RELEASED;
         escrow.releaseTxHash = result.txHash;
         escrow.releasedAt = new Date();
