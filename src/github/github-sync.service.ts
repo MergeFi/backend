@@ -79,8 +79,7 @@ export class GithubSyncService {
     private readonly issueRepo: TypeOrmRepository<Issue>,
   ) {}
 
-  /** Imports (or refreshes) a single repository and all of its open+closed issues. */
-  async syncRepository(owner: string, repo: string): Promise<Repository> {
+  async syncRepository(owner: string, repo: string, page = 1): Promise<{ repository: Repository, synced: number, nextPage?: number }> {
     const repoResponse = await this.octokit.repos.get({ owner, repo });
     this.logRateLimitFromHeaders(
       `before ${owner}/${repo}`,
@@ -111,8 +110,8 @@ export class GithubSyncService {
       : this.repositoryRepo.create(attrs);
     repository = await this.repositoryRepo.save(repository);
 
-    await this.syncIssues(repository, owner, repo);
-    return repository;
+    const result = await this.syncIssues(repository, owner, repo, page);
+    return { repository, synced: result.saved.length, nextPage: result.nextPage };
   }
 
   /**
@@ -126,42 +125,46 @@ export class GithubSyncService {
     repository: Repository,
     owner: string,
     repo: string,
-  ): Promise<Issue[]> {
+    page = 1,
+  ): Promise<{ saved: Issue[], nextPage?: number }> {
     const saved: Issue[] = [];
-    let pagesFetched = 0;
 
     try {
-      for await (const response of this.octokit.paginate.iterator(
-        this.octokit.issues.listForRepo,
-        { owner, repo, state: 'all', per_page: 100 },
-      )) {
-        pagesFetched += 1;
-        for (const raw of response.data as RawGithubIssue[]) {
-          // Octokit returns PRs in the issues list too; skip those.
-          if (raw.pull_request) continue;
+      const response = await this.octokit.issues.listForRepo({
+        owner,
+        repo,
+        state: 'all',
+        per_page: 100,
+        page,
+      });
 
-          const { issue, applied } = await this.upsertIssueRecord(
-            repository.id,
-            raw,
-          );
-          if (applied) saved.push(issue);
-        }
-        this.logRateLimitFromHeaders(
-          `after ${owner}/${repo} (page ${pagesFetched})`,
-          response.headers,
+      for (const raw of response.data as RawGithubIssue[]) {
+        // Octokit returns PRs in the issues list too; skip those.
+        if (raw.pull_request) continue;
+
+        const { issue, applied } = await this.upsertIssueRecord(
+          repository.id,
+          raw,
         );
+        if (applied) saved.push(issue);
       }
+      this.logRateLimitFromHeaders(
+        `after ${owner}/${repo} (page ${page})`,
+        response.headers,
+      );
+
+      const hasNextPage = response.headers.link?.includes('rel="next"');
+
+      this.logger.log(`Synced ${saved.length} issues for ${owner}/${repo} (page ${page})`);
+      return { saved, nextPage: hasNextPage ? page + 1 : undefined };
     } catch (err) {
       const cause = err as Error;
       this.logger.error(
-        `GitHub sync interrupted for ${owner}/${repo} after ${pagesFetched} ` +
-          `page(s) / ${saved.length} issue(s) persisted: ${cause.message}`,
+        `GitHub sync interrupted for ${owner}/${repo} at page ${page} ` +
+          `/ ${saved.length} issue(s) persisted: ${cause.message}`,
       );
       throw new GithubSyncInterruptedError(owner, repo, saved.length, cause);
     }
-
-    this.logger.log(`Synced ${saved.length} issues for ${owner}/${repo}`);
-    return saved;
   }
 
   /**
