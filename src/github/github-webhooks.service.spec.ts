@@ -470,4 +470,133 @@ describe('GithubWebhooksService', () => {
       expect(event.status).toBe(WebhookEventStatus.PROCESSED);
     });
   });
+
+  describe('malformed payloads (#28)', () => {
+    it('rejects a pull_request payload missing the pull_request key without throwing', async () => {
+      const event = await service.handleEvent(
+        'pull_request',
+        'delivery-malformed-1',
+        { action: 'closed', number: 1, repository: { id: 1, full_name: 'a/b' } },
+        true,
+      );
+
+      expect(event.status).toBe(WebhookEventStatus.INVALID_PAYLOAD);
+      expect(event.error).toContain('pull_request');
+      expect(issueRepo.findOne).not.toHaveBeenCalled();
+    });
+
+    it('rejects a pull_request payload whose merged flag has the wrong type', async () => {
+      const payload = {
+        action: 'closed',
+        number: 1,
+        pull_request: {
+          html_url: 'x',
+          number: 1,
+          merged: 'yes', // should be a boolean
+          body: 'Fixes #1',
+        },
+        repository: { id: 1, full_name: 'a/b' },
+      };
+
+      const event = await service.handleEvent(
+        'pull_request',
+        'delivery-malformed-2',
+        payload,
+        true,
+      );
+
+      expect(event.status).toBe(WebhookEventStatus.INVALID_PAYLOAD);
+      expect(event.error).toContain('merged');
+      expect(bountiesService.markMergedAndRelease).not.toHaveBeenCalled();
+    });
+
+    it('rejects a pull_request payload missing the repository key', async () => {
+      const payload = {
+        action: 'closed',
+        number: 1,
+        pull_request: {
+          html_url: 'x',
+          number: 1,
+          merged: true,
+          body: 'Fixes #1',
+        },
+      };
+
+      const event = await service.handleEvent(
+        'pull_request',
+        'delivery-malformed-3',
+        payload,
+        true,
+      );
+
+      expect(event.status).toBe(WebhookEventStatus.INVALID_PAYLOAD);
+      expect(event.error).toContain('repository');
+    });
+
+    it.each([
+      ['null', null],
+      ['an array', [1, 2, 3]],
+      ['a string', 'not an object'],
+      ['a number', 42],
+    ])(
+      'rejects a non-object (%s) pull_request payload without throwing',
+      async (_label, badPayload) => {
+        const event = await service.handleEvent(
+          'pull_request',
+          'delivery-malformed-non-object',
+          badPayload as unknown as Record<string, unknown>,
+          true,
+        );
+
+        expect(event.status).toBe(WebhookEventStatus.INVALID_PAYLOAD);
+        expect(event.error).toContain('payload');
+      },
+    );
+
+    it('rejects an issues payload missing the issue key', async () => {
+      const event = await service.handleEvent(
+        'issues',
+        'delivery-malformed-issues',
+        { action: 'edited', repository: { id: 1, full_name: 'a/b' } },
+        true,
+      );
+
+      expect(event.status).toBe(WebhookEventStatus.INVALID_PAYLOAD);
+      expect(event.error).toContain('issue');
+      expect(syncService.upsertIssueRecord).not.toHaveBeenCalled();
+    });
+
+    it('still distinguishes a genuine processing failure as FAILED, not INVALID_PAYLOAD', async () => {
+      issueRepo.findOne.mockResolvedValue({
+        id: 'issue-1',
+        bounty: { id: 'bounty-1' },
+      });
+      bountyRepo.findOne.mockResolvedValue({ id: 'bounty-1', status: 'claimed' });
+      bountiesService.markMergedAndRelease.mockRejectedValue(
+        new Error('escrow release failed'),
+      );
+
+      const payload = {
+        action: 'closed',
+        number: 1,
+        pull_request: {
+          html_url: 'x',
+          number: 1,
+          merged: true,
+          body: 'Fixes #1',
+        },
+        repository: { id: 1, full_name: 'a/b' },
+      };
+
+      const event = await service.handleEvent(
+        'pull_request',
+        'delivery-real-failure',
+        payload,
+        true,
+      );
+
+      expect(event.status).toBe(WebhookEventStatus.FAILED);
+      expect(event.error).toContain('escrow release failed');
+    });
+  });
 });
