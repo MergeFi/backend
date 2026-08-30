@@ -10,6 +10,9 @@ import { AssetType, EscrowStatus, PaymentStatus } from '../common/enums';
 describe('EscrowService', () => {
   let service: EscrowService;
   let escrowRepo: { create: jest.Mock; save: jest.Mock; findOne: jest.Mock };
+-
+  let paymentRepo: { create: jest.Mock; save: jest.Mock; find: jest.Mock };
+
   let userRepo: { find: jest.Mock };
   let paymentRepo: {
     create: jest.Mock;
@@ -23,6 +26,7 @@ describe('EscrowService', () => {
     tokenContractId: jest.Mock;
     escrowDeadlineSeconds: number;
   };
+
   let soroban: { invoke: jest.Mock };
   let dataSource: { transaction: jest.Mock };
 
@@ -33,6 +37,7 @@ describe('EscrowService', () => {
       findOne: jest.fn(),
     };
     paymentRepo = {
+      find: jest.fn().mockResolvedValue([]),
       create: jest.fn((data: Partial<Payment>) => ({
         id: 'payment-1',
         ...data,
@@ -550,6 +555,74 @@ describe('EscrowService', () => {
         { contractId: 'CPINNED' },
       );
     });
+  });
+
+  it('rejects a full release after a partial release on the same still-LOCKED escrow', async () => {
+    const escrow = {
+      id: 'escrow-partial-then-full',
+      status: EscrowStatus.LOCKED,
+      amount: '100',
+      asset: AssetType.USDC,
+      milestoneId: 'milestone-1',
+    } as Escrow;
+    const payments: Partial<Payment>[] = [];
+    escrowRepo.findOne.mockResolvedValue(escrow);
+    paymentRepo.find.mockImplementation(() => Promise.resolve(payments));
+    paymentRepo.save.mockImplementation((payment: Partial<Payment>) => {
+      payments.push(payment);
+      return payment;
+    });
+
+    await service.releasePartial(
+      'escrow-partial-then-full',
+      '50',
+      'GRECIPIENT',
+    );
+    expect(escrow.status).toBe(EscrowStatus.LOCKED);
+
+    await expect(
+      service.release('escrow-partial-then-full', 'GATTACKER'),
+    ).rejects.toThrow(BadRequestException);
+    expect(soroban.invoke).toHaveBeenCalledTimes(1);
+    expect(soroban.invoke).toHaveBeenCalledWith('release', [
+      'milestone-1',
+      'GRECIPIENT',
+      500000000n,
+    ]);
+  });
+
+  it('rejects splitRelease when an escrow has prior payment history', async () => {
+    escrowRepo.findOne.mockResolvedValue({
+      id: 'escrow-split-after-partial',
+      status: EscrowStatus.LOCKED,
+      amount: '100',
+      asset: AssetType.USDC,
+      milestoneId: 'milestone-2',
+    });
+    paymentRepo.find.mockResolvedValue([{ amount: '25' }]);
+
+    await expect(
+      service.splitRelease('escrow-split-after-partial', [
+        { recipientAddress: 'GA', percentage: 100 },
+      ]),
+    ).rejects.toThrow(BadRequestException);
+    expect(soroban.invoke).not.toHaveBeenCalled();
+  });
+
+  it('rejects releasePartial after a full release is recorded', async () => {
+    escrowRepo.findOne.mockResolvedValue({
+      id: 'escrow-full',
+      status: EscrowStatus.RELEASED,
+      amount: '100',
+      asset: AssetType.USDC,
+      bountyId: 'bounty-full',
+    });
+    paymentRepo.find.mockResolvedValue([{ amount: '100' }]);
+
+    await expect(
+      service.releasePartial('escrow-full', '1', 'GRECIPIENT'),
+    ).rejects.toThrow(BadRequestException);
+    expect(soroban.invoke).not.toHaveBeenCalled();
   });
 
   describe('assertValidSplits / splitRelease', () => {
