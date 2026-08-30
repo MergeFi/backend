@@ -7,6 +7,7 @@ import {
   Repository as RepositoryEntity,
 } from '../common/entities';
 import { BountyStatus } from '../common/enums';
+import { computeContributorStats } from '../common/stats/contributor-stats.util';
 
 export interface ContributorAnalytics {
   lifetimeEarnings: number;
@@ -33,21 +34,6 @@ export class AnalyticsService {
       where: { claimedById: userId },
     });
     const paid = claimed.filter((b) => b.status === BountyStatus.PAID);
-    const merged = claimed.filter((b) =>
-      [BountyStatus.MERGED, BountyStatus.PAID].includes(b.status),
-    );
-
-    const lifetimeEarnings = paid.reduce((sum, b) => sum + Number(b.amount), 0);
-    const mergeRate =
-      claimed.length > 0 ? (merged.length / claimed.length) * 100 : 0;
-
-    const reviewTimes = merged
-      .filter((b) => b.claimedAt && b.mergedAt)
-      .map((b) => (b.mergedAt!.getTime() - b.claimedAt!.getTime()) / 3_600_000);
-    const avgReviewTimeHours =
-      reviewTimes.length > 0
-        ? reviewTimes.reduce((a, b) => a + b, 0) / reviewTimes.length
-        : 0;
 
     const issues = claimed.length
       ? await this.issueRepo.find({
@@ -55,15 +41,11 @@ export class AnalyticsService {
           relations: { repository: true },
         })
       : [];
+
+    const stats = computeContributorStats(claimed, issues);
+
+    const lifetimeEarnings = paid.reduce((sum, b) => sum + Number(b.amount), 0);
     const repoIds = new Set(issues.map((i) => i.repositoryId));
-    const orgs = new Set(
-      issues.map((i) => i.repository?.owner).filter(Boolean),
-    );
-    const languages = issues.reduce<Record<string, number>>((acc, issue) => {
-      const lang = issue.repository?.primaryLanguage;
-      if (lang) acc[lang] = (acc[lang] ?? 0) + 1;
-      return acc;
-    }, {});
 
     const heatmapMap = new Map<string, number>();
     for (const bounty of paid) {
@@ -91,10 +73,10 @@ export class AnalyticsService {
     return {
       lifetimeEarnings,
       repoCount: repoIds.size,
-      orgCount: orgs.size,
-      mergeRate,
-      avgReviewTimeHours,
-      languages,
+      orgCount: stats.orgs.length,
+      mergeRate: stats.completionRate,
+      avgReviewTimeHours: stats.avgReviewTimeHours,
+      languages: stats.languages,
       heatmap,
       topClients,
     };

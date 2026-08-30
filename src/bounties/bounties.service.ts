@@ -1,11 +1,19 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { In, Repository } from 'typeorm';
 import { Bounty, Team, User } from '../common/entities';
-import { BountyStatus } from '../common/enums';
+import { AssetType, BountyDifficulty, BountyStatus } from '../common/enums';
 import { assertTransition } from './bounty-state-machine';
 import { EscrowService } from '../escrow/escrow.service';
 import { CreateBountyDto } from './dto/create-bounty.dto';
+
+export interface ListBountiesOptions {
+  status?: BountyStatus;
+  difficulty?: BountyDifficulty;
+  asset?: AssetType;
+  repositoryId?: string;
+  primaryLanguage?: string;
+}
 
 @Injectable()
 export class BountiesService {
@@ -37,7 +45,11 @@ export class BountiesService {
 
   /** Sponsor funds the bounty: locks the amount in the escrow contract and moves OPEN -> FUNDED. */
   async fund(id: string, funderAddress: string): Promise<Bounty> {
-    const bounty = await this.findOne(id);
+    const bounty = await this.bountyRepo.findOne({
+      where: { id },
+      relations: { issue: true },
+    });
+    if (!bounty) throw new NotFoundException(`Bounty ${id} not found`);
     assertTransition(bounty.status, BountyStatus.FUNDED);
 
     const escrow = await this.escrowService.fund({
@@ -46,6 +58,9 @@ export class BountiesService {
       funderAddress,
       bountyId: bounty.id,
       sponsorId: bounty.sponsorId,
+      // The on-chain escrow contract is keyed by the GitHub issue id (#158).
+      onChainIssueId: bounty.issue?.githubIssueId ?? null,
+      deadline: bounty.deadline,
     });
 
     bounty.escrow = escrow;
@@ -80,6 +95,17 @@ export class BountiesService {
     return this.bountyRepo.save(bounty);
   }
 
+  /** The linked PR was closed without merging — move bounty back to CLAIMED. */
+  async markPrClosedWithoutMerge(id: string): Promise<Bounty> {
+    const bounty = await this.findOne(id);
+    assertTransition(bounty.status, BountyStatus.CLAIMED);
+
+    bounty.status = BountyStatus.CLAIMED;
+    bounty.prUrl = null;
+    bounty.prNumber = null;
+    return this.bountyRepo.save(bounty);
+  }
+
   /**
    * The linked PR was merged on GitHub. Transitions to MERGED and immediately
    * triggers the escrow release (single recipient or team split), moving to
@@ -104,18 +130,19 @@ export class BountiesService {
         relations: { splits: true },
       });
       if (team && team.splits.length > 0) {
-        const recipients = await Promise.all(
-          team.splits.map(async (split) => {
-            const user = await this.userRepo.findOne({
-              where: { id: split.userId },
-            });
-            return {
-              recipientId: split.userId,
-              recipientAddress: user?.stellarAddress ?? '',
-              percentage: Number(split.percentage),
-            };
-          }),
-        );
+        const userIds = team.splits.map((s) => s.userId);
+        const users = await this.userRepo.find({
+          where: { id: In(userIds) },
+        });
+        const userMap = new Map(users.map((u) => [u.id, u]));
+        const recipients = team.splits.map((split) => {
+          const user = userMap.get(split.userId);
+          return {
+            recipientId: split.userId,
+            recipientAddress: user?.stellarAddress ?? '',
+            percentage: Number(split.percentage),
+          };
+        });
         await this.escrowService.splitRelease(bounty.escrowId, recipients);
       }
     } else if (bounty.claimedById) {
@@ -171,7 +198,34 @@ export class BountiesService {
     return overdue.length;
   }
 
-  async list(status?: BountyStatus): Promise<Bounty[]> {
-    return this.bountyRepo.find({ where: status ? { status } : {} });
+  async list(options: ListBountiesOptions = {}): Promise<Bounty[]> {
+    const qb = this.bountyRepo
+      .createQueryBuilder('bounty')
+      .leftJoinAndSelect('bounty.issue', 'issue')
+      .leftJoinAndSelect('issue.repository', 'repository');
+
+    if (options.status) {
+      qb.andWhere('bounty.status = :status', { status: options.status });
+    }
+    if (options.difficulty) {
+      qb.andWhere('bounty.difficulty = :difficulty', {
+        difficulty: options.difficulty,
+      });
+    }
+    if (options.asset) {
+      qb.andWhere('bounty.asset = :asset', { asset: options.asset });
+    }
+    if (options.repositoryId) {
+      qb.andWhere('issue.repositoryId = :repositoryId', {
+        repositoryId: options.repositoryId,
+      });
+    }
+    if (options.primaryLanguage) {
+      qb.andWhere('repository.primaryLanguage = :primaryLanguage', {
+        primaryLanguage: options.primaryLanguage,
+      });
+    }
+
+    return qb.getMany();
   }
 }

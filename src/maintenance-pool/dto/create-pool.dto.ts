@@ -1,11 +1,15 @@
 import { ApiProperty } from '@nestjs/swagger';
-import { IsOptional, IsString, IsUUID } from 'class-validator';
+import { IsOptional, IsString, IsUUID, MaxLength } from 'class-validator';
 import { AssetType } from '../../common/enums';
-import { IsSupportedEscrowAsset } from '../../common/validators/money.validator';
+import {
+  IsMoneyAmount,
+  IsSupportedEscrowAsset,
+} from '../../common/validators/money.validator';
 
 export class CreatePoolDto {
-  @ApiProperty()
+  @ApiProperty({ maxLength: 100 })
   @IsString()
+  @MaxLength(100)
   name: string;
 
   @ApiProperty({ required: false })
@@ -17,6 +21,12 @@ export class CreatePoolDto {
   @IsOptional()
   @IsUUID()
   createdById?: string;
+
+  /** The sponsor's standing recurring commitment; deposits never overwrite it (#93). */
+  @ApiProperty({ required: false })
+  @IsOptional()
+  @IsMoneyAmount()
+  monthlyDeposit?: string;
 
   @ApiProperty({ enum: AssetType, default: AssetType.USDC })
   @IsSupportedEscrowAsset()

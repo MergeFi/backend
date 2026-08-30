@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Param, Post } from '@nestjs/common';
+import { Body, Controller, Get, Param, ParseUUIDPipe, Post } from '@nestjs/common';
 import { ApiTags } from '@nestjs/swagger';
 import { EscrowService } from './escrow.service';
 import { FundEscrowDto } from './dto/fund-escrow.dto';
@@ -19,13 +19,13 @@ export class EscrowController {
   }
 
   @Get(':id')
-  async findOne(@Param('id') id: string) {
+  async findOne(@Param('id', new ParseUUIDPipe()) id: string) {
     return toPublicEscrow(await this.escrowService.findOne(id));
   }
 
   @Idempotent('escrow.release')
   @Post(':id/release')
-  async release(@Param('id') id: string, @Body() dto: ReleaseEscrowDto) {
+  async release(@Param('id', new ParseUUIDPipe()) id: string, @Body() dto: ReleaseEscrowDto) {
     return toPublicEscrow(
       await this.escrowService.release(
         id,
@@ -37,13 +37,13 @@ export class EscrowController {
 
   @Idempotent('escrow.splitRelease')
   @Post(':id/split-release')
-  splitRelease(@Param('id') id: string, @Body() dto: SplitReleaseDto) {
+  splitRelease(@Param('id', new ParseUUIDPipe()) id: string, @Body() dto: SplitReleaseDto) {
     return this.escrowService.splitRelease(id, dto.recipients);
   }
 
   @Idempotent('escrow.refund')
   @Post(':id/refund')
-  async refund(@Param('id') id: string) {
+  async refund(@Param('id', new ParseUUIDPipe()) id: string) {
     return toPublicEscrow(await this.escrowService.refund(id));
   }
 }

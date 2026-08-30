@@ -3,10 +3,10 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
-import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { InjectDataSource, InjectRepository } from '@nestjs/typeorm';
+import { DataSource, Repository } from 'typeorm';
 import { Issue, Milestone } from '../common/entities';
-import { MilestoneStatus } from '../common/enums';
+import { IssueState, MilestoneStatus } from '../common/enums';
 import { EscrowService } from '../escrow/escrow.service';
 import { CreateMilestoneDto } from './dto/create-milestone.dto';
 
@@ -16,6 +16,7 @@ export class MilestonesService {
     @InjectRepository(Milestone)
     private readonly milestoneRepo: Repository<Milestone>,
     @InjectRepository(Issue) private readonly issueRepo: Repository<Issue>,
+    @InjectDataSource() private readonly dataSource: DataSource,
     private readonly escrowService: EscrowService,
   ) {}
 
@@ -57,6 +58,7 @@ export class MilestonesService {
       funderAddress,
       milestoneId: milestone.id,
       sponsorId: milestone.sponsorId,
+      deadline: milestone.deadline,
     });
 
     milestone.escrow = escrow;
@@ -65,11 +67,35 @@ export class MilestonesService {
     return this.milestoneRepo.save(milestone);
   }
 
-  /** Attaches an already-tracked issue to this milestone. */
+  /**
+   * Attaches an already-tracked issue to this milestone.
+   *
+   * A milestone is scoped to a single repository (`repositoryId`, required
+   * at creation); its budget is split proportionally across whatever's
+   * attached in `resolveIssue`, with no per-issue repository check there
+   * either. Rejecting a repository mismatch here, before attachment, is
+   * this method's only opportunity to keep that budget scoped to the work
+   * it was actually funded for (#59).
+   */
   async addIssue(milestoneId: string, issueId: string): Promise<Issue> {
     const milestone = await this.findOne(milestoneId);
+    if (
+      milestone.status !== MilestoneStatus.OPEN &&
+      milestone.status !== MilestoneStatus.FUNDED &&
+      milestone.status !== MilestoneStatus.IN_PROGRESS
+    ) {
+      throw new BadRequestException(
+        `Cannot attach issue to milestone in ${milestone.status} status`,
+      );
+    }
     const issue = await this.issueRepo.findOne({ where: { id: issueId } });
     if (!issue) throw new NotFoundException(`Issue ${issueId} not found`);
+    if (issue.repositoryId !== milestone.repositoryId) {
+      throw new BadRequestException(
+        `Issue ${issueId} belongs to repository ${issue.repositoryId}, ` +
+          `but milestone ${milestoneId} is scoped to repository ${milestone.repositoryId}`,
+      );
+    }
     issue.milestoneId = milestone.id;
     return this.issueRepo.save(issue);
   }
@@ -78,6 +104,10 @@ export class MilestonesService {
    * Distributes this milestone's budget proportionally as its issues resolve.
    * TODO: support per-issue weighted budgets; currently splits the remaining
    * budget evenly across still-unresolved issues at the time of each call.
+   *
+   * The escrow release, milestone distributed-total update, and issue close
+   * are wrapped in a single DB transaction to prevent desync between the
+   * Payment ledger and `milestone.distributed` (#117).
    */
   async resolveIssue(
     milestoneId: string,
@@ -100,32 +130,66 @@ export class MilestonesService {
       );
     }
 
+    // Verify the issue belongs to this milestone (#114).
+    const issue = milestone.issues.find((i) => i.id === issueId);
+    if (!issue) {
+      throw new BadRequestException(
+        `Issue ${issueId} is not attached to milestone ${milestoneId}`,
+      );
+    }
+
     const openIssues = milestone.issues.filter((i) => i.state === 'open');
-    const unresolvedCount = Math.max(openIssues.length, 1);
+
+    // Reject when no issues remain open — fallback to divisor 1 would let a
+    // single call drain the entire remaining budget (#115).
+    if (openIssues.length === 0) {
+      throw new BadRequestException(
+        'No unresolved issues left to attribute this payout to',
+      );
+    }
+
+    // Pay out each issue at most once. The real mergefi-milestones contract
+    // tracks a per-issue allocation and `release_issue` can only be called
+    // once per issue_id; here the resolved issue is moved to CLOSED in the
+    // transaction below, so resolving an already-CLOSED issue (while other
+    // issues are still open) must be rejected rather than double-paying it
+    // (#162).
+    if (issue.state !== 'open') {
+      throw new BadRequestException(
+        `Issue ${issueId} has already been resolved for milestone ${milestoneId}`,
+      );
+    }
+
+    const unresolvedCount = openIssues.length;
     const remainingBudget =
       Number(milestone.budget) - Number(milestone.distributed);
     const share = Math.min(remainingBudget / unresolvedCount, remainingBudget);
 
-    const payment = await this.escrowService.releasePartial(
-      milestone.escrowId,
-      share.toFixed(7),
-      recipientAddress,
-      recipientId,
-    );
+    return this.dataSource.transaction(async (mgr) => {
+      const payment = await this.escrowService.releasePartial(
+        milestone.escrowId!,
+        share.toFixed(7),
+        recipientAddress,
+        recipientId,
+      );
 
-    milestone.distributed = (Number(milestone.distributed) + share).toFixed(7);
-    milestone.status =
-      Number(milestone.distributed) >= Number(milestone.budget) - 1e-7
-        ? MilestoneStatus.COMPLETED
-        : MilestoneStatus.IN_PROGRESS;
-    await this.milestoneRepo.save(milestone);
+      const newDistributed = (Number(milestone.distributed) + share).toFixed(7);
+      const newStatus =
+        Number(newDistributed) >= Number(milestone.budget) - 1e-7
+          ? MilestoneStatus.COMPLETED
+          : MilestoneStatus.IN_PROGRESS;
+      await mgr.update(Milestone, milestoneId, {
+        distributed: newDistributed,
+        status: newStatus,
+      });
 
-    await this.issueRepo.update(issueId, {
-      state: 'closed',
-      closedAt: new Date(),
+      await mgr.update(Issue, issueId, {
+        state: IssueState.CLOSED,
+        closedAt: new Date(),
+      });
+
+      return payment;
     });
-
-    return payment;
   }
 
   async list(): Promise<Milestone[]> {

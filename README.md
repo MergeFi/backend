@@ -92,7 +92,7 @@ Design principles:
 | `users` | User + linked `GithubAccount` records, role management, Stellar address linking. |
 | `github` | Repository/issue sync via Octokit (`github-sync.service.ts`) and inbound webhook handling with HMAC-SHA256 signature verification (`github-webhooks.service.ts`, `webhook-signature.util.ts`). On a merged PR, resolves the linked issue → bounty and triggers escrow release. |
 | `bounties` | Paid-issue lifecycle: create, fund, claim, review, merge, pay, refund, expire. State machine in `bounty-state-machine.ts`. |
-| `escrow` | Orchestrates fund/release/split-release/refund against the escrow contract via `SorobanClientService`, and keeps `Escrow`/`Payment` rows in sync. |
+| `escrow` | Orchestrates fund/release/refund against the escrow contract via `SorobanClientService`, and keeps `Escrow`/`Payment` rows in sync. Single-recipient and team-split payouts both go through the contract's one `release(issue_id, recipients)` entrypoint. |
 | `teams` | Team bounties: create a team with percentage splits (e.g. frontend 40 / backend 40 / testing 20), assign it to a bounty, validated to sum to 100%. |
 | `milestones` | Fund an entire milestone's budget up front; distribute it incrementally as issues resolve (`resolveIssue`), splitting the remaining budget across still-open issues. |
 | `maintenance-pool` | Recurring sponsor deposits into a shared pool; maintainers assign rewards out of the running balance for maintenance-type work. |
@@ -133,17 +133,18 @@ See [`.env.example`](./.env.example) for the full annotated list. Highlights:
 | `GITHUB_CLIENT_ID` / `_SECRET`, `GITHUB_OAUTH_CALLBACK_URL` | GitHub OAuth login app. |
 | `GITHUB_API_TOKEN` | Token used by Octokit for repo/issue sync (PAT for now; see roadmap). |
 | `GITHUB_WEBHOOK_SECRET` | HMAC-SHA256 secret configured on the GitHub webhook. |
-| `STELLAR_NETWORK`, `HORIZON_URL`, `SOROBAN_RPC_URL`, `STELLAR_NETWORK_PASSPHRASE` | Stellar network config. |
+| `STELLAR_NETWORK`, `SOROBAN_RPC_URL`, `STELLAR_NETWORK_PASSPHRASE` | Stellar network config. |
 | `ESCROW_CONTRACT_ID` | Deployed escrow contract ID from `mergefi-contracts`. **Not set in this environment** — see below. |
-| `MAINTENANCE_POOL_CONTRACT_ID` | Optional separate contract for the maintenance pool; falls back to `ESCROW_CONTRACT_ID`. |
-| `TREASURY_ADDRESS` / `TREASURY_SECRET` | Platform signer used to submit release/refund transactions. |
-| `USDC_ASSET_CODE` / `USDC_ASSET_ISSUER` | Stablecoin asset identity on Stellar. |
+| `MAINTENANCE_POOL_CONTRACT_ID` | Optional separate contract for maintenance-pool escrows; falls back to `ESCROW_CONTRACT_ID`. |
+| `USDC_TOKEN_CONTRACT_ID`, `XLM_TOKEN_CONTRACT_ID` | Soroban token (SAC) contract addresses, passed as `escrow::fund`'s required `token` argument. |
+| `ESCROW_DEADLINE_SECONDS` | Fallback `escrow::fund` deadline (seconds from fund time) when the bounty/milestone has none. Default 90 days. |
+| `TREASURY_SECRET` | Platform signer used to submit release/refund transactions. |
 
 ## Escrow / Soroban integration
 
 `src/escrow/soroban-client.service.ts` wraps `@stellar/stellar-sdk`'s
 `rpc.Server` to build, simulate, sign, and submit Soroban contract
-invocations (`fund` / `release` / `split_release` / `refund`) against the
+invocations (`fund` / `release` / `refund`) against the
 escrow contract. `src/escrow/escrow.service.ts` is the orchestration layer:
 it calls the client, then persists `Escrow`/`Payment` rows and drives the
 `Bounty`/`Milestone`/`MaintenancePool` state alongside it.
@@ -157,12 +158,13 @@ rest of the system (state transitions, DB writes, split-percentage math,
 webhook-triggered releases) can still be exercised end-to-end in tests and
 local dev. Once real contracts are deployed:
 
-1. Set `ESCROW_CONTRACT_ID` (and `MAINTENANCE_POOL_CONTRACT_ID` if separate).
-2. Set `TREASURY_ADDRESS` / `TREASURY_SECRET` to a funded Stellar account.
-3. Confirm the contract's `fund`/`release`/`split_release`/`refund` function
-   signatures match the ones documented at the top of
-   `soroban-client.service.ts` (adjust argument encoding there if not —
-   TODOs are marked inline).
+1. Set `ESCROW_CONTRACT_ID` (and `MAINTENANCE_POOL_CONTRACT_ID` if the pool
+   uses a separate deployment), plus `USDC_TOKEN_CONTRACT_ID` /
+   `XLM_TOKEN_CONTRACT_ID` for the token argument.
+2. Set `TREASURY_SECRET` to a funded Stellar account.
+3. Confirm the contract's `fund`/`release`/`refund` function signatures match
+   the ones documented at the top of `soroban-client.service.ts` (adjusted in
+   this change to track `mergefi-contracts`' `contracts/escrow/src/lib.rs`).
 
 No private keys for end users are ever stored — only the platform treasury
 signer, and only as an env var for this MVP (see Roadmap: move to KMS/multi-sig).
@@ -269,9 +271,15 @@ docker build --target runner -t mergefi-backend:latest .
 #### Production Guardrails (Important):
 - **Least Privilege**: The container runs under the non-root `node` user (`USER node`).
 - **Production Mode**: The final image forces `NODE_ENV=production`.
-- **JWT Secret Enforcer**: If the application boots in production with the default `JWT_SECRET=insecure-dev-secret` (or is missing entirely), the startup hook in `src/main.ts` will crash the container. You **must** provide a secure custom `JWT_SECRET` when running the production container:
+- **Required-secret Enforcer**: When `NODE_ENV=production`, `assertRequiredConfig` (`src/config/validate-required-config.ts`, called from `src/main.ts`) crashes the container at boot — listing every problem at once — unless all of `JWT_SECRET` (not the `insecure-dev-secret` default), `DATABASE_URL` (not the local `postgres:postgres@localhost` default), `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET`, `GITHUB_WEBHOOK_SECRET`, `ESCROW_CONTRACT_ID` and `TREASURY_SECRET` are set to real values. This closes the silent-failure gap where, for example, an empty `GITHUB_WEBHOOK_SECRET` made the app boot "healthy" while rejecting 100% of webhook deliveries. You **must** provide these when running the production container, e.g.:
   ```bash
-  docker run -p 3000:3000 -e JWT_SECRET="your-highly-secure-random-jwt-key" mergefi-backend:latest
+  docker run -p 3000:3000 \
+    -e JWT_SECRET="your-highly-secure-random-jwt-key" \
+    -e DATABASE_URL="postgresql://user:pass@db-host:5432/mergefi" \
+    -e GITHUB_CLIENT_ID=... -e GITHUB_CLIENT_SECRET=... \
+    -e GITHUB_WEBHOOK_SECRET=... \
+    -e ESCROW_CONTRACT_ID=... -e TREASURY_SECRET=... \
+    mergefi-backend:latest
   ```
 
 ### 4. Running Tests
@@ -292,7 +300,7 @@ npm run test:e2e
 Unit tests cover critical domains including:
 - `src/bounties/bounty-state-machine.spec.ts` — the bounty lifecycle state machine.
 - `src/teams/team-split.util.spec.ts` — team payout split percentage math.
-- `src/escrow/escrow.service.spec.ts` — escrow fund/release/split-release/refund orchestration (Soroban client mocked).
+- `src/escrow/escrow.service.spec.ts` — escrow fund/release/refund orchestration (Soroban client mocked).
 - `src/github/webhook-signature.util.spec.ts` — GitHub webhook HMAC-SHA256 signature verification.
 - `src/github/github-webhooks.service.spec.ts` — webhook-to-escrow release logic.
 - `src/bounties/bounties.service.spec.ts` — bounty core management.
@@ -322,7 +330,8 @@ npm run migration:revert
 - [ ] Move GitHub sync from a static PAT to a GitHub App installation-token flow for multi-org, least-privilege access.
 - [ ] Deploy the real escrow contract from `mergefi-contracts` and drop the Soroban dry-run fallback.
 - [ ] Replace the single `TREASURY_SECRET` signer with a proper signing service (KMS / multi-sig) before handling real funds.
-- [ ] Add a scheduled job for `BountiesService.expireOverdue()` (deadline sweeps) and recurring `MaintenancePool` deposits.
+- [x] ~~Add a scheduled job for `BountiesService.expireOverdue()` (deadline sweeps).~~ See `BountyExpiryScheduler` (hourly `@Cron`).
+- [ ] Add a scheduled job for recurring `MaintenancePool` deposits.
 - [ ] Add role-based authorization guards (currently JWT-authenticated but not role-scoped) to maintainer/sponsor-only endpoints.
 - [ ] Add pagination/filtering to list endpoints (bounties, milestones, pools) as data volume grows.
 - [ ] Weighted (not just even) per-issue milestone budget distribution.

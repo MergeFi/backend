@@ -1,4 +1,14 @@
-import { Controller, Get, Req, Res, UseGuards } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Get,
+  HttpCode,
+  Post,
+  Req,
+  Res,
+  UnauthorizedException,
+  UseGuards,
+} from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { ApiExcludeEndpoint, ApiTags } from '@nestjs/swagger';
 import type { Request, Response } from 'express';
@@ -29,8 +39,50 @@ export class AuthController {
   async githubCallback(@Req() req: Request, @Res() res: Response) {
     const profile = req.user as UpsertFromGithubInput;
     const { accessToken } = await this.authService.loginWithGithub(profile);
+    const code = this.authService.createHandoffCode(accessToken);
+    // Defense-in-depth: also set the JWT as an httpOnly cookie so a frontend
+    // that prefers cookie-based auth never needs to handle a bearer token in
+    // the URL at all. The handoff code remains the primary exchange mechanism.
+    const isProd =
+      this.configService.get('env', { infer: true }) === 'production';
+    res.cookie('access_token', accessToken, {
+      httpOnly: true,
+      secure: isProd,
+      sameSite: 'lax',
+      maxAge: 7 * 24 * 60 * 60 * 1000,
+      path: '/',
+    });
     const frontendUrl = this.configService.get('frontendUrl', { infer: true });
-    res.redirect(`${frontendUrl}/auth/callback?token=${accessToken}`);
+    res.redirect(`${frontendUrl}/auth/callback?code=${code}`);
+  }
+
+  @Post('handoff')
+  @HttpCode(200)
+  @ApiExcludeEndpoint()
+  async exchangeHandoff(@Body('code') code: string) {
+    if (!code || typeof code !== 'string') {
+      throw new UnauthorizedException('Missing handoff code');
+    }
+    const token = this.authService.consumeHandoffCode(code);
+    if (!token) {
+      throw new UnauthorizedException('Invalid or expired handoff code');
+    }
+    return { accessToken: token };
+  }
+
+  @Post('exchange')
+  @HttpCode(200)
+  @ApiExcludeEndpoint()
+  async exchangeHandoffAlias(@Body('code') code: string) {
+    // Alias for POST /auth/exchange — same single-use semantics as /handoff.
+    if (!code || typeof code !== 'string') {
+      throw new UnauthorizedException('Missing handoff code');
+    }
+    const token = this.authService.consumeHandoffCode(code);
+    if (!token) {
+      throw new UnauthorizedException('Invalid or expired handoff code');
+    }
+    return { accessToken: token };
   }
 
   @Get('me')

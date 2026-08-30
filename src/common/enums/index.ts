@@ -4,6 +4,11 @@ export enum UserRole {
   SPONSOR = 'sponsor',
 }
 
+export enum IssueState {
+  OPEN = 'open',
+  CLOSED = 'closed',
+}
+
 /**
  * Lifecycle of a paid issue (bounty).
  *
@@ -80,6 +85,8 @@ export enum WebhookEventStatus {
   PROCESSED = 'processed',
   IGNORED = 'ignored',
   FAILED = 'failed',
+  /** Payload didn't have the shape its handler required; no business logic ran (#28). */
+  INVALID_PAYLOAD = 'invalid_payload',
 }
 
 /**

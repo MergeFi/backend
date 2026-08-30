@@ -8,8 +8,13 @@ import { AppConfig } from '../config/configuration';
 import { verifyGithubSignature } from './webhook-signature.util';
 import { BountiesService } from '../bounties/bounties.service';
 import { GithubSyncService, RawGithubIssue } from './github-sync.service';
+import {
+  validateIssuesEventPayload,
+  validatePullRequestPayload,
+  WebhookPayloadValidationError,
+} from './github-webhook-payload.util';
 
-interface GithubPullRequestPayload {
+export interface GithubPullRequestPayload {
   action: string;
   number: number;
   pull_request: {
@@ -22,7 +27,7 @@ interface GithubPullRequestPayload {
   repository: { id: number; full_name: string };
 }
 
-interface GithubIssuesEventPayload {
+export interface GithubIssuesEventPayload {
   action: string;
   issue: RawGithubIssue;
   repository: { id: number; full_name: string };
@@ -30,7 +35,7 @@ interface GithubIssuesEventPayload {
 
 /** Matches "Fixes #123", "Closes #45", "Resolves owner/repo#45" etc. in a PR body. */
 const CLOSING_KEYWORD_RE =
-  /\b(close[sd]?|fix(e[sd])?|resolve[sd]?)\b\s*:?\s*(?:[\w.-]+\/[\w.-]+)?#(\d+)/gi;
+  /\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\b\s*:?\s*(?<repo>[\w.-]+\/[\w.-]+)?#(?<number>\d+)/gi;
 
 /**
  * The outcome of processing one issue number linked from a merged PR's
@@ -96,24 +101,34 @@ export class GithubWebhooksService {
     try {
       if (eventType === 'pull_request') {
         const outcomes = await this.handlePullRequest(
-          payload as unknown as GithubPullRequestPayload,
+          validatePullRequestPayload(payload),
         );
         this.applyPullRequestOutcomes(event, outcomes);
       } else {
         if (eventType === 'issues') {
-          await this.handleIssueEvent(
-            payload as unknown as GithubIssuesEventPayload,
-          );
+          await this.handleIssueEvent(validateIssuesEventPayload(payload));
         }
         event.status = WebhookEventStatus.PROCESSED;
         event.processedAt = new Date();
       }
     } catch (err) {
-      event.status = WebhookEventStatus.FAILED;
-      event.error = (err as Error).message;
-      this.logger.error(
-        `Failed to process webhook ${deliveryId}: ${event.error}`,
-      );
+      if (err instanceof WebhookPayloadValidationError) {
+        // Distinct from a processing-logic failure (#28): the payload
+        // never had a shape any handler could act on, so no business
+        // logic ran at all — record that plainly rather than folding it
+        // into the same FAILED bucket a real processing error uses.
+        event.status = WebhookEventStatus.INVALID_PAYLOAD;
+        event.error = err.message;
+        this.logger.warn(
+          `Rejected webhook delivery ${deliveryId} — invalid payload: ${event.error}`,
+        );
+      } else {
+        event.status = WebhookEventStatus.FAILED;
+        event.error = (err as Error).message;
+        this.logger.error(
+          `Failed to process webhook ${deliveryId}: ${event.error}`,
+        );
+      }
     }
 
     return this.webhookEventRepo.save(event);
@@ -159,6 +174,14 @@ export class GithubWebhooksService {
   private async handlePullRequest(
     payload: GithubPullRequestPayload,
   ): Promise<LinkedIssueOutcome[]> {
+    if (payload.action === 'opened' || payload.action === 'reopened') {
+      return this.handlePullRequestOpened(payload);
+    }
+
+    if (payload.action === 'closed' && !payload.pull_request.merged) {
+      return this.handlePullRequestClosedWithoutMerge(payload);
+    }
+
     if (payload.action !== 'closed' || !payload.pull_request.merged) {
       return [];
     }
@@ -171,7 +194,10 @@ export class GithubWebhooksService {
     // rather than a real one (#47).
     const issueNumbers = [
       ...new Set(
-        this.extractLinkedIssueNumbers(payload.pull_request.body ?? ''),
+        this.extractLinkedIssueNumbers(
+          payload.pull_request.body ?? '',
+          payload.repository.full_name,
+        ),
       ),
     ];
     if (issueNumbers.length === 0) {
@@ -261,8 +287,147 @@ export class GithubWebhooksService {
     }
   }
 
-  private extractLinkedIssueNumbers(body: string): number[] {
+  /**
+   * A closing keyword may optionally be qualified with an owner/repo, e.g.
+   * "Fixes some-other-org/some-other-repo#45". When that qualifier is
+   * present, it must match the webhook's own repository — otherwise the
+   * reference is for an issue in a different repository entirely and must
+   * not be resolved against this one (compared case-insensitively, as
+   * GitHub owner/repo names are).
+   */
+  private extractLinkedIssueNumbers(
+    body: string,
+    repoFullName: string,
+  ): number[] {
     const matches = [...body.matchAll(CLOSING_KEYWORD_RE)];
-    return matches.map((m) => parseInt(m[3], 10));
+    const numbers: number[] = [];
+    for (const m of matches) {
+      const repoQualifier = m.groups?.repo;
+      if (
+        repoQualifier &&
+        repoQualifier.toLowerCase() !== repoFullName.toLowerCase()
+      ) {
+        continue;
+      }
+      numbers.push(parseInt(m.groups!.number, 10));
+    }
+    return numbers;
+  }
+
+  /**
+   * When a PR is opened (or reopened) against a linked issue, move that
+   * issue's bounty from CLAIMED to IN_REVIEW at the moment the PR actually
+   * exists — rather than only synthetically at merge time (#168). Bounties
+   * not in CLAIMED are left untouched (idempotent no-op), matching the
+   * merged-PR branch's own `markInReview` guard.
+   */
+  private async handlePullRequestOpened(
+    payload: GithubPullRequestPayload,
+  ): Promise<LinkedIssueOutcome[]> {
+    const issueNumbers = [
+      ...new Set(
+        this.extractLinkedIssueNumbers(
+          payload.pull_request.body ?? '',
+          payload.repository.full_name,
+        ),
+      ),
+    ];
+    if (issueNumbers.length === 0) {
+      return [];
+    }
+
+    const outcomes: LinkedIssueOutcome[] = [];
+    for (const number of issueNumbers) {
+      try {
+        const issue = await this.issueRepo.findOne({
+          where: {
+            number,
+            repository: { githubRepoId: String(payload.repository.id) },
+          },
+          relations: { repository: true, bounty: true },
+        });
+        if (!issue?.bounty) {
+          outcomes.push({ issueNumber: number, outcome: 'skipped' });
+          continue;
+        }
+
+        const bounty = await this.bountyRepo.findOne({
+          where: { id: issue.bounty.id },
+        });
+        if (!bounty || bounty.status !== BountyStatus.CLAIMED) {
+          outcomes.push({ issueNumber: number, outcome: 'skipped' });
+          continue;
+        }
+
+        await this.bountiesService.markInReview(
+          bounty.id,
+          payload.pull_request.html_url,
+          payload.pull_request.number,
+        );
+        outcomes.push({ issueNumber: number, outcome: 'succeeded' });
+      } catch (err) {
+        outcomes.push({
+          issueNumber: number,
+          outcome: 'failed',
+          error: (err as Error).message,
+        });
+      }
+    }
+    return outcomes;
+  }
+
+  /**
+   * When a PR is closed without merging, move linked bounties from
+   * IN_REVIEW back to CLAIMED so they become claimable again.
+   */
+  private async handlePullRequestClosedWithoutMerge(
+    payload: GithubPullRequestPayload,
+  ): Promise<LinkedIssueOutcome[]> {
+    const issueNumbers = [
+      ...new Set(
+        this.extractLinkedIssueNumbers(
+          payload.pull_request.body ?? '',
+          payload.repository.full_name,
+        ),
+      ),
+    ];
+    if (issueNumbers.length === 0) {
+      return [];
+    }
+
+    const outcomes: LinkedIssueOutcome[] = [];
+    for (const number of issueNumbers) {
+      try {
+        const issue = await this.issueRepo.findOne({
+          where: {
+            number,
+            repository: { githubRepoId: String(payload.repository.id) },
+          },
+          relations: { repository: true, bounty: true },
+        });
+        if (!issue?.bounty) {
+          outcomes.push({ issueNumber: number, outcome: 'skipped' });
+          continue;
+        }
+
+        const bounty = await this.bountyRepo.findOne({
+          where: { id: issue.bounty.id },
+        });
+        if (!bounty || bounty.status !== BountyStatus.IN_REVIEW) {
+          outcomes.push({ issueNumber: number, outcome: 'skipped' });
+          continue;
+        }
+
+        await this.bountiesService.markPrClosedWithoutMerge(bounty.id);
+        outcomes.push({ issueNumber: number, outcome: 'succeeded' });
+      } catch (err) {
+        outcomes.push({
+          issueNumber: number,
+          outcome: 'failed',
+          error: (err as Error).message,
+        });
+      }
+    }
+    return outcomes;
   }
 }

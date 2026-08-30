@@ -4,9 +4,15 @@ import {
   Logger,
   NotFoundException,
 } from '@nestjs/common';
+
 import { InjectRepository } from '@nestjs/typeorm';
 import { EntityManager, Repository } from 'typeorm';
 import { Escrow, Payment } from '../common/entities';
+
+import { InjectDataSource, InjectRepository } from '@nestjs/typeorm';
+import { DataSource, In, Repository } from 'typeorm';
+import { Escrow, Payment, User } from '../common/entities';
+
 import { AssetType, EscrowStatus, PaymentStatus } from '../common/enums';
 import {
   amountToStroops,
@@ -14,6 +20,16 @@ import {
   isValidMoneyAmount,
   stroopsToAmount,
 } from '../common/validators/money.validator';
+import {
+  ContractInvocationResult,
+  SorobanClientService,
+} from './soroban-client.service';
+import {
+  apportionBasisPoints,
+  splitStroops,
+  TOTAL_BASIS_POINTS,
+} from './split-math.util';
+import { validatePercentageSplits } from '../common/validators/split-percentage.validator';
 import { SorobanClientService } from './soroban-client.service';
 import { apportionBasisPoints, splitStroops } from './split-math.util';
 
@@ -32,6 +48,21 @@ export interface FundEscrowInput {
    * which aren't sponsor-attributed.
    */
   sponsorId?: string | null;
+  /**
+   * The `u64` key to store this escrow under on-chain — `escrow::fund`'s
+   * `issue_id` (#158). For a bounty this is the linked GitHub issue's
+   * numeric id, supplied by the caller. Omitted for milestone /
+   * maintenance-pool escrows, where a stable id is derived from the parent
+   * UUID until those move to their own sibling contracts.
+   */
+  onChainIssueId?: string | number | null;
+  /**
+   * Deadline passed to `escrow::fund`, after which the contract's
+   * permissionless refund path opens (#158). Defaults to
+   * `now + stellar.escrowDeadlineSeconds` when the funding bounty/milestone
+   * has none of its own.
+   */
+  deadline?: Date | null;
 }
 
 export interface SplitRecipient {
@@ -48,6 +79,8 @@ export class EscrowService {
     @InjectRepository(Escrow) private readonly escrowRepo: Repository<Escrow>,
     @InjectRepository(Payment)
     private readonly paymentRepo: Repository<Payment>,
+    @InjectRepository(User) private readonly userRepo: Repository<User>,
+    @InjectDataSource() private readonly dataSource: DataSource,
     private readonly soroban: SorobanClientService,
   ) {}
 
@@ -65,19 +98,26 @@ export class EscrowService {
       maintenancePoolId: input.maintenancePoolId ?? null,
       sponsorId: input.sponsorId ?? null,
     });
+    escrow.contractId = this.resolveContractId(input) || null;
+    escrow.onChainId = this.resolveOnChainId(input);
+    const deadline = this.resolveDeadline(input);
+    escrow.deadline = deadline;
     await this.escrowRepo.save(escrow);
 
     try {
-      const referenceId =
-        input.bountyId ??
-        input.milestoneId ??
-        input.maintenancePoolId ??
-        escrow.id;
-      const result = await this.soroban.invoke('fund', [
-        input.funderAddress,
-        referenceId,
-        this.toStroops(input.amount),
-      ]);
+      // escrow::fund(issue_id: u64, sponsor: Address, token: Address,
+      //              amount: i128, deadline: u64) -> Result<(), Error>  (#158)
+      const result = await this.soroban.invoke(
+        'fund',
+        [
+          BigInt(escrow.onChainId),
+          input.funderAddress,
+          this.resolveTokenAddress(input.asset),
+          this.toStroops(input.amount),
+          BigInt(Math.floor(deadline.getTime() / 1000)),
+        ],
+        this.contractOpts(escrow),
+      );
 
       escrow.status = EscrowStatus.LOCKED;
       escrow.fundTxHash = result.txHash;
@@ -98,6 +138,7 @@ export class EscrowService {
     recipientAddress: string,
     recipientId?: string,
   ): Promise<Escrow> {
+
     return this.withReleaseLock(
       escrowId,
       async (escrowRepo, paymentRepo, escrow) => {
@@ -120,6 +161,29 @@ export class EscrowService {
         await escrowRepo.save(escrow);
 
         const payment = paymentRepo.create({
+
+    const escrow = await this.getOrThrow(escrowId);
+    this.assertLocked(escrow);
+    await this.assertRecipientsMatchUsers([{ recipientAddress, recipientId }]);
+
+    const result = await this.invokeRelease(escrow, 'release', [
+      [recipientAddress, TOTAL_BASIS_POINTS],
+    ]);
+
+    // The on-chain release already succeeded; the local ledger must record
+    // (escrow -> RELEASED) and the Payment row atomically, or neither, so a
+    // Payment-insert failure can never leave a permanently-mismarked escrow
+    // with no record of who was paid (#154).
+    await this.dataSource.transaction(async (manager) => {
+      escrow.status = EscrowStatus.RELEASED;
+      escrow.releaseTxHash = result.txHash;
+      escrow.releasedAt = new Date();
+      await manager.save(Escrow, escrow);
+
+      await manager.save(
+        Payment,
+        this.paymentRepo.create({
+
           escrowId: escrow.id,
           recipientId: recipientId ?? null,
           recipientAddress,
@@ -127,11 +191,19 @@ export class EscrowService {
           asset: escrow.asset,
           status: PaymentStatus.CONFIRMED,
           txHash: result.txHash,
+
         });
         await paymentRepo.save(payment);
         return escrow;
       },
     );
+
+        }),
+      );
+    });
+
+    return escrow;
+
   }
 
   /**
@@ -143,6 +215,7 @@ export class EscrowService {
     escrowId: string,
     recipients: SplitRecipient[],
   ): Promise<Payment[]> {
+
     return this.withReleaseLock(
       escrowId,
       async (escrowRepo, paymentRepo, escrow) => {
@@ -189,6 +262,58 @@ export class EscrowService {
         return payments;
       },
     );
+
+    const escrow = await this.getOrThrow(escrowId);
+    this.assertLocked(escrow);
+    this.assertValidSplits(recipients);
+    await this.assertRecipientsMatchUsers(recipients);
+
+    const totalStroops = amountToStroops(escrow.amount);
+    // Single source of truth for the split: integer basis points summing to
+    // exactly 10,000 (100.00%), used both on-chain and to derive the ledger.
+    const bps = apportionBasisPoints(recipients.map((r) => r.percentage));
+
+    const result = await this.invokeRelease(
+      escrow,
+      'splitRelease',
+      recipients.map((r, i) => [r.recipientAddress, bps[i]] as [string, number]),
+    );
+
+    const shares = splitStroops(totalStroops, bps);
+    this.reconcileSplitResult(escrow.id, totalStroops, result.returnValue);
+
+    // Atomic: the escrow flips to RELEASED and every recipient's Payment row
+    // is written in one transaction, so a mid-loop insert failure can no
+    // longer leave a RELEASED escrow with only some recipients recorded
+    // (#154).
+    const payments: Payment[] = [];
+    await this.dataSource.transaction(async (manager) => {
+      escrow.status = EscrowStatus.RELEASED;
+      escrow.releaseTxHash = result.txHash;
+      escrow.releasedAt = new Date();
+      escrow.metadata = { ...(escrow.metadata ?? {}), splitRelease: result };
+      await manager.save(Escrow, escrow);
+
+      for (let i = 0; i < recipients.length; i++) {
+        const recipient = recipients[i];
+        const payment = await manager.save(
+          Payment,
+          this.paymentRepo.create({
+            escrowId: escrow.id,
+            recipientId: recipient.recipientId ?? null,
+            recipientAddress: recipient.recipientAddress,
+            amount: stroopsToAmount(shares[i]),
+            asset: escrow.asset,
+            splitPercentage: (bps[i] / 100).toFixed(2),
+            status: PaymentStatus.CONFIRMED,
+            txHash: result.txHash,
+          }),
+        );
+        payments.push(payment);
+      }
+    });
+    return payments;
+
   }
 
   /** Releases one leg while leaving the escrow LOCKED until fully distributed. */
@@ -198,6 +323,7 @@ export class EscrowService {
     recipientAddress: string,
     recipientId?: string,
   ): Promise<Payment> {
+
     return this.withReleaseLock(
       escrowId,
       async (escrowRepo, paymentRepo, escrow) => {
@@ -245,6 +371,137 @@ export class EscrowService {
         return payment;
       },
     );
+
+    const escrow = await this.getOrThrow(escrowId);
+    this.assertLocked(escrow);
+    this.assertValidAmount(amount);
+
+    const existingPayments = await this.paymentRepo.find({
+      where: { escrowId: escrow.id },
+    });
+    // Compare in stroops (BigInt) rather than Number to avoid IEEE-754
+    // precision loss / epsilon-fudge factors on financial amounts (#5).
+    const releasedSoFarStroops = existingPayments.reduce(
+      (sum, p) => sum + amountToStroops(p.amount),
+      0n,
+    );
+    const requestedStroops = amountToStroops(amount);
+    const escrowStroops = amountToStroops(escrow.amount);
+    if (releasedSoFarStroops + requestedStroops > escrowStroops) {
+      throw new BadRequestException(
+        `Partial release of ${amount} would exceed remaining escrow balance`,
+      );
+    }
+
+    await this.assertRecipientsMatchUsers([{ recipientAddress, recipientId }]);
+
+    const result = await this.invokeOnLockedEscrow(
+      escrow,
+      'releasePartial',
+      () =>
+        this.soroban.invoke(
+          'release',
+          [
+            this.onChainKeyFor(escrow),
+            recipientAddress,
+            this.toStroops(amount),
+          ],
+          this.contractOpts(escrow),
+        ),
+        // Distinct on-chain method name from release()'s two-arg `release`
+        // (#159): a partial release carries an amount and is a different
+        // contract entrypoint, not an overload — so a contract implementer
+        // isn't left guessing which arg shape `release` is authoritative.
+        this.soroban.invoke('release_partial', [
+          escrow.milestoneId ?? escrow.bountyId ?? escrow.id,
+          recipientAddress,
+          this.toStroops(amount),
+        ]),
+    );
+
+    // The Payment insert and the (conditional) escrow-status flip share one
+    // transaction so the two can't diverge — same guarantee as release()
+    // and splitRelease() (#154).
+    let payment!: Payment;
+    await this.dataSource.transaction(async (manager) => {
+      payment = await manager.save(
+        Payment,
+        this.paymentRepo.create({
+          escrowId: escrow.id,
+          recipientId: recipientId ?? null,
+          recipientAddress,
+          amount,
+          asset: escrow.asset,
+          status: PaymentStatus.CONFIRMED,
+          txHash: result.txHash,
+        }),
+      );
+
+      if (releasedSoFarStroops + requestedStroops >= escrowStroops) {
+        escrow.status = EscrowStatus.RELEASED;
+        escrow.releaseTxHash = result.txHash;
+        escrow.releasedAt = new Date();
+        await manager.save(Escrow, escrow);
+      }
+    });
+
+    return payment;
+  }
+
+  /**
+   * Pays a reward out of a maintenance pool's running balance.
+   *
+   * The real `mergefi-maintenance-pool` contract has no
+   * LOCKED-escrow-with-partial-release concept: it accrues an on-chain
+   * `balance` through repeated `deposit()` calls and pays out via
+   * `withdraw(pool_id, recipient, amount)` against the live balance, with no
+   * pre-`lock` step and no "fully released" terminal state (#163).
+   *
+   * So unlike {@link releasePartial} — which is milestone-shaped: it checks
+   * the cumulative payouts against a fixed locked `escrow.amount` and flips
+   * the escrow to RELEASED once they reach it — this call:
+   *   - invokes the pool contract's `withdraw`, not `release`;
+   *   - leaves the escrow row LOCKED (it mirrors an open, still-funded pool,
+   *     not a one-off lock that closes out);
+   *   - does not enforce a ceiling here. The spendable balance is tracked by
+   *     `MaintenancePoolService` on `pool.balance` and checked there before
+   *     this is called.
+   */
+  async poolWithdraw(
+    escrowId: string,
+    amount: string,
+    recipientAddress: string,
+    recipientId?: string,
+  ): Promise<Payment> {
+    const escrow = await this.getOrThrow(escrowId);
+    this.assertLocked(escrow);
+    this.assertValidAmount(amount);
+    await this.assertRecipientsMatchUsers([{ recipientAddress, recipientId }]);
+
+    const result = await this.invokeOnLockedEscrow(escrow, 'poolWithdraw', () =>
+      this.soroban.invoke(
+        'withdraw',
+        [
+          this.onChainKeyFor(escrow),
+          recipientAddress,
+          this.toStroops(amount),
+        ],
+        this.contractOpts(escrow),
+      ),
+    );
+
+    return this.paymentRepo.save(
+      this.paymentRepo.create({
+        escrowId: escrow.id,
+        recipientId: recipientId ?? null,
+        recipientAddress,
+        amount,
+        asset: escrow.asset,
+        status: PaymentStatus.CONFIRMED,
+        txHash: result.txHash,
+      }),
+    );
+
   }
 
   /** Refunds the full escrowed amount back to the original funder. */
@@ -252,12 +509,13 @@ export class EscrowService {
     const escrow = await this.getOrThrow(escrowId);
     this.assertLocked(escrow);
 
-    const result = await this.soroban.invoke('refund', [
-      escrow.bountyId ??
-        escrow.milestoneId ??
-        escrow.maintenancePoolId ??
-        escrow.id,
-    ]);
+    const result = await this.invokeOnLockedEscrow(escrow, 'refund', () =>
+      this.soroban.invoke(
+        'refund',
+        [this.onChainKeyFor(escrow)],
+        this.contractOpts(escrow),
+      ),
+    );
 
     escrow.status = EscrowStatus.REFUNDED;
     escrow.refundTxHash = result.txHash;
@@ -326,32 +584,190 @@ export class EscrowService {
     }
   }
 
-  /** Validates that split percentages sum to 100.00, within floating point tolerance. */
-  assertValidSplits(recipients: SplitRecipient[]): void {
-    if (recipients.length === 0) {
-      throw new BadRequestException(
-        'At least one recipient is required for a split release',
-      );
-    }
-    const total = recipients.reduce((sum, r) => sum + r.percentage, 0);
-    if (Math.abs(total - 100) > 0.01) {
-      throw new BadRequestException(
-        `Split percentages must sum to 100, got ${total.toFixed(2)}`,
-      );
-    }
-    if (recipients.some((r) => r.percentage <= 0)) {
-      throw new BadRequestException('Split percentages must be positive');
+  /**
+   * recipientId and recipientAddress must describe the same payee: whenever a
+   * user id is supplied, the user must exist and its address must match the
+   * Stellar address on file (#92). Runs before the Soroban invocation so a
+   * client-trusted, non-existent recipientId is rejected up front rather
+   * than surfacing as a foreign-key violation on the Payment insert *after*
+   * funds have already moved on-chain (#154).
+   */
+  private async assertRecipientsMatchUsers(
+    recipients: { recipientAddress: string; recipientId?: string }[],
+  ): Promise<void> {
+    const ids = [
+      ...new Set(
+        recipients
+          .map((r) => r.recipientId)
+          .filter((id): id is string => Boolean(id)),
+      ),
+    ];
+    if (ids.length === 0) return;
+
+    const users = await this.userRepo.find({ where: { id: In(ids) } });
+    const byId = new Map(users.map((u) => [u.id, u]));
+
+    for (const r of recipients) {
+      if (!r.recipientId) continue;
+      const user = byId.get(r.recipientId);
+      if (!user) {
+        throw new BadRequestException(
+          `recipientId ${r.recipientId} does not correspond to a known user`,
+        );
+      }
+      if (user.stellarAddress !== r.recipientAddress) {
+        throw new BadRequestException(
+          `recipientAddress does not match the Stellar address on file for user ${r.recipientId}`,
+        );
+      }
     }
   }
 
   /**
-   * The illustrative split_release contract returns a single i128 (the total
-   * released, in stroops) rather than a per-recipient breakdown, so the
-   * recorded Payment rows cannot yet be derived from `result.returnValue`
-   * (see the interface TODO in soroban-client.service.ts). Until the deployed
-   * contract returns per-recipient amounts, reconcile the scalar total against
-   * the locally computed total and surface any divergence as a warning for the
-   * reconciliation job, rather than silently discarding it (#43).
+   * Runs a Soroban invocation against an already-LOCKED escrow and records a
+   * thrown failure in escrow.metadata so failed attempts are queryable state
+   * rather than only a server log line (#89). The status deliberately stays
+   * LOCKED — the funds are still held and the operation can be retried.
+   */
+  private async invokeOnLockedEscrow<T>(
+    escrow: Escrow,
+    operation: string,
+    call: () => Promise<T>,
+  ): Promise<T> {
+    try {
+      return await call();
+    } catch (err) {
+      escrow.metadata = {
+        ...(escrow.metadata ?? {}),
+        lastFailure: {
+          operation,
+          error: (err as Error).message,
+          at: new Date().toISOString(),
+        },
+      };
+      await this.escrowRepo.save(escrow);
+      throw err;
+    }
+  }
+
+  /**
+   * The escrow contract's single payout entrypoint (#161):
+   * `release(issue_id: u64, recipients: Vec<(Address, u32)>)`. A single
+   * recipient is just the degenerate `[(addr, 10_000)]` case of the same
+   * call a team split makes — there is no separate `split_release` method on
+   * the deployed contract. Basis points must sum to exactly 10,000.
+   */
+  private invokeRelease(
+    escrow: Escrow,
+    operation: string,
+    recipients: Array<[string, number]>,
+  ): Promise<ContractInvocationResult> {
+    return this.invokeOnLockedEscrow(escrow, operation, () =>
+      this.soroban.invoke(
+        'release',
+        [this.onChainKeyFor(escrow), recipients],
+        this.contractOpts(escrow),
+      ),
+    );
+  }
+
+  /**
+   * The deployed contract a new escrow instance should be held by (#157):
+   * the maintenance-pool deployment for pool escrows, the bounty escrow
+   * contract otherwise. Resolved once at fund time and persisted on the row.
+   */
+  private resolveContractId(input: {
+    maintenancePoolId?: string | null;
+  }): string {
+    return input.maintenancePoolId
+      ? this.soroban.maintenancePoolContractId
+      : this.soroban.escrowContractId;
+  }
+
+  /**
+   * `invoke()` options pinning a call to the contract this escrow was funded
+   * in. Empty for rows created before `contractId` was persisted and in
+   * dry-run environments — the client then falls back to `ESCROW_CONTRACT_ID`.
+   */
+  private contractOpts(escrow: Escrow): { contractId?: string } {
+    return escrow.contractId ? { contractId: escrow.contractId } : {};
+  }
+
+  /**
+   * The `u64` key `escrow::fund` should store this escrow under (#158). A
+   * bounty carries the linked GitHub issue's numeric id (passed as
+   * `onChainIssueId`); milestone / maintenance-pool escrows, which belong on
+   * their own sibling contracts (#157), get a stable u64 derived from the
+   * parent UUID until then.
+   */
+  private resolveOnChainId(input: FundEscrowInput): string {
+    const explicit = input.onChainIssueId;
+    if (explicit != null && `${explicit}`.trim() !== '') {
+      const value = `${explicit}`.trim();
+      return /^\d+$/.test(value) ? value : this.deriveOnChainId(value);
+    }
+    return this.deriveOnChainId(
+      input.bountyId ?? input.milestoneId ?? input.maintenancePoolId ?? '',
+    );
+  }
+
+  /** Deterministic FNV-1a-64 hash of a non-numeric reference into a `u64` string. */
+  private deriveOnChainId(seed: string): string {
+    let hash = 14695981039346656037n;
+    for (let i = 0; i < seed.length; i++) {
+      hash ^= BigInt(seed.charCodeAt(i));
+      hash = BigInt.asUintN(64, hash * 1099511628211n);
+    }
+    return hash.toString();
+  }
+
+  /**
+   * The on-chain key for an already-persisted escrow: the `onChainId`
+   * captured at fund time, or the derived fallback for rows funded before
+   * that column existed. Always numeric so it round-trips through `BigInt`.
+   */
+  private onChainKeyFor(escrow: Escrow): bigint {
+    if (escrow.onChainId != null && escrow.onChainId !== '') {
+      return BigInt(escrow.onChainId);
+    }
+    return BigInt(
+      this.deriveOnChainId(
+        escrow.bountyId ??
+          escrow.milestoneId ??
+          escrow.maintenancePoolId ??
+          escrow.id,
+      ),
+    );
+  }
+
+  /** Resolves the funding deadline: the parent's own, or the configured default window. */
+  private resolveDeadline(input: FundEscrowInput): Date {
+    if (input.deadline) return input.deadline;
+    return new Date(Date.now() + this.soroban.escrowDeadlineSeconds * 1000);
+  }
+
+  /** Soroban token (SAC) contract address backing an escrow asset (#158). */
+  private resolveTokenAddress(asset: AssetType): string {
+    return this.soroban.tokenContractId(asset);
+  }
+
+  /**
+   * Validates that split percentages sum to 100.00 (within tolerance), with
+   * every entry in `(0, 100]`. Delegates to the shared
+   * {@link validatePercentageSplits} — the same implementation
+   * `TeamsService` uses for `CreateTeamDto.members` (#167).
+   */
+  assertValidSplits(recipients: SplitRecipient[]): void {
+    validatePercentageSplits(recipients, 'split release');
+  }
+
+  /**
+   * The deployed `release` entrypoint returns `Result<(), Error>` — no
+   * payout figure — so `result.returnValue` is normally null and the
+   * recorded Payment rows come from the locally computed shares. If a future
+   * contract revision returns a scalar stroop total, reconcile it against
+   * the local total and surface any divergence as a warning for the
+   * reconciliation job rather than discarding it (#43).
    */
   private reconcileSplitResult(
     escrowId: string,
@@ -362,7 +778,7 @@ export class EscrowService {
     if (returned === null) return;
     if (returned !== totalStroops) {
       this.logger.warn(
-        `split_release returnValue (${returned} stroops) diverges from the ` +
+        `release returnValue (${returned} stroops) diverges from the ` +
           `recorded total (${totalStroops} stroops) for escrow ${escrowId}`,
       );
     }

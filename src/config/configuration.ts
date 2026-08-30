@@ -1,8 +1,11 @@
+import { AssetType } from '../common/enums';
+
 export interface AppConfig {
   env: string;
   port: number;
   appUrl: string;
   frontendUrl: string;
+  logLevel: string;
   database: {
     url: string;
     synchronize: boolean;
@@ -21,15 +24,33 @@ export interface AppConfig {
   };
   stellar: {
     network: string;
-    horizonUrl: string;
     sorobanRpcUrl: string;
     networkPassphrase: string;
     escrowContractId: string;
+    /**
+     * Optional separate deployment for maintenance-pool escrows. Falls back
+     * to `escrowContractId` when unset. Threaded through to
+     * `SorobanClientService.invoke(..., { contractId })` by `EscrowService`
+     * so maintenance-pool fund/release/refund calls target this contract
+     * instead of the single bounty escrow contract (#157).
+     */
     maintenancePoolContractId: string;
-    treasuryAddress: string;
     treasurySecret: string;
-    usdcAssetCode: string;
-    usdcAssetIssuer: string;
+    /**
+     * Soroban token (SAC) contract addresses per supported asset. The real
+     * `escrow::fund(issue_id, sponsor, token, amount, deadline)` takes the
+     * token contract as a required argument (#158); this is where that
+     * address is resolved from `Escrow.asset`. Left blank in environments
+     * with no deployed contracts (calls dry-run regardless).
+     */
+    assetContractIds: Record<AssetType, string>;
+    /**
+     * Fallback escrow deadline, in seconds from fund time, used as the real
+     * `escrow::fund`'s `deadline` argument when the funding bounty/milestone
+     * carries no explicit deadline of its own (#158). The contract's
+     * refund-after-deadline mechanism depends on this being set.
+     */
+    escrowDeadlineSeconds: number;
   };
 }
 
@@ -38,6 +59,7 @@ export default (): AppConfig => ({
   port: parseInt(process.env.PORT ?? '3000', 10),
   appUrl: process.env.APP_URL ?? 'http://localhost:3000',
   frontendUrl: process.env.FRONTEND_URL ?? 'http://localhost:3001',
+  logLevel: process.env.LOG_LEVEL ?? 'debug',
   database: {
     url:
       process.env.DATABASE_URL ??
@@ -60,8 +82,6 @@ export default (): AppConfig => ({
   },
   stellar: {
     network: process.env.STELLAR_NETWORK ?? 'testnet',
-    horizonUrl:
-      process.env.HORIZON_URL ?? 'https://horizon-testnet.stellar.org',
     sorobanRpcUrl:
       process.env.SOROBAN_RPC_URL ?? 'https://soroban-testnet.stellar.org',
     networkPassphrase:
@@ -72,9 +92,14 @@ export default (): AppConfig => ({
       process.env.MAINTENANCE_POOL_CONTRACT_ID ??
       process.env.ESCROW_CONTRACT_ID ??
       '',
-    treasuryAddress: process.env.TREASURY_ADDRESS ?? '',
     treasurySecret: process.env.TREASURY_SECRET ?? '',
-    usdcAssetCode: process.env.USDC_ASSET_CODE ?? 'USDC',
-    usdcAssetIssuer: process.env.USDC_ASSET_ISSUER ?? '',
+    assetContractIds: {
+      USDC: process.env.USDC_TOKEN_CONTRACT_ID ?? '',
+      XLM: process.env.XLM_TOKEN_CONTRACT_ID ?? '',
+    },
+    escrowDeadlineSeconds: parseInt(
+      process.env.ESCROW_DEADLINE_SECONDS ?? '7776000',
+      10,
+    ),
   },
 });

@@ -12,6 +12,7 @@ import {
 import { Repository } from './repository.entity';
 import { Milestone } from './milestone.entity';
 import { Bounty } from './bounty.entity';
+import { IssueState } from '../enums';
 
 @Entity('issues')
 @Index(['repositoryId', 'number'], { unique: true })
@@ -38,8 +39,8 @@ export class Issue {
   @Column({ type: 'text', nullable: true })
   body: string | null;
 
-  @Column({ default: 'open' })
-  state: 'open' | 'closed';
+  @Column({ type: 'enum', enum: IssueState, default: IssueState.OPEN })
+  state: IssueState;
 
   @Column({ type: 'simple-array', default: '' })
   labels: string[];

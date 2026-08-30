@@ -16,6 +16,7 @@ describe('GithubWebhooksService', () => {
   let bountiesService: {
     markInReview: jest.Mock;
     markMergedAndRelease: jest.Mock;
+    markPrClosedWithoutMerge: jest.Mock;
   };
   let syncService: {
     findRepositoryByGithubId: jest.Mock;
@@ -35,6 +36,7 @@ describe('GithubWebhooksService', () => {
     bountiesService = {
       markInReview: jest.fn().mockResolvedValue(undefined),
       markMergedAndRelease: jest.fn().mockResolvedValue(undefined),
+      markPrClosedWithoutMerge: jest.fn().mockResolvedValue(undefined),
     };
     syncService = {
       findRepositoryByGithubId: jest.fn(),
@@ -120,7 +122,13 @@ describe('GithubWebhooksService', () => {
     expect(event.status).toBe(WebhookEventStatus.PROCESSED);
   });
 
-  it('ignores a closed-but-not-merged pull_request event', async () => {
+  it('handles a closed-but-not-merged PR by moving linked bounties back to CLAIMED', async () => {
+    issueRepo.findOne.mockResolvedValue({
+      id: 'issue-1',
+      bounty: { id: 'bounty-1' },
+    });
+    bountyRepo.findOne.mockResolvedValue({ id: 'bounty-1', status: 'in_review' });
+
     const payload = {
       action: 'closed',
       number: 8,
@@ -132,8 +140,99 @@ describe('GithubWebhooksService', () => {
       },
       repository: { id: 1, full_name: 'a/b' },
     };
-    await service.handleEvent('pull_request', 'delivery-3', payload, true);
+    const event = await service.handleEvent('pull_request', 'delivery-3', payload, true);
+    expect(bountiesService.markPrClosedWithoutMerge).toHaveBeenCalledWith('bounty-1');
     expect(bountiesService.markMergedAndRelease).not.toHaveBeenCalled();
+    expect(event.status).toBe(WebhookEventStatus.PROCESSED);
+  });
+
+  it('skips bounty reset for closed-but-not-merged PR when bounty is not IN_REVIEW', async () => {
+    issueRepo.findOne.mockResolvedValue({
+      id: 'issue-1',
+      bounty: { id: 'bounty-1' },
+    });
+    bountyRepo.findOne.mockResolvedValue({ id: 'bounty-1', status: 'claimed' });
+
+    const payload = {
+      action: 'closed',
+      number: 8,
+      pull_request: {
+        html_url: 'x',
+        number: 8,
+        merged: false,
+        body: 'closes #1',
+      },
+      repository: { id: 1, full_name: 'a/b' },
+    };
+    await service.handleEvent('pull_request', 'delivery-3b', payload, true);
+    expect(bountiesService.markPrClosedWithoutMerge).not.toHaveBeenCalled();
+  });
+
+  describe('PR opened / reopened (#168)', () => {
+    it('moves a linked CLAIMED bounty to IN_REVIEW when its PR is opened', async () => {
+      issueRepo.findOne.mockResolvedValue({
+        id: 'issue-1',
+        bounty: { id: 'bounty-1' },
+      });
+      bountyRepo.findOne.mockResolvedValue({
+        id: 'bounty-1',
+        status: 'claimed',
+      });
+
+      const payload = {
+        action: 'opened',
+        number: 5,
+        pull_request: {
+          html_url: 'https://github.com/acme/repo/pull/5',
+          number: 5,
+          merged: false,
+          body: 'Fixes #21',
+        },
+        repository: { id: 999, full_name: 'acme/repo' },
+      };
+
+      const event = await service.handleEvent(
+        'pull_request',
+        'delivery-open',
+        payload,
+        true,
+      );
+
+      expect(bountiesService.markInReview).toHaveBeenCalledWith(
+        'bounty-1',
+        'https://github.com/acme/repo/pull/5',
+        5,
+      );
+      expect(bountiesService.markMergedAndRelease).not.toHaveBeenCalled();
+      expect(event.status).toBe(WebhookEventStatus.PROCESSED);
+    });
+
+    it('leaves a bounty that is not CLAIMED untouched on a reopened PR', async () => {
+      issueRepo.findOne.mockResolvedValue({
+        id: 'issue-1',
+        bounty: { id: 'bounty-1' },
+      });
+      bountyRepo.findOne.mockResolvedValue({
+        id: 'bounty-1',
+        status: 'in_review',
+      });
+
+      const payload = {
+        action: 'reopened',
+        number: 6,
+        pull_request: {
+          html_url: 'x',
+          number: 6,
+          merged: false,
+          body: 'closes #22',
+        },
+        repository: { id: 1, full_name: 'a/b' },
+      };
+
+      await service.handleEvent('pull_request', 'delivery-reopen', payload, true);
+
+      expect(bountiesService.markInReview).not.toHaveBeenCalled();
+    });
   });
 
   describe('per-linked-issue isolation on a merged PR (#47)', () => {
@@ -245,6 +344,65 @@ describe('GithubWebhooksService', () => {
     });
   });
 
+  describe('owner/repo-qualified closing keywords', () => {
+    it('resolves a closing keyword qualified with the webhook\'s own owner/repo', async () => {
+      issueRepo.findOne.mockResolvedValue({
+        id: 'issue-1',
+        bounty: { id: 'bounty-1' },
+      });
+      bountyRepo.findOne.mockResolvedValue({ id: 'bounty-1', status: 'claimed' });
+
+      const payload = {
+        action: 'closed',
+        number: 11,
+        pull_request: {
+          html_url: 'https://github.com/acme/repo/pull/11',
+          number: 11,
+          merged: true,
+          body: 'Fixes acme/repo#42',
+        },
+        repository: { id: 999, full_name: 'acme/repo' },
+      };
+
+      const event = await service.handleEvent(
+        'pull_request',
+        'delivery-same-repo-qualified',
+        payload,
+        true,
+      );
+
+      expect(bountiesService.markMergedAndRelease).toHaveBeenCalledWith(
+        'bounty-1',
+      );
+      expect(event.status).toBe(WebhookEventStatus.PROCESSED);
+    });
+
+    it('does not resolve a closing keyword qualified with a different owner/repo against this repository', async () => {
+      const payload = {
+        action: 'closed',
+        number: 12,
+        pull_request: {
+          html_url: 'https://github.com/acme/repo/pull/12',
+          number: 12,
+          merged: true,
+          body: 'Fixes some-other-org/some-other-repo#45',
+        },
+        repository: { id: 999, full_name: 'acme/repo' },
+      };
+
+      const event = await service.handleEvent(
+        'pull_request',
+        'delivery-cross-repo-qualified',
+        payload,
+        true,
+      );
+
+      expect(issueRepo.findOne).not.toHaveBeenCalled();
+      expect(bountiesService.markMergedAndRelease).not.toHaveBeenCalled();
+      expect(event.status).toBe(WebhookEventStatus.PROCESSED);
+    });
+  });
+
   describe('"issues" webhook events (#24)', () => {
     const payload = {
       action: 'edited',
@@ -310,6 +468,135 @@ describe('GithubWebhooksService', () => {
       );
 
       expect(event.status).toBe(WebhookEventStatus.PROCESSED);
+    });
+  });
+
+  describe('malformed payloads (#28)', () => {
+    it('rejects a pull_request payload missing the pull_request key without throwing', async () => {
+      const event = await service.handleEvent(
+        'pull_request',
+        'delivery-malformed-1',
+        { action: 'closed', number: 1, repository: { id: 1, full_name: 'a/b' } },
+        true,
+      );
+
+      expect(event.status).toBe(WebhookEventStatus.INVALID_PAYLOAD);
+      expect(event.error).toContain('pull_request');
+      expect(issueRepo.findOne).not.toHaveBeenCalled();
+    });
+
+    it('rejects a pull_request payload whose merged flag has the wrong type', async () => {
+      const payload = {
+        action: 'closed',
+        number: 1,
+        pull_request: {
+          html_url: 'x',
+          number: 1,
+          merged: 'yes', // should be a boolean
+          body: 'Fixes #1',
+        },
+        repository: { id: 1, full_name: 'a/b' },
+      };
+
+      const event = await service.handleEvent(
+        'pull_request',
+        'delivery-malformed-2',
+        payload,
+        true,
+      );
+
+      expect(event.status).toBe(WebhookEventStatus.INVALID_PAYLOAD);
+      expect(event.error).toContain('merged');
+      expect(bountiesService.markMergedAndRelease).not.toHaveBeenCalled();
+    });
+
+    it('rejects a pull_request payload missing the repository key', async () => {
+      const payload = {
+        action: 'closed',
+        number: 1,
+        pull_request: {
+          html_url: 'x',
+          number: 1,
+          merged: true,
+          body: 'Fixes #1',
+        },
+      };
+
+      const event = await service.handleEvent(
+        'pull_request',
+        'delivery-malformed-3',
+        payload,
+        true,
+      );
+
+      expect(event.status).toBe(WebhookEventStatus.INVALID_PAYLOAD);
+      expect(event.error).toContain('repository');
+    });
+
+    it.each([
+      ['null', null],
+      ['an array', [1, 2, 3]],
+      ['a string', 'not an object'],
+      ['a number', 42],
+    ])(
+      'rejects a non-object (%s) pull_request payload without throwing',
+      async (_label, badPayload) => {
+        const event = await service.handleEvent(
+          'pull_request',
+          'delivery-malformed-non-object',
+          badPayload as unknown as Record<string, unknown>,
+          true,
+        );
+
+        expect(event.status).toBe(WebhookEventStatus.INVALID_PAYLOAD);
+        expect(event.error).toContain('payload');
+      },
+    );
+
+    it('rejects an issues payload missing the issue key', async () => {
+      const event = await service.handleEvent(
+        'issues',
+        'delivery-malformed-issues',
+        { action: 'edited', repository: { id: 1, full_name: 'a/b' } },
+        true,
+      );
+
+      expect(event.status).toBe(WebhookEventStatus.INVALID_PAYLOAD);
+      expect(event.error).toContain('issue');
+      expect(syncService.upsertIssueRecord).not.toHaveBeenCalled();
+    });
+
+    it('still distinguishes a genuine processing failure as FAILED, not INVALID_PAYLOAD', async () => {
+      issueRepo.findOne.mockResolvedValue({
+        id: 'issue-1',
+        bounty: { id: 'bounty-1' },
+      });
+      bountyRepo.findOne.mockResolvedValue({ id: 'bounty-1', status: 'claimed' });
+      bountiesService.markMergedAndRelease.mockRejectedValue(
+        new Error('escrow release failed'),
+      );
+
+      const payload = {
+        action: 'closed',
+        number: 1,
+        pull_request: {
+          html_url: 'x',
+          number: 1,
+          merged: true,
+          body: 'Fixes #1',
+        },
+        repository: { id: 1, full_name: 'a/b' },
+      };
+
+      const event = await service.handleEvent(
+        'pull_request',
+        'delivery-real-failure',
+        payload,
+        true,
+      );
+
+      expect(event.status).toBe(WebhookEventStatus.FAILED);
+      expect(event.error).toContain('escrow release failed');
     });
   });
 });

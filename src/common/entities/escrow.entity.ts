@@ -3,6 +3,7 @@ import {
   Column,
   CreateDateColumn,
   Entity,
+  Index,
   JoinColumn,
   OneToMany,
   OneToOne,
@@ -39,6 +40,7 @@ import { AssetType, EscrowStatus } from '../enums';
  * in EscrowService.fund (see assertExactlyOneParent).
  */
 @Entity('escrows')
+@Index('IDX_escrow_sponsor_status', ['sponsorId', 'status'])
 @Check(
   'CHK_escrow_at_most_one_parent',
   `(
@@ -95,6 +97,27 @@ export class Escrow {
   /** Deployed Soroban contract ID this escrow instance is held by. */
   @Column({ type: 'varchar', nullable: true })
   contractId: string | null;
+
+  /**
+   * The `u64` key this escrow is stored under in the on-chain escrow
+   * contract — `escrow::fund`'s `issue_id` argument (#158). For bounty
+   * escrows this is the linked GitHub issue's numeric id; for milestone /
+   * maintenance-pool escrows it is derived from the parent UUID until those
+   * move to their own sibling contracts. Stored as a decimal string
+   * because a u64 exceeds JS's safe integer range. Persisted at fund time
+   * so release/refund reference exactly the key fund created.
+   */
+  @Column({ type: 'varchar', nullable: true })
+  onChainId: string | null;
+
+  /**
+   * Unix-timestamp deadline handed to `escrow::fund` (#158); once it passes
+   * the contract opens its permissionless refund path. Mirrored here for
+   * the audit trail and so refunds can be reasoned about without an RPC
+   * round-trip.
+   */
+  @Column({ type: 'timestamptz', nullable: true })
+  deadline: Date | null;
 
   @Column({ type: 'decimal', precision: 20, scale: 7 })
   amount: string;

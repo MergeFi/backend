@@ -2,7 +2,7 @@ import { Injectable, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { Bounty, Team, TeamMemberSplit } from '../common/entities';
-import { CreateTeamDto } from './dto/create-team.dto';
+import { CreateTeamDto, TeamMemberSplitDto } from './dto/create-team.dto';
 import { validateSplitPercentages } from './team-split.util';
 
 @Injectable()
@@ -24,16 +24,17 @@ export class TeamsService {
       }),
     );
 
-    team.splits = await Promise.all(
+    // One batched save (inside TypeORM's implicit transaction) rather than
+    // N independently-committing INSERTs — a mid-way failure now rolls back
+    // to zero splits instead of leaving a partial, invalid set (#150).
+    team.splits = await this.splitRepo.save(
       dto.members.map((m) =>
-        this.splitRepo.save(
-          this.splitRepo.create({
-            teamId: team.id,
-            userId: m.userId,
-            role: m.role ?? null,
-            percentage: m.percentage.toFixed(2),
-          }),
-        ),
+        this.splitRepo.create({
+          teamId: team.id,
+          userId: m.userId,
+          role: m.role ?? null,
+          percentage: m.percentage.toFixed(2),
+        }),
       ),
     );
 
@@ -46,6 +47,32 @@ export class TeamsService {
       relations: { splits: true },
     });
     if (!team) throw new NotFoundException(`Team ${id} not found`);
+    return team;
+  }
+
+  /** Replaces all member splits for a team after validating they sum to 100. */
+  async updateSplits(
+    teamId: string,
+    members: TeamMemberSplitDto[],
+  ): Promise<Team> {
+    const team = await this.findOne(teamId);
+    validateSplitPercentages(members);
+
+    // Remove existing splits
+    await this.splitRepo.delete({ teamId: team.id });
+
+    // Create new splits — one batched save, same rationale as create() (#150).
+    team.splits = await this.splitRepo.save(
+      members.map((m) =>
+        this.splitRepo.create({
+          teamId: team.id,
+          userId: m.userId,
+          role: m.role ?? null,
+          percentage: m.percentage.toFixed(2),
+        }),
+      ),
+    );
+
     return team;
   }
 

@@ -2,6 +2,7 @@ import {
   Column,
   CreateDateColumn,
   Entity,
+  Index,
   JoinColumn,
   ManyToOne,
   OneToOne,
@@ -19,7 +20,12 @@ export class Bounty {
   @PrimaryGeneratedColumn('uuid')
   id: string;
 
-  @OneToOne(() => Issue, (issue) => issue.bounty, { onDelete: 'CASCADE' })
+  // RESTRICT, not CASCADE: a Bounty is a financial record (it may have a
+  // funded Escrow attached — see the `escrow` relation below), so deleting
+  // its parent Issue must never silently delete it too. Matches the
+  // RESTRICT/SET NULL convention used by every other financial relation in
+  // this file and in #27's EscrowFkIntegrityAndSponsorId migration. See #53.
+  @OneToOne(() => Issue, (issue) => issue.bounty, { onDelete: 'RESTRICT' })
   @JoinColumn()
   issue: Issue;
 
@@ -38,6 +44,7 @@ export class Bounty {
   claimedBy: User | null;
 
   @Column({ type: 'varchar', nullable: true })
+  @Index('IDX_bounties_claimedById')
   claimedById: string | null;
 
   /** Set when the bounty payout is split across a team instead of one contributor. */

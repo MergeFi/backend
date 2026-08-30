@@ -3,9 +3,13 @@ import { TypeOrmModule } from '@nestjs/typeorm';
 import { Bounty, Team, TeamMemberSplit } from '../common/entities';
 import { TeamsService } from './teams.service';
 import { TeamsController } from './teams.controller';
+import { AuthModule } from '../auth/auth.module';
 
 @Module({
-  imports: [TypeOrmModule.forFeature([Team, TeamMemberSplit, Bounty])],
+  imports: [
+    TypeOrmModule.forFeature([Team, TeamMemberSplit, Bounty]),
+    AuthModule,
+  ],
   controllers: [TeamsController],
   providers: [TeamsService],
   exports: [TeamsService],

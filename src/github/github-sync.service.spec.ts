@@ -9,6 +9,12 @@ import {
 } from './github-sync.service';
 import { GITHUB_OCTOKIT } from './octokit.provider';
 
+const RATE_LIMIT_HEADERS = {
+  'x-ratelimit-limit': '5000',
+  'x-ratelimit-remaining': '4999',
+  'x-ratelimit-reset': '1234567890',
+};
+
 function issuePage(items: Array<Partial<RawGithubIssue>>) {
   return {
     data: items.map((item) => ({
@@ -20,6 +26,7 @@ function issuePage(items: Array<Partial<RawGithubIssue>>) {
       updated_at: '2026-01-01T00:00:00Z',
       ...item,
     })),
+    headers: RATE_LIMIT_HEADERS,
   };
 }
 
@@ -45,7 +52,6 @@ describe('GithubSyncService', () => {
     pulls: { get: jest.Mock };
     issues: { listForRepo: jest.Mock };
     paginate: { iterator: jest.Mock };
-    rest: { rateLimit: { get: jest.Mock } };
   };
   let repositoryRepo: {
     findOne: jest.Mock;
@@ -69,7 +75,6 @@ describe('GithubSyncService', () => {
       pulls: { get: jest.fn() },
       issues: { listForRepo: jest.fn() },
       paginate: { iterator: jest.fn() },
-      rest: { rateLimit: { get: jest.fn() } },
     };
     repositoryRepo = {
       findOne: jest.fn().mockResolvedValue(null),
@@ -99,14 +104,6 @@ describe('GithubSyncService', () => {
     logSpy = jest.spyOn(Logger.prototype, 'log').mockImplementation();
     warnSpy = jest.spyOn(Logger.prototype, 'warn').mockImplementation();
     errorSpy = jest.spyOn(Logger.prototype, 'error').mockImplementation();
-
-    octokit.rest.rateLimit.get.mockResolvedValue({
-      data: {
-        resources: {
-          core: { limit: 5000, remaining: 4999, reset: 1234567890 },
-        },
-      },
-    });
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
@@ -321,8 +318,8 @@ describe('GithubSyncService', () => {
     });
   });
 
-  describe('syncRepository — rate-limit budget logging (#24)', () => {
-    it('logs rate-limit status before and after a sync', async () => {
+  describe('syncRepository — rate-limit budget logging (#24, #62)', () => {
+    it('logs rate-limit status from response headers before and after a sync', async () => {
       octokit.repos.get.mockResolvedValue({
         data: {
           id: 42,
@@ -332,6 +329,7 @@ describe('GithubSyncService', () => {
           default_branch: 'main',
           private: false,
         },
+        headers: RATE_LIMIT_HEADERS,
       });
       octokit.paginate.iterator.mockReturnValue(
         pagesThenThrow([issuePage([])]),
@@ -344,11 +342,9 @@ describe('GithubSyncService', () => {
         .filter((msg) => msg.includes('rate-limit'));
       expect(rateLimitLogs.some((m) => m.includes('before'))).toBe(true);
       expect(rateLimitLogs.some((m) => m.includes('after'))).toBe(true);
-      expect(octokit.rest.rateLimit.get).toHaveBeenCalledTimes(2);
     });
 
-    it('does not let a rate-limit status lookup failure block the sync itself', async () => {
-      octokit.rest.rateLimit.get.mockRejectedValue(new Error('unreachable'));
+    it('still syncs successfully when response headers lack rate-limit fields', async () => {
       octokit.repos.get.mockResolvedValue({
         data: {
           id: 42,
@@ -358,6 +354,7 @@ describe('GithubSyncService', () => {
           default_branch: 'main',
           private: false,
         },
+        headers: {},
       });
       octokit.paginate.iterator.mockReturnValue(
         pagesThenThrow([issuePage([])]),

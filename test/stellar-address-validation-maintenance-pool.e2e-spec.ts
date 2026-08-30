@@ -10,6 +10,8 @@ import { MaintenancePoolService } from '../src/maintenance-pool/maintenance-pool
 import { IdempotencyKeyStatus } from '../src/common/enums';
 import { IdempotencyKey } from '../src/common/entities/idempotency-key.entity';
 import { IdempotencyInterceptor } from '../src/common/idempotency/idempotency.interceptor';
+import { JwtAuthGuard } from '../src/auth/guards/jwt-auth.guard';
+import { RolesGuard } from '../src/auth/guards/roles.guard';
 
 /** Same in-memory stand-in used across this directory's e2e specs — see
  * escrow-idempotency.e2e-spec.ts's FakeIdempotencyRepo for the rationale
@@ -101,7 +103,12 @@ describe('Stellar address validation at the API boundary — maintenance-pool en
           useValue: new FakeIdempotencyRepo(),
         },
       ],
-    }).compile();
+    })
+      .overrideGuard(JwtAuthGuard)
+      .useValue({ canActivate: () => true })
+      .overrideGuard(RolesGuard)
+      .useValue({ canActivate: () => true })
+      .compile();
 
     app = moduleFixture.createNestApplication();
     app.useGlobalPipes(
@@ -111,7 +118,7 @@ describe('Stellar address validation at the API boundary — maintenance-pool en
   });
 
   afterAll(async () => {
-    await app.close();
+    await app?.close();
   });
 
   beforeEach(() => {
@@ -170,6 +177,7 @@ describe('Stellar address validation at the API boundary — maintenance-pool en
       .post('/maintenance-pools/pool_1/assign-reward')
       .set('Idempotency-Key', randomUUID())
       .send({
+        issueId: randomUUID(),
         amount: '5.0000000',
         recipientAddress: Keypair.random().publicKey(),
       })

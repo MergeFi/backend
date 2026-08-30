@@ -1,13 +1,24 @@
 import { NestFactory } from '@nestjs/core';
 import { ConfigService } from '@nestjs/config';
-import { ValidationPipe } from '@nestjs/common';
+import { ValidationPipe, LoggerService, Logger } from '@nestjs/common';
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
 import helmet from 'helmet';
 import { AppModule } from './app.module';
 import { AppConfig } from './config/configuration';
+import { assertRequiredConfig } from './config/validate-required-config';
 import { GlobalExceptionFilter } from './common/filters/global-exception.filter';
 
-const INSECURE_DEFAULT_JWT_SECRET = 'insecure-dev-secret';
+const LOG_LEVEL_MAP: Record<string, string[]> = {
+  error: ['error'],
+  warn: ['error', 'warn'],
+  log: ['error', 'warn', 'log'],
+  debug: ['error', 'warn', 'log', 'debug'],
+  verbose: ['error', 'warn', 'log', 'debug', 'verbose'],
+};
+
+function resolveLogLevels(level: string): string[] {
+  return LOG_LEVEL_MAP[level.toLowerCase()] ?? LOG_LEVEL_MAP.log;
+}
 
 async function bootstrap() {
   // rawBody: true preserves the raw request buffer on req.rawBody, which the
@@ -17,12 +28,20 @@ async function bootstrap() {
   const configService = app.get(ConfigService<AppConfig, true>);
 
   const env = configService.get('env', { infer: true });
-  const jwtSecret = configService.get('jwt', { infer: true }).secret;
-  if (env === 'production' && jwtSecret === INSECURE_DEFAULT_JWT_SECRET) {
-    throw new Error(
-      'Refusing to start in production with the default JWT_SECRET. Set a real JWT_SECRET env var.',
-    );
-  }
+  const logLevel = configService.get('logLevel', { infer: true });
+  app.useLogger(resolveLogLevels(logLevel));
+
+  // Fail fast and loudly if *any* required-in-production secret is missing —
+  // not just JWT_SECRET. An empty GITHUB_WEBHOOK_SECRET, TREASURY_SECRET,
+  // ESCROW_CONTRACT_ID, GITHUB_CLIENT_SECRET or a default DATABASE_URL all
+  // otherwise let the app boot "healthy" while silently misbehaving (#153).
+  assertRequiredConfig({
+    env,
+    jwt: configService.get('jwt', { infer: true }),
+    github: configService.get('github', { infer: true }),
+    stellar: configService.get('stellar', { infer: true }),
+    database: configService.get('database', { infer: true }),
+  });
 
   app.use(helmet());
   app.enableCors({
@@ -34,25 +53,34 @@ async function bootstrap() {
     new ValidationPipe({
       whitelist: true,
       transform: true,
-      forbidNonWhitelisted: false,
+      forbidNonWhitelisted: true,
     }),
   );
   app.useGlobalFilters(new GlobalExceptionFilter());
 
-  const swaggerConfig = new DocumentBuilder()
-    .setTitle('MergeFi API')
-    .setDescription(
-      'Where Open Source Meets Finance — GitHub bounty escrow orchestration on Stellar/Soroban.',
-    )
-    .setVersion('0.1.0')
-    .addBearerAuth()
-    .build();
-  const document = SwaggerModule.createDocument(app, swaggerConfig);
-  SwaggerModule.setup('api/docs', app, document);
+  // The generated OpenAPI document hands anyone a complete, browsable map of
+  // the API (routes, DTO shapes, validation constraints), so it is never
+  // exposed in production — same spirit as the JWT-secret guard above.
+  if (env !== 'production') {
+    const swaggerConfig = new DocumentBuilder()
+      .setTitle('MergeFi API')
+      .setDescription(
+        'Where Open Source Meets Finance — GitHub bounty escrow orchestration on Stellar/Soroban.',
+      )
+      .setVersion('0.1.0')
+      .addBearerAuth()
+      .build();
+    const document = SwaggerModule.createDocument(app, swaggerConfig);
+    SwaggerModule.setup('api/docs', app, document);
+  }
 
   const port = configService.get('port', { infer: true });
   await app.listen(port);
 
-  console.log(`MergeFi backend listening on port ${port} — docs at /api/docs`);
+  console.log(
+    env === 'production'
+      ? `MergeFi backend listening on port ${port}`
+      : `MergeFi backend listening on port ${port} — docs at /api/docs`,
+  );
 }
 void bootstrap();
