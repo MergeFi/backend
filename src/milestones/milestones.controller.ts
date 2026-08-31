@@ -8,6 +8,7 @@ import {
   UseGuards,
 } from '@nestjs/common';
 import { ApiTags } from '@nestjs/swagger';
+import { Throttle } from '@nestjs/throttler'; // Added Throttle decorator import
 import { IsOptional, IsUUID } from 'class-validator';
 import { MilestonesService } from './milestones.service';
 import { CreateMilestoneDto } from './dto/create-milestone.dto';
@@ -54,6 +55,8 @@ export class MilestonesController {
     return this.milestonesService.create(dto);
   }
 
+  // Public list protection (Requirement: lenient but protected from resource exhaustion)
+  @Throttle({ long: { limit: 1000, ttl: 3600000 } })
   @Get()
   list() {
     return this.milestonesService.list();
@@ -64,6 +67,8 @@ export class MilestonesController {
     return this.milestonesService.findOne(id);
   }
 
+  // High-value mutation protection (Requirement: strict limits against replay/DoS)
+  @Throttle({ short: { limit: 1, ttl: 1000 } })
   @Idempotent('milestone.fund')
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles(UserRole.SPONSOR, UserRole.MAINTAINER)

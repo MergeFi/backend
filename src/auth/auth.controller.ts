@@ -11,6 +11,7 @@ import {
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { ApiExcludeEndpoint, ApiTags } from '@nestjs/swagger';
+import { Throttle } from '@nestjs/throttler'; // Added Throttle decorator import
 import type { Request, Response } from 'express';
 import { AuthService } from './auth.service';
 import { GithubAuthGuard } from './guards/github-auth.guard';
@@ -26,6 +27,8 @@ export class AuthController {
     private readonly configService: ConfigService<AppConfig, true>,
   ) {}
 
+  // OAuth Initiation protection against brute force session state initialization
+  @Throttle({ short: { limit: 3, ttl: 1000 } })
   @Get('github')
   @UseGuards(GithubAuthGuard)
   @ApiExcludeEndpoint()
@@ -33,6 +36,8 @@ export class AuthController {
     // Redirect handled by passport-github2; this handler body never runs.
   }
 
+  // OAuth Completion protection against brute force state parameter hijacking (max 20 req/min)
+  @Throttle({ medium: { limit: 20, ttl: 60000 } })
   @Get('github/callback')
   @UseGuards(GithubAuthGuard)
   @ApiExcludeEndpoint()
