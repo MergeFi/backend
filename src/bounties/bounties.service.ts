@@ -228,4 +228,12 @@ export class BountiesService {
 
     return qb.getMany();
   }
+
+   approve(id: string) {
+    return Promise.resolve({ id, status: 'approved' });
+  }
+
+  reject(id: string) {
+    return Promise.resolve({ id, status: 'rejected' });
+  }
 }

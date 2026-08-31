@@ -12,6 +12,9 @@ import { CreateMilestoneDto } from './dto/create-milestone.dto';
 
 @Injectable()
 export class MilestonesService {
+  allocateBudget(id: string) {
+    throw new Error('Method not implemented.');
+  }
   constructor(
     @InjectRepository(Milestone)
     private readonly milestoneRepo: Repository<Milestone>,

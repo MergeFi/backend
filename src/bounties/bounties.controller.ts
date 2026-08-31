@@ -86,6 +86,22 @@ export class BountiesController {
     return this.bountiesService.claim(id, dto.contributorId);
   }
 
+  @Idempotent('bounty.approve')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(UserRole.MAINTAINER)
+  @Post(':id/approve')
+  approve(@Param('id', new ParseUUIDPipe()) id: string) {
+    return this.bountiesService.approve(id);
+  }
+
+  @Idempotent('bounty.reject')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(UserRole.MAINTAINER)
+  @Post(':id/reject')
+  reject(@Param('id', new ParseUUIDPipe()) id: string) {
+    return this.bountiesService.reject(id);
+  }
+
   @Idempotent('bounty.refund')
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles(UserRole.SPONSOR, UserRole.MAINTAINER)

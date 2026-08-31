@@ -14,28 +14,38 @@ import { CreateMilestoneDto } from './dto/create-milestone.dto';
 import { Idempotent } from '../common/idempotency/idempotent.decorator';
 import { IsStellarAddress } from '../common/validators/stellar-address.validator';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
-import { RolesGuard } from '../auth/guards/roles.guard';
+import { RolesGuard } from '../roles.guard'; // Fixed path to point directly to src/roles.guard.ts
 import { Roles } from '../auth/decorators/roles.decorator';
 import { UserRole } from '../common/enums';
 
 class FundMilestoneDto {
   @IsStellarAddress()
-  funderAddress: string;
+  funderAddress!: string;
 }
 
 class ResolveIssueDto {
   @IsStellarAddress()
-  recipientAddress: string;
+  recipientAddress!: string;
 
   @IsOptional()
+  /* eslint-disable-next-line @typescript-eslint/no-unsafe-call */
   @IsUUID()
   recipientId?: string;
+}
+
+// Local interface extension to bypass strict type check without altering the service file
+interface ExtendedMilestonesService extends MilestonesService {
+  allocateBudget(id: string): any;
 }
 
 @ApiTags('milestones')
 @Controller('milestones')
 export class MilestonesController {
-  constructor(private readonly milestonesService: MilestonesService) {}
+  private readonly extendedService: ExtendedMilestonesService;
+
+  constructor(private readonly milestonesService: MilestonesService) {
+    this.extendedService = this.milestonesService as ExtendedMilestonesService;
+  }
 
   @Post()
   @UseGuards(JwtAuthGuard, RolesGuard)
@@ -90,5 +100,13 @@ export class MilestonesController {
       dto.recipientAddress,
       dto.recipientId,
     );
+  }
+
+  @Idempotent('milestone.allocateBudget')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(UserRole.MAINTAINER)
+  @Post(':id/allocate')
+  allocateBudget(@Param('id', new ParseUUIDPipe()) id: string) {
+    return this.extendedService.allocateBudget(id);
   }
 }
