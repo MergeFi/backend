@@ -1,58 +1,40 @@
 import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
-import { Bounty, Issue, ReputationSnapshot } from '../common/entities';
-import { BountyStatus } from '../common/enums';
-import { computeContributorStats } from '../common/stats/contributor-stats.util';
+import { Bounty, ReputationSnapshot } from '../common/entities';
+import { queryContributorCoreStats } from '../common/stats/contributor-stats.sql';
+
+export const REPUTATION_HISTORY_DEFAULT_LIMIT = 50;
+export const REPUTATION_HISTORY_MAX_LIMIT = 100;
+
+export interface ReputationHistoryOptions {
+  limit?: number;
+  offset?: number;
+}
 
 @Injectable()
 export class ReputationService {
   constructor(
     @InjectRepository(Bounty) private readonly bountyRepo: Repository<Bounty>,
-    @InjectRepository(Issue) private readonly issueRepo: Repository<Issue>,
     @InjectRepository(ReputationSnapshot)
     private readonly snapshotRepo: Repository<ReputationSnapshot>,
   ) {}
 
   /**
-   * Recomputes a contributor's reputation stats from their historical bounty
-   * activity and appends a new snapshot row.
+   * Recomputes a contributor's reputation stats from SQL aggregates of their
+   * bounty activity and appends a new snapshot row.
    */
   async computeAndSave(userId: string): Promise<ReputationSnapshot> {
-    const claimedBounties = await this.bountyRepo.find({
-      where: { claimedById: userId },
-    });
-    const issues = claimedBounties.length
-      ? await this.issueRepo.find({
-          where: claimedBounties.map((b) => ({ id: b.issueId })),
-          relations: { repository: true },
-        })
-      : [];
-
-    const stats = computeContributorStats(claimedBounties, issues);
-
-    const merged = claimedBounties.filter((b) =>
-      [BountyStatus.MERGED, BountyStatus.PAID].includes(b.status),
-    );
-    const paid = claimedBounties.filter((b) => b.status === BountyStatus.PAID);
-    const totalEarnings = paid.reduce((sum, b) => sum + Number(b.amount), 0);
-
-    const onTime = merged.filter(
-      (b) => !b.deadline || (b.mergedAt && b.mergedAt <= b.deadline),
-    );
-    const onTimeDeliveryPercentage =
-      merged.length > 0 ? (onTime.length / merged.length) * 100 : 0;
+    const stats = await queryContributorCoreStats(this.bountyRepo, userId);
 
     const snapshot = this.snapshotRepo.create({
       userId,
-      totalEarnings: totalEarnings.toFixed(7),
+      totalEarnings: stats.lifetimeEarnings.toFixed(7),
       mergedPrCount: stats.mergedCount,
-      openBountiesClaimed: claimedBounties.filter((b) =>
-        [BountyStatus.CLAIMED, BountyStatus.IN_REVIEW].includes(b.status),
-      ).length,
+      openBountiesClaimed: stats.openBountiesClaimed,
       completionRate: stats.completionRate.toFixed(2),
       avgReviewTimeHours: stats.avgReviewTimeHours.toFixed(2),
-      onTimeDeliveryPercentage: onTimeDeliveryPercentage.toFixed(2),
+      onTimeDeliveryPercentage: stats.onTimeDeliveryPercentage.toFixed(2),
       languages: stats.languages,
       orgsContributedTo: stats.orgs,
     });
@@ -66,10 +48,20 @@ export class ReputationService {
     });
   }
 
-  async history(userId: string): Promise<ReputationSnapshot[]> {
+  async history(
+    userId: string,
+    options: ReputationHistoryOptions = {},
+  ): Promise<ReputationSnapshot[]> {
+    const limit = Math.min(
+      Math.max(options.limit ?? REPUTATION_HISTORY_DEFAULT_LIMIT, 1),
+      REPUTATION_HISTORY_MAX_LIMIT,
+    );
+    const offset = Math.max(options.offset ?? 0, 0);
     return this.snapshotRepo.find({
       where: { userId },
       order: { computedAt: 'ASC' },
+      take: limit,
+      skip: offset,
     });
   }
 }
