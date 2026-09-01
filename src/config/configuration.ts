@@ -22,6 +22,13 @@ export interface AppConfig {
     apiToken: string;
     webhookSecret: string;
   };
+  analytics: {
+    /**
+     * In-process TTL for GET /analytics/platform. Also invalidated on
+     * bounty create/pay and first-time repository insert.
+     */
+    platformSummaryTtlMs: number;
+  };
   stellar: {
     network: string;
     sorobanRpcUrl: string;
@@ -79,6 +86,12 @@ export default (): AppConfig => ({
     webhookSecret: process.env.GITHUB_WEBHOOK_SECRET ?? '',
   },
 
+  analytics: {
+    platformSummaryTtlMs: parseInt(
+      process.env.ANALYTICS_PLATFORM_SUMMARY_TTL_MS ?? '60000',
+      10,
+    ),
+  },
   stellar: {
     network: process.env.STELLAR_NETWORK ?? 'testnet',
     sorobanRpcUrl:

@@ -1,6 +1,7 @@
 import { Logger } from '@nestjs/common';
 import { Test, TestingModule } from '@nestjs/testing';
 import { getRepositoryToken } from '@nestjs/typeorm';
+import { EventEmitter2 } from '@nestjs/event-emitter';
 import { Issue, Repository } from '../common/entities';
 import {
   GithubSyncInterruptedError,
@@ -111,6 +112,7 @@ describe('GithubSyncService', () => {
         { provide: GITHUB_OCTOKIT, useValue: octokit },
         { provide: getRepositoryToken(Repository), useValue: repositoryRepo },
         { provide: getRepositoryToken(Issue), useValue: issueRepo },
+        { provide: EventEmitter2, useValue: { emit: jest.fn() } },
       ],
     }).compile();
 

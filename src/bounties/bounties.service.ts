@@ -1,8 +1,10 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { Injectable, NotFoundException, Optional } from '@nestjs/common';
+import { EventEmitter2 } from '@nestjs/event-emitter';
 import { InjectRepository } from '@nestjs/typeorm';
 import { In, Repository } from 'typeorm';
 import { Bounty, Team, User } from '../common/entities';
 import { AssetType, BountyDifficulty, BountyStatus } from '../common/enums';
+import { ANALYTICS_PLATFORM_INVALIDATE_EVENT } from '../analytics/analytics.events';
 import { assertTransition } from './bounty-state-machine';
 import { EscrowService } from '../escrow/escrow.service';
 import { CreateBountyDto } from './dto/create-bounty.dto';
@@ -22,6 +24,7 @@ export class BountiesService {
     @InjectRepository(User) private readonly userRepo: Repository<User>,
     @InjectRepository(Team) private readonly teamRepo: Repository<Team>,
     private readonly escrowService: EscrowService,
+    @Optional() private readonly eventEmitter?: EventEmitter2,
   ) {}
 
   async create(dto: CreateBountyDto): Promise<Bounty> {
@@ -34,7 +37,9 @@ export class BountiesService {
       deadline: dto.deadline ? new Date(dto.deadline) : null,
       status: BountyStatus.OPEN,
     });
-    return this.bountyRepo.save(bounty);
+    const saved = await this.bountyRepo.save(bounty);
+    this.eventEmitter?.emit(ANALYTICS_PLATFORM_INVALIDATE_EVENT);
+    return saved;
   }
 
   async findOne(id: string): Promise<Bounty> {
@@ -159,7 +164,9 @@ export class BountiesService {
     assertTransition(bounty.status, BountyStatus.PAID);
     bounty.status = BountyStatus.PAID;
     bounty.paidAt = new Date();
-    return this.bountyRepo.save(bounty);
+    const paid = await this.bountyRepo.save(bounty);
+    this.eventEmitter?.emit(ANALYTICS_PLATFORM_INVALIDATE_EVENT);
+    return paid;
   }
 
   /** Sponsor (or admin/expiry job) reclaims escrowed funds. */

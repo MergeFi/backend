@@ -1,13 +1,19 @@
 import { Injectable } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
+import { OnEvent } from '@nestjs/event-emitter';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
-import {
-  Bounty,
-  Issue,
-  Repository as RepositoryEntity,
-} from '../common/entities';
+import { Bounty, Repository as RepositoryEntity } from '../common/entities';
 import { BountyStatus } from '../common/enums';
-import { computeContributorStats } from '../common/stats/contributor-stats.util';
+import { AppConfig } from '../config/configuration';
+import {
+  heatmapRange,
+  queryContributorCoreStats,
+  queryPayoutHeatmap,
+  queryTopClients,
+} from '../common/stats/contributor-stats.sql';
+import { ANALYTICS_PLATFORM_INVALIDATE_EVENT } from './analytics.events';
+import { TtlCache } from './ttl-cache';
 
 export interface ContributorAnalytics {
   lifetimeEarnings: number;
@@ -20,60 +26,48 @@ export interface ContributorAnalytics {
   topClients: Array<{ sponsorId: string; totalPaid: number }>;
 }
 
+export interface ContributorAnalyticsQuery {
+  from?: string;
+  to?: string;
+}
+
+export interface PlatformSummary {
+  totalBounties: number;
+  totalPaidOut: number;
+  totalRepos: number;
+}
+
 @Injectable()
 export class AnalyticsService {
+  private readonly platformCache: TtlCache<PlatformSummary>;
+
   constructor(
     @InjectRepository(Bounty) private readonly bountyRepo: Repository<Bounty>,
-    @InjectRepository(Issue) private readonly issueRepo: Repository<Issue>,
     @InjectRepository(RepositoryEntity)
     private readonly repositoryRepo: Repository<RepositoryEntity>,
-  ) {}
+    configService: ConfigService<AppConfig, true>,
+  ) {
+    const ttlMs = configService.get('analytics', {
+      infer: true,
+    }).platformSummaryTtlMs;
+    this.platformCache = new TtlCache<PlatformSummary>(ttlMs);
+  }
 
-  async forContributor(userId: string): Promise<ContributorAnalytics> {
-    const claimed = await this.bountyRepo.find({
-      where: { claimedById: userId },
-    });
-    const paid = claimed.filter((b) => b.status === BountyStatus.PAID);
-
-    const issues = claimed.length
-      ? await this.issueRepo.find({
-          where: claimed.map((b) => ({ id: b.issueId })),
-          relations: { repository: true },
-        })
-      : [];
-
-    const stats = computeContributorStats(claimed, issues);
-
-    const lifetimeEarnings = paid.reduce((sum, b) => sum + Number(b.amount), 0);
-    const repoIds = new Set(issues.map((i) => i.repositoryId));
-
-    const heatmapMap = new Map<string, number>();
-    for (const bounty of paid) {
-      if (!bounty.paidAt) continue;
-      const day = bounty.paidAt.toISOString().slice(0, 10);
-      heatmapMap.set(day, (heatmapMap.get(day) ?? 0) + 1);
-    }
-    const heatmap = [...heatmapMap.entries()]
-      .sort(([a], [b]) => a.localeCompare(b))
-      .map(([date, count]) => ({ date, count }));
-
-    const clientTotals = new Map<string, number>();
-    for (const bounty of paid) {
-      if (!bounty.sponsorId) continue;
-      clientTotals.set(
-        bounty.sponsorId,
-        (clientTotals.get(bounty.sponsorId) ?? 0) + Number(bounty.amount),
-      );
-    }
-    const topClients = [...clientTotals.entries()]
-      .map(([sponsorId, totalPaid]) => ({ sponsorId, totalPaid }))
-      .sort((a, b) => b.totalPaid - a.totalPaid)
-      .slice(0, 10);
+  async forContributor(
+    userId: string,
+    query: ContributorAnalyticsQuery = {},
+  ): Promise<ContributorAnalytics> {
+    const range = heatmapRange(query.from, query.to);
+    const [stats, heatmap, topClients] = await Promise.all([
+      queryContributorCoreStats(this.bountyRepo, userId),
+      queryPayoutHeatmap(this.bountyRepo, userId, range),
+      queryTopClients(this.bountyRepo, userId),
+    ]);
 
     return {
-      lifetimeEarnings,
-      repoCount: repoIds.size,
-      orgCount: stats.orgs.length,
+      lifetimeEarnings: stats.lifetimeEarnings,
+      repoCount: stats.repoCount,
+      orgCount: stats.orgCount,
       mergeRate: stats.completionRate,
       avgReviewTimeHours: stats.avgReviewTimeHours,
       languages: stats.languages,
@@ -82,8 +76,21 @@ export class AnalyticsService {
     };
   }
 
-  /** Platform-wide stats for the homepage / admin view. */
-  async platformSummary() {
+  /**
+   * Platform-wide stats for the homepage. Cached in-process with a TTL
+   * (ANALYTICS_PLATFORM_SUMMARY_TTL_MS, default 60s) and busted on bounty
+   * create/pay and new repository insert. Concurrent misses share one query.
+   */
+  async platformSummary(): Promise<PlatformSummary> {
+    return this.platformCache.getOrLoad(() => this.loadPlatformSummary());
+  }
+
+  @OnEvent(ANALYTICS_PLATFORM_INVALIDATE_EVENT)
+  invalidatePlatformSummary(): void {
+    this.platformCache.invalidate();
+  }
+
+  private async loadPlatformSummary(): Promise<PlatformSummary> {
     const [totalBounties, totalPaidRaw, totalRepos] = await Promise.all([
       this.bountyRepo.count(),
       this.bountyRepo

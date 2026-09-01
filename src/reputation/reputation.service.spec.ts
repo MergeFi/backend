@@ -1,23 +1,25 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { getRepositoryToken } from '@nestjs/typeorm';
 import { ReputationService } from './reputation.service';
-import { Bounty, Issue, ReputationSnapshot } from '../common/entities';
-import { BountyStatus } from '../common/enums';
-import * as statsUtil from '../common/stats/contributor-stats.util';
+import { Bounty, ReputationSnapshot } from '../common/entities';
+import * as sql from '../common/stats/contributor-stats.sql';
+
+jest.mock('../common/stats/contributor-stats.sql', () => ({
+  queryContributorCoreStats: jest.fn(),
+}));
+
+const mockedSql = sql as jest.Mocked<typeof sql>;
 
 describe('ReputationService', () => {
   let service: ReputationService;
 
   const mockBountyRepo = {
     find: jest.fn(),
-  };
-
-  const mockIssueRepo = {
-    find: jest.fn(),
+    createQueryBuilder: jest.fn(),
   };
 
   const mockSnapshotRepo = {
-    create: jest.fn((dto) => dto),
+    create: jest.fn((dto: Record<string, unknown>) => dto),
     save: jest.fn((entity) => Promise.resolve({ id: 'snap-1', ...entity })),
     findOne: jest.fn(),
     find: jest.fn(),
@@ -28,8 +30,10 @@ describe('ReputationService', () => {
       providers: [
         ReputationService,
         { provide: getRepositoryToken(Bounty), useValue: mockBountyRepo },
-        { provide: getRepositoryToken(Issue), useValue: mockIssueRepo },
-        { provide: getRepositoryToken(ReputationSnapshot), useValue: mockSnapshotRepo },
+        {
+          provide: getRepositoryToken(ReputationSnapshot),
+          useValue: mockSnapshotRepo,
+        },
       ],
     }).compile();
 
@@ -41,11 +45,17 @@ describe('ReputationService', () => {
   });
 
   it('should handle empty input correctly (zero bounties)', async () => {
-    mockBountyRepo.find.mockResolvedValue([]);
-    jest.spyOn(statsUtil, 'computeContributorStats').mockReturnValue({
+    mockedSql.queryContributorCoreStats.mockResolvedValue({
+      claimedCount: 0,
       mergedCount: 0,
       completionRate: 0,
       avgReviewTimeHours: 0,
+      lifetimeEarnings: 0,
+      openBountiesClaimed: 0,
+      onTimeCount: 0,
+      onTimeDeliveryPercentage: 0,
+      repoCount: 0,
+      orgCount: 0,
       languages: {},
       orgs: [],
     });
@@ -56,27 +66,42 @@ describe('ReputationService', () => {
     expect(result.openBountiesClaimed).toBe(0);
     expect(result.completionRate).toBe('0.00');
     expect(result.onTimeDeliveryPercentage).toBe('0.00');
+    expect(mockBountyRepo.find).not.toHaveBeenCalled();
   });
 
   it('should compute completion-rate and on-time-delivery math correctly', async () => {
-    mockBountyRepo.find.mockResolvedValue([
-      { status: BountyStatus.PAID, amount: '100', deadline: new Date('2023-01-02'), mergedAt: new Date('2023-01-01') },
-      { status: BountyStatus.MERGED, amount: '0', deadline: new Date('2023-01-01'), mergedAt: new Date('2023-01-02') }, // Late
-      { status: BountyStatus.CLAIMED, amount: '50' },
-    ]);
-    mockIssueRepo.find.mockResolvedValue([]);
-    jest.spyOn(statsUtil, 'computeContributorStats').mockReturnValue({
+    mockedSql.queryContributorCoreStats.mockResolvedValue({
+      claimedCount: 3,
       mergedCount: 2,
-      completionRate: 66.67,
+      completionRate: (2 / 3) * 100,
       avgReviewTimeHours: 2.5,
+      lifetimeEarnings: 100,
+      openBountiesClaimed: 1,
+      onTimeCount: 1,
+      onTimeDeliveryPercentage: 50,
+      repoCount: 0,
+      orgCount: 0,
       languages: {},
       orgs: [],
     });
 
     const result = await service.computeAndSave('user-1');
-    expect(result.totalEarnings).toBe('100.0000000'); // only PAID
-    expect(result.openBountiesClaimed).toBe(1); // CLAIMED
+    expect(result.totalEarnings).toBe('100.0000000');
+    expect(result.openBountiesClaimed).toBe(1);
     expect(result.completionRate).toBe('66.67');
-    expect(result.onTimeDeliveryPercentage).toBe('50.00'); // 1 on-time out of 2 merged
+    expect(result.onTimeDeliveryPercentage).toBe('50.00');
+  });
+
+  it('paginates history with a default/max limit', async () => {
+    mockSnapshotRepo.find.mockResolvedValue([]);
+    await service.history('user-1');
+    expect(mockSnapshotRepo.find).toHaveBeenCalledWith(
+      expect.objectContaining({ take: 50, skip: 0 }),
+    );
+
+    await service.history('user-1', { limit: 1000, offset: 10 });
+    expect(mockSnapshotRepo.find).toHaveBeenCalledWith(
+      expect.objectContaining({ take: 100, skip: 10 }),
+    );
   });
 });
