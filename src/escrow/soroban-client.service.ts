@@ -158,7 +158,7 @@ export class SorobanClientService {
     const contract = this.getContract(opts.contractId);
     const account = await this.server.getAccount(keypair.publicKey());
 
-    const scArgs = args.map((arg) => this.toScVal(arg));
+const scArgs = args.map((arg) => this.toScVal(arg)) as any[];
 
     const tx = new TransactionBuilder(account, {
       fee: BASE_FEE,

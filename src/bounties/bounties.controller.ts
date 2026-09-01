@@ -10,6 +10,7 @@ import {
   UseGuards,
 } from '@nestjs/common';
 import { ApiTags } from '@nestjs/swagger';
+import { Throttle } from '@nestjs/throttler'; // Import the Throttle decorator
 import { BountiesService } from './bounties.service';
 import { CreateBountyDto } from './dto/create-bounty.dto';
 import { ClaimBountyDto } from './dto/claim-bounty.dto';
@@ -39,6 +40,8 @@ export class BountiesController {
     return this.bountiesService.create(dto);
   }
 
+  // Public list: Lenient but protected against resource exhaustion (max 1000/hr)
+  @Throttle({ long: { limit: 1000, ttl: 3600000 } })
   @Get()
   list(
     @Query('status', new ParseEnumPipe(BountyStatus, { optional: true }))
@@ -64,6 +67,8 @@ export class BountiesController {
     return this.bountiesService.findOne(id);
   }
 
+  // High-value mutation: Strict rate limiting (max 1 req/sec)
+  @Throttle({ short: { limit: 1, ttl: 1000 } })
   @Idempotent('bounty.fund')
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles(UserRole.SPONSOR, UserRole.MAINTAINER)
@@ -75,6 +80,8 @@ export class BountiesController {
     return this.bountiesService.fund(id, dto.funderAddress);
   }
 
+  // High-value mutation: Strict rate limiting (max 1 req/sec)
+  @Throttle({ short: { limit: 1, ttl: 1000 } })
   @Idempotent('bounty.claim')
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles(UserRole.CONTRIBUTOR)
@@ -86,6 +93,24 @@ export class BountiesController {
     return this.bountiesService.claim(id, dto.contributorId);
   }
 
+  @Idempotent('bounty.approve')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(UserRole.MAINTAINER)
+  @Post(':id/approve')
+  approve(@Param('id', new ParseUUIDPipe()) id: string) {
+    return this.bountiesService.approve(id);
+  }
+
+  @Idempotent('bounty.reject')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(UserRole.MAINTAINER)
+  @Post(':id/reject')
+  reject(@Param('id', new ParseUUIDPipe()) id: string) {
+    return this.bountiesService.reject(id);
+  }
+
+  // High-value mutation: Strict rate limiting (max 1 req/sec)
+  @Throttle({ short: { limit: 1, ttl: 1000 } })
   @Idempotent('bounty.refund')
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles(UserRole.SPONSOR, UserRole.MAINTAINER)

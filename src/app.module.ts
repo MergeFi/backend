@@ -22,6 +22,9 @@ import { ReputationModule } from './reputation/reputation.module';
 import { AnalyticsModule } from './analytics/analytics.module';
 import { IdempotencyModule } from './common/idempotency/idempotency.module';
 
+// Import the new RolesGuard we created
+import { RolesGuard } from './roles.guard';
+
 @Module({
   imports: [
     ConfigModule.forRoot({ isGlobal: true, load: [configuration] }),
@@ -55,6 +58,20 @@ import { IdempotencyModule } from './common/idempotency/idempotency.module';
     IdempotencyModule,
   ],
   controllers: [AppController],
-  providers: [AppService, { provide: APP_GUARD, useClass: ThrottlerGuard }],
+  providers: [
+    AppService,
+    // This executes your rate-limiting security guard
+    {
+      provide: APP_GUARD,
+      useClass: ThrottlerGuard,
+    },
+    // This registers RolesGuard globally to secure all role permissions across the entire app
+    // This registers RolesGuard globally to secure all role permissions
+
+    {
+      provide: APP_GUARD,
+      useClass: RolesGuard,
+    },
+  ],
 })
 export class AppModule {}

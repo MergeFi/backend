@@ -8,7 +8,9 @@ import { AppConfig } from './config/configuration';
 import { assertRequiredConfig } from './config/validate-required-config';
 import { GlobalExceptionFilter } from './common/filters/global-exception.filter';
 
-const LOG_LEVEL_MAP: Record<string, string[]> = {
+import { LogLevel } from '@nestjs/common';
+
+const LOG_LEVEL_MAP: Record<string, LogLevel[]> = {
   error: ['error'],
   warn: ['error', 'warn'],
   log: ['error', 'warn', 'log'],
@@ -16,9 +18,10 @@ const LOG_LEVEL_MAP: Record<string, string[]> = {
   verbose: ['error', 'warn', 'log', 'debug', 'verbose'],
 };
 
-function resolveLogLevels(level: string): string[] {
+function resolveLogLevels(level: string): LogLevel[] {
   return LOG_LEVEL_MAP[level.toLowerCase()] ?? LOG_LEVEL_MAP.log;
 }
+
 
 async function bootstrap() {
   // rawBody: true preserves the raw request buffer on req.rawBody, which the
@@ -29,7 +32,7 @@ async function bootstrap() {
 
   const env = configService.get('env', { infer: true });
   const logLevel = configService.get('logLevel', { infer: true });
-  app.useLogger(resolveLogLevels(logLevel));
+app.useLogger(resolveLogLevels(logLevel || 'log'));
 
   // Fail fast and loudly if *any* required-in-production secret is missing —
   // not just JWT_SECRET. An empty GITHUB_WEBHOOK_SECRET, TREASURY_SECRET,

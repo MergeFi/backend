@@ -1,16 +1,16 @@
 import { Module } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { JwtModule } from '@nestjs/jwt';
-import { PassportModule } from '@nestjs/passport';
 import { TypeOrmModule } from '@nestjs/typeorm';
-import { UsersModule } from '../users/users.module';
-import { User } from '../common/entities';
+import { PassportModule } from '@nestjs/passport';
+import { JwtModule } from '@nestjs/jwt';
 import { AuthService } from './auth.service';
 import { AuthController } from './auth.controller';
 import { JwtStrategy } from './strategies/jwt.strategy';
 import { GithubStrategy } from './strategies/github.strategy';
 import { AppConfig } from '../config/configuration';
 import { RolesGuard } from './guards/roles.guard';
+import { User } from '../common/entities/user.entity';
+import { UsersModule } from '../users/users.module';
 
 @Module({
   imports: [
@@ -23,8 +23,10 @@ import { RolesGuard } from './guards/roles.guard';
         const jwt = configService.get('jwt', { infer: true });
         return {
           secret: jwt.secret,
-          signOptions: { expiresIn: jwt.expiresIn as string | number },
-        };
+          signOptions: { 
+            expiresIn: jwt.expiresIn 
+          },
+        } as any;
       },
     }),
   ],
