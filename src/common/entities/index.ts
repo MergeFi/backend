@@ -12,3 +12,4 @@ export * from './maintenance-pool.entity';
 export * from './reputation-snapshot.entity';
 export * from './webhook-event.entity';
 export * from './idempotency-key.entity';
+export * from './github-account.entity';

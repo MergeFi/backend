@@ -14,18 +14,16 @@ import {
   isValidMoneyAmount,
   stroopsToAmount,
 } from '../common/validators/money.validator';
-import {
-  ContractInvocationResult,
-  SorobanClientService,
+import { 
+  ContractInvocationResult, 
+  SorobanClientService 
 } from './soroban-client.service';
-import {
+import { 
   apportionBasisPoints,
   splitStroops,
-  TOTAL_BASIS_POINTS,
+  TOTAL_BASIS_POINTS
 } from './split-math.util';
 import { validatePercentageSplits } from '../common/validators/split-percentage.validator';
-import { SorobanClientService } from './soroban-client.service';
-import { apportionBasisPoints, splitStroops } from './split-math.util';
 
 export interface FundEscrowInput {
   amount: string;
@@ -270,29 +268,17 @@ export class EscrowService {
 
     await this.assertRecipientsMatchUsers([{ recipientAddress, recipientId }]);
 
-    const result = await this.invokeOnLockedEscrow(
+      const result = await this.invokeOnLockedEscrow(
       escrow,
       'releasePartial',
       () =>
-        this.soroban.invoke(
-          'release',
-          [
-            this.onChainKeyFor(escrow),
-            recipientAddress,
-            this.toStroops(amount),
-          ],
-          this.contractOpts(escrow),
-        ),
-        // Distinct on-chain method name from release()'s two-arg `release`
-        // (#159): a partial release carries an amount and is a different
-        // contract entrypoint, not an overload — so a contract implementer
-        // isn't left guessing which arg shape `release` is authoritative.
         this.soroban.invoke('release_partial', [
           escrow.milestoneId ?? escrow.bountyId ?? escrow.id,
           recipientAddress,
           this.toStroops(amount),
-        ]),
+        ], this.contractOpts(escrow)),
     );
+
 
     // The Payment insert and the (conditional) escrow-status flip share one
     // transaction so the two can't diverge — same guarantee as release()
@@ -356,11 +342,7 @@ export class EscrowService {
     const result = await this.invokeOnLockedEscrow(escrow, 'poolWithdraw', () =>
       this.soroban.invoke(
         'withdraw',
-        [
-          this.onChainKeyFor(escrow),
-          recipientAddress,
-          this.toStroops(amount),
-        ],
+        [this.onChainKeyFor(escrow), recipientAddress, this.toStroops(amount)],
         this.contractOpts(escrow),
       ),
     );
@@ -460,10 +442,10 @@ export class EscrowService {
    * rather than only a server log line (#89). The status deliberately stays
    * LOCKED — the funds are still held and the operation can be retried.
    */
-  private async invokeOnLockedEscrow<T>(
-    escrow: Escrow,
+   private async invokeOnLockedEscrow<T = any>(
+    escrow: any,
     operation: string,
-    call: () => Promise<T>,
+    call: () => Promise<T>
   ): Promise<T> {
     try {
       return await call();
@@ -480,6 +462,7 @@ export class EscrowService {
       throw err;
     }
   }
+
 
   /**
    * The escrow contract's single payout entrypoint (#161):

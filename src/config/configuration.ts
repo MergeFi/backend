@@ -72,14 +72,13 @@ export default (): AppConfig => ({
     expiresIn: process.env.JWT_EXPIRES_IN ?? '7d',
   },
   github: {
-    clientId: process.env.GITHUB_CLIENT_ID ?? '',
-    clientSecret: process.env.GITHUB_CLIENT_SECRET ?? '',
-    oauthCallbackUrl:
-      process.env.GITHUB_OAUTH_CALLBACK_URL ??
-      'http://localhost:3000/api/auth/github/callback',
+    clientId: process.env.GITHUB_CLIENT_ID || 'mock_client_id_12345',
+    clientSecret: process.env.GITHUB_CLIENT_SECRET || 'mock_secret_key_67890',
+    oauthCallbackUrl: process.env.GITHUB_OAUTH_CALLBACK_URL || 'http://localhost:3000/api/auth/github/callback',
     apiToken: process.env.GITHUB_API_TOKEN ?? '',
     webhookSecret: process.env.GITHUB_WEBHOOK_SECRET ?? '',
   },
+
   stellar: {
     network: process.env.STELLAR_NETWORK ?? 'testnet',
     sorobanRpcUrl:

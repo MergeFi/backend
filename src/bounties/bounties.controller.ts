@@ -116,6 +116,6 @@ export class BountiesController {
   @Roles(UserRole.SPONSOR, UserRole.MAINTAINER)
   @Post(':id/refund')
   refund(@Param('id', new ParseUUIDPipe()) id: string) {
-    return this.bundlesService.refund(id);
+    return this.bountiesService.refund(id);
   }
 }
