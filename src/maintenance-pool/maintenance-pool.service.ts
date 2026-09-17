@@ -1,6 +1,7 @@
 import {
   BadRequestException,
   Injectable,
+  Logger,
   NotFoundException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
@@ -18,6 +19,8 @@ import { CreatePoolDto } from './dto/create-pool.dto';
  */
 @Injectable()
 export class MaintenancePoolService {
+  private readonly logger = new Logger(MaintenancePoolService.name);
+
   constructor(
     @InjectRepository(MaintenancePool)
     private readonly poolRepo: Repository<MaintenancePool>,
@@ -35,7 +38,13 @@ export class MaintenancePoolService {
       asset: dto.asset,
       status: MaintenancePoolStatus.ACTIVE,
     });
-    return this.poolRepo.save(pool);
+    const saved = await this.poolRepo.save(pool);
+
+    this.logger.log(
+      `Created maintenance pool ${saved.id} ("${saved.name}") for repository ${saved.repositoryId ?? 'none'} with asset ${saved.asset}`,
+    );
+
+    return saved;
   }
 
   async findOne(id: string): Promise<MaintenancePool> {
@@ -52,6 +61,9 @@ export class MaintenancePoolService {
   ): Promise<MaintenancePool> {
     const pool = await this.findOne(id);
     if (pool.status !== MaintenancePoolStatus.ACTIVE) {
+      this.logger.warn(
+        `Failed deposit of ${amount} to pool ${id}: pool is not ACTIVE (current: ${pool.status})`,
+      );
       throw new BadRequestException(`Pool ${id} is not ACTIVE`);
     }
 
@@ -63,6 +75,9 @@ export class MaintenancePoolService {
         maintenancePoolId: pool.id,
       });
       await this.poolRepo.update(pool.id, { escrowId: escrow.id });
+      this.logger.log(
+        `Initial deposit of ${amount} ${pool.asset} funded escrow ${escrow.id} for maintenance pool ${pool.id}`,
+      );
     } else {
       // Subsequent deposits top up the existing on-chain escrow balance.
       await this.escrowService.fund({
@@ -71,6 +86,9 @@ export class MaintenancePoolService {
         funderAddress,
         maintenancePoolId: pool.id,
       });
+      this.logger.log(
+        `Top-up deposit of ${amount} ${pool.asset} to existing escrow ${pool.escrowId} for maintenance pool ${pool.id}`,
+      );
     }
 
     // Atomic DB-level increment instead of read-modify-write — concurrent
@@ -95,19 +113,31 @@ export class MaintenancePoolService {
     const issue = await this.issueRepo.findOne({ where: { id: issueId } });
     if (!issue) throw new NotFoundException(`Issue ${issueId} not found`);
     if (!issue.isMaintenanceType) {
+      this.logger.warn(
+        `Rejected reward assignment from pool ${id} for issue ${issueId}: not marked as maintenance type`,
+      );
       throw new BadRequestException(
         `Issue ${issueId} is not eligible for maintenance-pool rewards`,
       );
     }
     if (pool.repositoryId && pool.repositoryId !== issue.repositoryId) {
+      this.logger.warn(
+        `Rejected reward assignment from pool ${id}: repository mismatch (pool repo: ${pool.repositoryId}, issue repo: ${issue.repositoryId})`,
+      );
       throw new BadRequestException(
         `Issue ${issueId} does not belong to pool ${id}'s repository`,
       );
     }
     if (!pool.escrowId) {
+      this.logger.warn(
+        `Rejected reward assignment from pool ${id}: pool has no funded escrow`,
+      );
       throw new BadRequestException(`Pool ${id} has no funded escrow yet`);
     }
     if (Number(amount) > Number(pool.balance)) {
+      this.logger.warn(
+        `Rejected reward assignment from pool ${id}: requested amount ${amount} exceeds pool balance ${pool.balance}`,
+      );
       throw new BadRequestException(
         `Requested reward ${amount} exceeds pool balance ${pool.balance}`,
       );
@@ -128,6 +158,10 @@ export class MaintenancePoolService {
     // reward assignments on the same pool no longer clobber each other's
     // balance update (#51).
     await this.poolRepo.decrement({ id: pool.id }, 'balance', Number(amount));
+
+    this.logger.log(
+      `Assigned reward of ${amount} ${pool.asset} from pool ${id} to recipient ${recipientAddress} for issue ${issueId}`,
+    );
 
     return payment;
   }
