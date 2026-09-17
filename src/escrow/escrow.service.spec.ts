@@ -566,6 +566,15 @@ describe('EscrowService', () => {
       ).not.toThrow();
     });
 
+    it('rejects duplicate recipient addresses in assertValidSplits (#358)', () => {
+      expect(() =>
+        service.assertValidSplits([
+          { recipientAddress: 'GDUPLICATE', percentage: 50 },
+          { recipientAddress: 'GDUPLICATE', percentage: 50 },
+        ]),
+      ).toThrow(BadRequestException);
+    });
+
     it('splits a released escrow proportionally across recipients', async () => {
       escrowRepo.findOne.mockResolvedValue({
         id: 'escrow-4',
