@@ -1,3 +1,4 @@
+import { BadRequestException } from '@nestjs/common';
 import { Test, TestingModule } from '@nestjs/testing';
 import { getRepositoryToken } from '@nestjs/typeorm';
 import { EventEmitter2 } from '@nestjs/event-emitter';
@@ -199,6 +200,26 @@ describe('BountiesService', () => {
       { recipientId: 'u2', recipientAddress: 'GADDR2', percentage: 40 },
     ]);
     expect(bounty.status).toBe(BountyStatus.PAID);
+  });
+
+  it('rejects markMergedAndRelease when assigned team has no configured splits (#367)', async () => {
+    bountyRepo.findOne.mockResolvedValue({
+      id: 'b1',
+      status: BountyStatus.IN_REVIEW,
+      escrowId: 'escrow-1',
+      claimedById: null,
+      teamId: 'team-empty',
+    });
+    teamRepo.findOne.mockResolvedValue({
+      id: 'team-empty',
+      splits: [],
+    });
+
+    await expect(service.markMergedAndRelease('b1')).rejects.toThrow(
+      BadRequestException,
+    );
+    expect(escrowService.splitRelease).not.toHaveBeenCalled();
+    expect(escrowService.release).not.toHaveBeenCalled();
   });
 
   it('refund calls escrowService.refund and moves bounty to REFUNDED', async () => {

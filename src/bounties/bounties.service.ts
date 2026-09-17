@@ -1,4 +1,9 @@
-import { Injectable, NotFoundException, Optional } from '@nestjs/common';
+import {
+  BadRequestException,
+  Injectable,
+  NotFoundException,
+  Optional,
+} from '@nestjs/common';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { InjectRepository } from '@nestjs/typeorm';
 import { In, Repository } from 'typeorm';
@@ -134,22 +139,26 @@ export class BountiesService {
         where: { id: bounty.teamId },
         relations: { splits: true },
       });
-      if (team && team.splits.length > 0) {
-        const userIds = team.splits.map((s) => s.userId);
-        const users = await this.userRepo.find({
-          where: { id: In(userIds) },
-        });
-        const userMap = new Map(users.map((u) => [u.id, u]));
-        const recipients = team.splits.map((split) => {
-          const user = userMap.get(split.userId);
-          return {
-            recipientId: split.userId,
-            recipientAddress: user?.stellarAddress ?? '',
-            percentage: Number(split.percentage),
-          };
-        });
-        await this.escrowService.splitRelease(bounty.escrowId, recipients);
+      if (!team || !team.splits || team.splits.length === 0) {
+        throw new BadRequestException(
+          `Cannot release payout for team-assigned bounty ${bounty.id}: assigned team has no payout splits configured`,
+        );
       }
+
+      const userIds = team.splits.map((s) => s.userId);
+      const users = await this.userRepo.find({
+        where: { id: In(userIds) },
+      });
+      const userMap = new Map(users.map((u) => [u.id, u]));
+      const recipients = team.splits.map((split) => {
+        const user = userMap.get(split.userId);
+        return {
+          recipientId: split.userId,
+          recipientAddress: user?.stellarAddress ?? '',
+          percentage: Number(split.percentage),
+        };
+      });
+      await this.escrowService.splitRelease(bounty.escrowId, recipients);
     } else if (bounty.claimedById) {
       const contributor = await this.userRepo.findOne({
         where: { id: bounty.claimedById },
