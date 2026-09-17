@@ -9,7 +9,7 @@ import {
   Query,
   UseGuards,
 } from '@nestjs/common';
-import { ApiTags } from '@nestjs/swagger';
+import { ApiProperty, ApiTags } from '@nestjs/swagger';
 import { Throttle } from '@nestjs/throttler'; // Import the Throttle decorator
 import { BountiesService } from './bounties.service';
 import { CreateBountyDto } from './dto/create-bounty.dto';
@@ -23,6 +23,7 @@ import { Roles } from '../auth/decorators/roles.decorator';
 import { UserRole } from '../common/enums';
 
 class FundBountyDto {
+  @ApiProperty({ description: 'Stellar public key of the funding sponsor' })
   @IsStellarAddress()
   funderAddress: string;
 }
