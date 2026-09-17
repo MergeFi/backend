@@ -52,4 +52,38 @@ describe('validatePercentageSplits', () => {
       validatePercentageSplits([{ percentage: 10 }], 'team member split'),
     ).toThrow(/team member split/);
   });
+
+  it('rejects duplicate userId entries (#358)', () => {
+    expect(() =>
+      validatePercentageSplits(
+        [
+          { userId: 'user-1', percentage: 60 },
+          { userId: 'user-1', percentage: 40 },
+        ],
+        'team member split',
+      ),
+    ).toThrow(BadRequestException);
+  });
+
+  it('rejects duplicate recipientId or recipientAddress entries (#358)', () => {
+    expect(() =>
+      validatePercentageSplits(
+        [
+          { recipientAddress: 'GADDR1', percentage: 50 },
+          { recipientAddress: 'GADDR1', percentage: 50 },
+        ],
+        'split release',
+      ),
+    ).toThrow(BadRequestException);
+
+    expect(() =>
+      validatePercentageSplits(
+        [
+          { recipientId: 'user-uuid-1', recipientAddress: 'GADDR1', percentage: 50 },
+          { recipientId: 'user-uuid-1', recipientAddress: 'GADDR2', percentage: 50 },
+        ],
+        'split release',
+      ),
+    ).toThrow(BadRequestException);
+  });
 });

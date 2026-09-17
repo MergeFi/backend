@@ -60,6 +60,21 @@ describe('TeamsService', () => {
       expect(teamRepo.save).not.toHaveBeenCalled();
     });
 
+    it('rejects duplicate member userId entries (#358)', async () => {
+      await expect(
+        service.create({
+          name: 'Team Duplicate',
+          members: [
+            { userId: 'u1', percentage: 60 },
+            { userId: 'u1', percentage: 40 },
+          ],
+        }),
+      ).rejects.toThrow(BadRequestException);
+
+      expect(teamRepo.save).not.toHaveBeenCalled();
+      expect(splitRepo.save).not.toHaveBeenCalled();
+    });
+
     it('saves the team and one split per member when percentages sum to 100', async () => {
       const team = await service.create({
         name: 'Team A',
