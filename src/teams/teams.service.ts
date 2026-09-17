@@ -1,4 +1,4 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { Bounty, Team, TeamMemberSplit } from '../common/entities';
@@ -7,6 +7,8 @@ import { validateSplitPercentages } from './team-split.util';
 
 @Injectable()
 export class TeamsService {
+  private readonly logger = new Logger(TeamsService.name);
+
   constructor(
     @InjectRepository(Team) private readonly teamRepo: Repository<Team>,
     @InjectRepository(TeamMemberSplit)
@@ -36,6 +38,10 @@ export class TeamsService {
           percentage: m.percentage.toFixed(2),
         }),
       ),
+    );
+
+    this.logger.log(
+      `Created team ${team.id} ("${team.name}") with ${team.splits.length} split members`,
     );
 
     return team;
@@ -73,6 +79,10 @@ export class TeamsService {
       ),
     );
 
+    this.logger.log(
+      `Updated splits for team ${team.id}: replaced with ${team.splits.length} split members`,
+    );
+
     return team;
   }
 
@@ -82,6 +92,12 @@ export class TeamsService {
     const bounty = await this.bountyRepo.findOne({ where: { id: bountyId } });
     if (!bounty) throw new NotFoundException(`Bounty ${bountyId} not found`);
     bounty.teamId = teamId;
-    return this.bountyRepo.save(bounty);
+    const saved = await this.bountyRepo.save(bounty);
+
+    this.logger.log(
+      `Assigned team ${teamId} to bounty ${bountyId}`,
+    );
+
+    return saved;
   }
 }
