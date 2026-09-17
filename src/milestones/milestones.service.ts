@@ -1,5 +1,6 @@
 import {
   BadRequestException,
+  ConflictException,
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
@@ -52,19 +53,37 @@ export class MilestonesService {
       );
     }
 
-    const escrow = await this.escrowService.fund({
-      amount: milestone.budget,
-      asset: milestone.asset,
-      funderAddress,
-      milestoneId: milestone.id,
-      sponsorId: milestone.sponsorId,
-      deadline: milestone.deadline,
-    });
+    // Atomically claim the transition from OPEN to FUNDED (#378).
+    // Prevents concurrent requests from locking a second escrow that would become permanently orphaned.
+    const updateResult = await this.milestoneRepo.update(
+      { id, status: MilestoneStatus.OPEN },
+      { status: MilestoneStatus.FUNDED },
+    );
+    if (!updateResult.affected || updateResult.affected === 0) {
+      throw new ConflictException(
+        `Milestone ${id} is already funded or being funded concurrently`,
+      );
+    }
 
-    milestone.escrow = escrow;
-    milestone.escrowId = escrow.id;
-    milestone.status = MilestoneStatus.FUNDED;
-    return this.milestoneRepo.save(milestone);
+    try {
+      const escrow = await this.escrowService.fund({
+        amount: milestone.budget,
+        asset: milestone.asset,
+        funderAddress,
+        milestoneId: milestone.id,
+        sponsorId: milestone.sponsorId,
+        deadline: milestone.deadline,
+      });
+
+      milestone.escrow = escrow;
+      milestone.escrowId = escrow.id;
+      milestone.status = MilestoneStatus.FUNDED;
+      return await this.milestoneRepo.save(milestone);
+    } catch (err) {
+      // Revert status back to OPEN if escrow funding failed before on-chain lock
+      await this.milestoneRepo.update(id, { status: MilestoneStatus.OPEN });
+      throw err;
+    }
   }
 
   /**
