@@ -278,12 +278,25 @@ describe('UsersService', () => {
       ).rejects.toThrow(NotFoundException);
     });
 
-    it('sets stellarAddress on the given user and persists it', async () => {
-      userRepo.findOne.mockResolvedValue({ id: 'u1', stellarAddress: null });
+    it('sets stellarAddress on the given user, persists it, and returns PublicUserDto without leaking PII (#359)', async () => {
+      const fullUser = {
+        id: 'u1',
+        username: 'octocat',
+        email: 'private@example.com',
+        stellarAddress: null,
+        roles: [],
+        createdAt: new Date(),
+        githubAccount: { id: 'ga1', login: 'octocat' },
+      };
+      userRepo.findOne.mockResolvedValue(fullUser);
+      userRepo.save.mockImplementation(async (u: any) => ({ ...fullUser, ...u }));
 
-      const user = await service.setStellarAddress('u1', 'GNEWADDRESS');
+      const result = await service.setStellarAddress('u1', 'GNEWADDRESS');
 
-      expect(user.stellarAddress).toBe('GNEWADDRESS');
+      expect(result.stellarAddress).toBe('GNEWADDRESS');
+      expect(result.id).toBe('u1');
+      expect(result).not.toHaveProperty('email');
+      expect(result).not.toHaveProperty('githubAccount');
       expect(userRepo.save).toHaveBeenCalledWith(
         expect.objectContaining({ id: 'u1', stellarAddress: 'GNEWADDRESS' }),
       );
