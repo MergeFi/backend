@@ -217,6 +217,84 @@ describe('GithubWebhooksService', () => {
       expect(event.status).toBe(WebhookEventStatus.PROCESSED);
     });
 
+    it('skips markInReview when PR author does not match bounty claimant (#385)', async () => {
+      issueRepo.findOne.mockResolvedValue({
+        id: 'issue-1',
+        bounty: { id: 'bounty-1' },
+      });
+      bountyRepo.findOne.mockResolvedValue({
+        id: 'bounty-1',
+        status: 'claimed',
+        claimedBy: {
+          githubAccount: { login: 'legitimate-contributor' },
+        },
+      });
+
+      const payload = {
+        action: 'opened',
+        number: 7,
+        pull_request: {
+          html_url: 'https://github.com/acme/repo/pull/7',
+          number: 7,
+          merged: false,
+          body: 'Fixes #21',
+          user: { login: 'unrelated-user' },
+        },
+        repository: { id: 999, full_name: 'acme/repo' },
+      };
+
+      const event = await service.handleEvent(
+        'pull_request',
+        'delivery-open-mismatch',
+        payload,
+        true,
+      );
+
+      expect(bountiesService.markInReview).not.toHaveBeenCalled();
+      expect(event.status).toBe(WebhookEventStatus.PROCESSED);
+    });
+
+    it('moves bounty to IN_REVIEW when PR author matches bounty claimant (#385)', async () => {
+      issueRepo.findOne.mockResolvedValue({
+        id: 'issue-1',
+        bounty: { id: 'bounty-1' },
+      });
+      bountyRepo.findOne.mockResolvedValue({
+        id: 'bounty-1',
+        status: 'claimed',
+        claimedBy: {
+          githubAccount: { login: 'legitimate-contributor' },
+        },
+      });
+
+      const payload = {
+        action: 'opened',
+        number: 8,
+        pull_request: {
+          html_url: 'https://github.com/acme/repo/pull/8',
+          number: 8,
+          merged: false,
+          body: 'Fixes #21',
+          user: { login: 'legitimate-contributor' },
+        },
+        repository: { id: 999, full_name: 'acme/repo' },
+      };
+
+      const event = await service.handleEvent(
+        'pull_request',
+        'delivery-open-match',
+        payload,
+        true,
+      );
+
+      expect(bountiesService.markInReview).toHaveBeenCalledWith(
+        'bounty-1',
+        'https://github.com/acme/repo/pull/8',
+        8,
+      );
+      expect(event.status).toBe(WebhookEventStatus.PROCESSED);
+    });
+
     it('leaves a bounty that is not CLAIMED untouched on a reopened PR', async () => {
       issueRepo.findOne.mockResolvedValue({
         id: 'issue-1',

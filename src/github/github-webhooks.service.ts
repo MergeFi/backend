@@ -23,6 +23,7 @@ export interface GithubPullRequestPayload {
     merged: boolean;
     body?: string | null;
     title?: string;
+    user?: { login: string };
   };
   repository: { id: number; full_name: string };
 }
@@ -353,8 +354,23 @@ export class GithubWebhooksService {
 
         const bounty = await this.bountyRepo.findOne({
           where: { id: issue.bounty.id },
+          relations: { claimedBy: { githubAccount: true } },
         });
         if (!bounty || bounty.status !== BountyStatus.CLAIMED) {
+          outcomes.push({ issueNumber: number, outcome: 'skipped' });
+          continue;
+        }
+
+        const prAuthorLogin = payload.pull_request.user?.login;
+        const claimantGithubLogin = bounty.claimedBy?.githubAccount?.login;
+        if (
+          claimantGithubLogin &&
+          prAuthorLogin &&
+          claimantGithubLogin.toLowerCase() !== prAuthorLogin.toLowerCase()
+        ) {
+          this.logger.warn(
+            `PR #${payload.number} author (${prAuthorLogin}) does not match bounty ${bounty.id} claimant (${claimantGithubLogin}) — skipping markInReview`,
+          );
           outcomes.push({ issueNumber: number, outcome: 'skipped' });
           continue;
         }
