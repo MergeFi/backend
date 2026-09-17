@@ -32,6 +32,7 @@ async function bootstrap() {
   const env = configService.get('env', { infer: true });
   const logLevel = configService.get('logLevel', { infer: true });
   app.useLogger(resolveLogLevels(logLevel || 'log'));
+  app.enableShutdownHooks();
 
   // Fail fast and loudly if *any* required-in-production secret is missing —
   // not just JWT_SECRET. An empty GITHUB_WEBHOOK_SECRET, TREASURY_SECRET,
