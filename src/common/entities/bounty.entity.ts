@@ -44,6 +44,7 @@ export class Bounty {
   sponsor: User | null;
 
   @Column({ type: 'varchar', nullable: true })
+  @Index('IDX_bounties_sponsorId')
   sponsorId: string | null;
 
   @ManyToOne(() => User, { onDelete: 'SET NULL', nullable: true })
