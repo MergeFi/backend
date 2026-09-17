@@ -70,4 +70,26 @@ describe('EscrowController', () => {
     expect(target.refund).toBeDefined();
     expect(target.splitRelease).toBeDefined();
   });
+  it('shapes splitRelease response using toPublicPayment (#368)', async () => {
+    mockEscrowService.splitRelease.mockResolvedValue([
+      {
+        id: 'p1',
+        escrowId: 'e1',
+        recipientAddress: 'GADDR1',
+        amount: '50.00',
+        escrow: { secret: 'internal' },
+        recipient: { email: 'hidden@mergifi.io' },
+      },
+    ]);
+
+    const result = await controller.splitRelease('00000000-0000-0000-0000-000000000001', {
+      recipients: [{ recipientAddress: 'GADDR1', percentage: 100 }],
+    });
+
+    expect(result).toHaveLength(1);
+    expect(result[0]).not.toHaveProperty('escrow');
+    expect(result[0]).not.toHaveProperty('recipient');
+    expect(result[0].id).toBe('p1');
+    expect(result[0].amount).toBe('50.00');
+  });
 });
