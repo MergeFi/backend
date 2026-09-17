@@ -10,7 +10,7 @@ import {
   UseGuards,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { ApiExcludeEndpoint, ApiTags } from '@nestjs/swagger';
+import { ApiBearerAuth, ApiExcludeEndpoint, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { Throttle } from '@nestjs/throttler'; // Added Throttle decorator import
 import type { Request, Response } from 'express';
 import { AuthService } from './auth.service';
@@ -90,6 +90,8 @@ export class AuthController {
     return { accessToken: token };
   }
 
+  @ApiOperation({ summary: "Get the authenticated caller's identity" })
+  @ApiBearerAuth()
   @Get('me')
   @UseGuards(JwtAuthGuard)
   me(@Req() req: Request) {
