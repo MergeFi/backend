@@ -171,10 +171,11 @@ export class UsersService {
   async setStellarAddress(
     userId: string,
     stellarAddress: string,
-  ): Promise<User> {
+  ): Promise<PublicUserDto> {
     const user = await this.findOneRaw(userId);
     user.stellarAddress = stellarAddress;
-    return this.userRepo.save(user);
+    const saved = await this.userRepo.save(user);
+    return toPublicUser(saved);
   }
 
   async list(): Promise<PublicUserDto[]> {
