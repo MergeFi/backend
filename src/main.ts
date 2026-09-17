@@ -8,7 +8,7 @@ import { AppConfig } from './config/configuration';
 import { assertRequiredConfig } from './config/validate-required-config';
 import { GlobalExceptionFilter } from './common/filters/global-exception.filter';
 
-import { LogLevel } from '@nestjs/common';
+import { Logger, LogLevel } from '@nestjs/common';
 
 const LOG_LEVEL_MAP: Record<string, LogLevel[]> = {
   error: ['error'],
@@ -79,7 +79,8 @@ async function bootstrap() {
   const port = configService.get('port', { infer: true });
   await app.listen(port);
 
-  console.log(
+  const logger = new Logger('Bootstrap');
+  logger.log(
     env === 'production'
       ? `MergeFi backend listening on port ${port}`
       : `MergeFi backend listening on port ${port} — docs at /api/docs`,
