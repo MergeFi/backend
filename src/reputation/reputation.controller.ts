@@ -8,7 +8,7 @@ import {
   Query,
   UseGuards,
 } from '@nestjs/common';
-import { ApiBearerAuth, ApiQuery, ApiTags } from '@nestjs/swagger';
+import { ApiBearerAuth, ApiOperation, ApiQuery, ApiTags } from '@nestjs/swagger';
 import { ReputationService } from './reputation.service';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
@@ -23,10 +23,10 @@ import {
 export class ReputationController {
   constructor(private readonly reputationService: ReputationService) {}
 
-  private assertOwner(user: AuthenticatedUser, userId: string) {
-    if (user.userId !== userId) {
+  private assertCanRecompute(user: AuthenticatedUser, userId: string) {
+    if (user.userId !== userId && user.role !== 'MAINTAINER') {
       throw new ForbiddenException(
-        'You may only access or recompute your own reputation data',
+        'You may only recompute your own reputation data',
       );
     }
   }
@@ -34,28 +34,34 @@ export class ReputationController {
   @ApiBearerAuth()
   @UseGuards(JwtAuthGuard)
   @Post(':userId/recompute')
+  @ApiOperation({
+    summary: 'Trigger on-demand recomputation of contributor reputation snapshot',
+    description: 'Requires authentication. Can only be triggered by the contributor or a maintainer.',
+  })
   recompute(
     @Param('userId', new ParseUUIDPipe()) userId: string,
     @CurrentUser() user: AuthenticatedUser,
   ) {
-    this.assertOwner(user, userId);
+    this.assertCanRecompute(user, userId);
     return this.reputationService.computeAndSave(userId);
   }
 
-  @ApiBearerAuth()
-  @UseGuards(JwtAuthGuard)
   @Get(':userId')
+  @ApiOperation({
+    summary: 'Get latest reputation snapshot for a contributor',
+    description: 'Publicly readable by sponsors, maintainers, and contributors to evaluate track record.',
+  })
   latest(
     @Param('userId', new ParseUUIDPipe()) userId: string,
-    @CurrentUser() user: AuthenticatedUser,
   ) {
-    this.assertOwner(user, userId);
     return this.reputationService.getLatest(userId);
   }
 
-  @ApiBearerAuth()
-  @UseGuards(JwtAuthGuard)
   @Get(':userId/history')
+  @ApiOperation({
+    summary: 'Get historical reputation snapshots for a contributor',
+    description: 'Publicly readable history of metrics over time for platform transparency.',
+  })
   @ApiQuery({
     name: 'limit',
     required: false,
@@ -64,11 +70,9 @@ export class ReputationController {
   @ApiQuery({ name: 'offset', required: false })
   history(
     @Param('userId', new ParseUUIDPipe()) userId: string,
-    @CurrentUser() user: AuthenticatedUser,
     @Query('limit') limit?: string,
     @Query('offset') offset?: string,
   ) {
-    this.assertOwner(user, userId);
     return this.reputationService.history(userId, {
       limit: parseOptionalInt(limit),
       offset: parseOptionalInt(offset),
