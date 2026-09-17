@@ -1,4 +1,9 @@
-import { Injectable, NotFoundException, Optional } from '@nestjs/common';
+import {
+  BadRequestException,
+  Injectable,
+  NotFoundException,
+  Optional,
+} from '@nestjs/common';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { InjectRepository } from '@nestjs/typeorm';
 import { In, Repository } from 'typeorm';
@@ -28,6 +33,15 @@ export class BountiesService {
   ) {}
 
   async create(dto: CreateBountyDto): Promise<Bounty> {
+    const existing = await this.bountyRepo.findOne({
+      where: { issueId: dto.issueId },
+    });
+    if (existing) {
+      throw new BadRequestException(
+        `A bounty already exists for issue ${dto.issueId}`,
+      );
+    }
+
     const bounty = this.bountyRepo.create({
       issueId: dto.issueId,
       sponsorId: dto.sponsorId,
