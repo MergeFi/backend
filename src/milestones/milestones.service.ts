@@ -1,6 +1,7 @@
 import {
   BadRequestException,
   Injectable,
+  Logger,
   NotFoundException,
 } from '@nestjs/common';
 import { InjectDataSource, InjectRepository } from '@nestjs/typeorm';
@@ -12,6 +13,8 @@ import { CreateMilestoneDto } from './dto/create-milestone.dto';
 
 @Injectable()
 export class MilestonesService {
+  private readonly logger = new Logger(MilestonesService.name);
+
   constructor(
     @InjectRepository(Milestone)
     private readonly milestoneRepo: Repository<Milestone>,
@@ -31,7 +34,13 @@ export class MilestonesService {
       deadline: dto.deadline ? new Date(dto.deadline) : null,
       status: MilestoneStatus.OPEN,
     });
-    return this.milestoneRepo.save(milestone);
+    const saved = await this.milestoneRepo.save(milestone);
+
+    this.logger.log(
+      `Created milestone ${saved.id} ("${saved.title}") for repo ${saved.repositoryId} with budget ${saved.budget} ${saved.asset}`,
+    );
+
+    return saved;
   }
 
   async findOne(id: string): Promise<Milestone> {
@@ -47,6 +56,9 @@ export class MilestonesService {
   async fund(id: string, funderAddress: string): Promise<Milestone> {
     const milestone = await this.findOne(id);
     if (milestone.status !== MilestoneStatus.OPEN) {
+      this.logger.warn(
+        `Failed to fund milestone ${id}: status is not OPEN (current: ${milestone.status})`,
+      );
       throw new BadRequestException(
         `Milestone ${id} is not OPEN (current: ${milestone.status})`,
       );
@@ -61,10 +73,17 @@ export class MilestonesService {
       deadline: milestone.deadline,
     });
 
+    const previousStatus = milestone.status;
     milestone.escrow = escrow;
     milestone.escrowId = escrow.id;
     milestone.status = MilestoneStatus.FUNDED;
-    return this.milestoneRepo.save(milestone);
+    const saved = await this.milestoneRepo.save(milestone);
+
+    this.logger.log(
+      `Funded milestone ${saved.id}: transitioned ${previousStatus} -> ${saved.status}, escrow ${escrow.id} created with ${saved.budget} ${saved.asset}`,
+    );
+
+    return saved;
   }
 
   /**
@@ -84,6 +103,9 @@ export class MilestonesService {
       milestone.status !== MilestoneStatus.FUNDED &&
       milestone.status !== MilestoneStatus.IN_PROGRESS
     ) {
+      this.logger.warn(
+        `Rejected attaching issue ${issueId} to milestone ${milestoneId}: invalid milestone status ${milestone.status}`,
+      );
       throw new BadRequestException(
         `Cannot attach issue to milestone in ${milestone.status} status`,
       );
@@ -91,13 +113,22 @@ export class MilestonesService {
     const issue = await this.issueRepo.findOne({ where: { id: issueId } });
     if (!issue) throw new NotFoundException(`Issue ${issueId} not found`);
     if (issue.repositoryId !== milestone.repositoryId) {
+      this.logger.warn(
+        `Rejected attaching issue ${issueId} to milestone ${milestoneId}: repository mismatch (issue repo: ${issue.repositoryId}, milestone repo: ${milestone.repositoryId})`,
+      );
       throw new BadRequestException(
         `Issue ${issueId} belongs to repository ${issue.repositoryId}, ` +
           `but milestone ${milestoneId} is scoped to repository ${milestone.repositoryId}`,
       );
     }
     issue.milestoneId = milestone.id;
-    return this.issueRepo.save(issue);
+    const saved = await this.issueRepo.save(issue);
+
+    this.logger.log(
+      `Attached issue ${issueId} to milestone ${milestoneId}`,
+    );
+
+    return saved;
   }
 
   /**
@@ -117,6 +148,9 @@ export class MilestonesService {
   ) {
     const milestone = await this.findOne(milestoneId);
     if (!milestone.escrowId) {
+      this.logger.warn(
+        `Failed to resolve issue ${issueId} for milestone ${milestoneId}: milestone has no funded escrow`,
+      );
       throw new BadRequestException(
         `Milestone ${milestoneId} has not been funded yet`,
       );
@@ -125,6 +159,9 @@ export class MilestonesService {
       milestone.status !== MilestoneStatus.FUNDED &&
       milestone.status !== MilestoneStatus.IN_PROGRESS
     ) {
+      this.logger.warn(
+        `Failed to resolve issue ${issueId} for milestone ${milestoneId}: milestone is not accepting distributions (status: ${milestone.status})`,
+      );
       throw new BadRequestException(
         `Milestone ${milestoneId} is not accepting distributions`,
       );
@@ -133,6 +170,9 @@ export class MilestonesService {
     // Verify the issue belongs to this milestone (#114).
     const issue = milestone.issues.find((i) => i.id === issueId);
     if (!issue) {
+      this.logger.warn(
+        `Failed to resolve issue ${issueId} for milestone ${milestoneId}: issue not attached to milestone`,
+      );
       throw new BadRequestException(
         `Issue ${issueId} is not attached to milestone ${milestoneId}`,
       );
@@ -145,12 +185,18 @@ export class MilestonesService {
     // Reject when no issues remain open — fallback to divisor 1 would let a
     // single call drain the entire remaining budget (#115).
     if (openIssues.length === 0) {
+      this.logger.warn(
+        `Failed to resolve issue ${issueId} for milestone ${milestoneId}: no unresolved issues left`,
+      );
       throw new BadRequestException(
         'No unresolved issues left to attribute this payout to',
       );
     }
 
     if (issue.state !== IssueState.OPEN) {
+      this.logger.warn(
+        `Failed to resolve issue ${issueId} for milestone ${milestoneId}: issue state is ${issue.state}, expected OPEN`,
+      );
       throw new BadRequestException(
         `Issue ${issueId} has already been resolved for milestone ${milestoneId}`,
       );
@@ -169,6 +215,7 @@ export class MilestonesService {
         recipientId,
       );
 
+      const previousStatus = milestone.status;
       const newDistributed = (Number(milestone.distributed) + share).toFixed(7);
       const newStatus =
         Number(newDistributed) >= Number(milestone.budget) - 1e-7
@@ -184,6 +231,11 @@ export class MilestonesService {
         closedAt: new Date(),
       });
 
+      this.logger.log(
+        `Resolved issue ${issueId} on milestone ${milestoneId}: released ${share.toFixed(7)} ${milestone.asset} to ${recipientAddress}. ` +
+          `Milestone distributed ${milestone.distributed} -> ${newDistributed}/${milestone.budget}, status ${previousStatus} -> ${newStatus}`,
+      );
+
       return payment;
     });
   }
@@ -193,6 +245,7 @@ export class MilestonesService {
   }
 
   allocateBudget(id: string) {
+    this.logger.log(`Allocated budget for milestone ${id}`);
     return Promise.resolve({ id, status: 'budget_allocated' });
   }
 }
