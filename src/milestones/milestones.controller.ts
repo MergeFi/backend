@@ -7,7 +7,7 @@ import {
   Post,
   UseGuards,
 } from '@nestjs/common';
-import { ApiTags } from '@nestjs/swagger';
+import { ApiProperty, ApiTags } from '@nestjs/swagger';
 import { IsOptional, IsUUID } from 'class-validator';
 import { Throttle } from '@nestjs/throttler';
 import { MilestonesService } from './milestones.service';
@@ -20,14 +20,17 @@ import { Roles } from '../auth/decorators/roles.decorator';
 import { UserRole } from '../common/enums';
 
 class FundMilestoneDto {
+  @ApiProperty({ description: 'Stellar public key of the funding sponsor' })
   @IsStellarAddress()
   funderAddress!: string;
 }
 
 class ResolveIssueDto {
+  @ApiProperty({ description: 'Stellar public key of the recipient' })
   @IsStellarAddress()
   recipientAddress!: string;
 
+  @ApiProperty({ required: false, description: 'Optional internal user ID of the recipient' })
   @IsOptional()
   @IsUUID()
   recipientId?: string;
