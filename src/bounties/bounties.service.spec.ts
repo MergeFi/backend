@@ -1,3 +1,4 @@
+import { BadRequestException } from '@nestjs/common';
 import { Test, TestingModule } from '@nestjs/testing';
 import { getRepositoryToken } from '@nestjs/typeorm';
 import { EventEmitter2 } from '@nestjs/event-emitter';
@@ -61,6 +62,7 @@ describe('BountiesService', () => {
   });
 
   it('creates a bounty in OPEN status', async () => {
+    bountyRepo.findOne.mockResolvedValue(null);
     const bounty = await service.create({
       issueId: 'issue-1',
       sponsorId: 'sponsor-1',
@@ -69,6 +71,25 @@ describe('BountiesService', () => {
       difficulty: BountyDifficulty.INTERMEDIATE,
     });
     expect(bounty.status).toBe(BountyStatus.OPEN);
+  });
+
+  it('rejects creating a duplicate bounty for an already-bountied issueId (#386)', async () => {
+    bountyRepo.findOne.mockResolvedValue({
+      id: 'existing-bounty-id',
+      issueId: 'issue-1',
+    });
+
+    await expect(
+      service.create({
+        issueId: 'issue-1',
+        sponsorId: 'sponsor-2',
+        amount: '200',
+        asset: AssetType.USDC,
+        difficulty: BountyDifficulty.BEGINNER,
+      }),
+    ).rejects.toThrow(BadRequestException);
+
+    expect(bountyRepo.save).not.toHaveBeenCalled();
   });
 
   it('funding an OPEN bounty locks escrow and moves it to FUNDED', async () => {
