@@ -99,6 +99,11 @@ export function validatePullRequestPayload(
   const pullRequest = requireRecord(record.pull_request, 'pull_request');
   const repository = requireRepository(record);
 
+  const userRecord =
+    isRecord(pullRequest.user) && typeof pullRequest.user.login === 'string'
+      ? { login: pullRequest.user.login }
+      : undefined;
+
   return {
     action,
     number,
@@ -109,6 +114,7 @@ export function validatePullRequestPayload(
       body: optionalString(pullRequest.body, 'pull_request.body'),
       title:
         optionalString(pullRequest.title, 'pull_request.title') ?? undefined,
+      user: userRecord,
     },
     repository,
   };
