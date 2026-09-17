@@ -83,6 +83,14 @@ export function collectConfigIssues(config: RequiredConfig): ConfigIssue[] {
     });
   }
 
+  if (config.database.synchronize) {
+    issues.push({
+      key: 'DATABASE_SYNCHRONIZE',
+      message:
+        'DATABASE_SYNCHRONIZE is enabled in production — TypeORM automatic schema synchronization must be disabled in production to prevent data loss or drift; use migrations instead',
+    });
+  }
+
   requireNonEmpty(
     'GITHUB_WEBHOOK_SECRET',
     config.github.webhookSecret,
