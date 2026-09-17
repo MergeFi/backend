@@ -9,6 +9,10 @@ import { Issue, Milestone } from '../common/entities';
 import { IssueState, MilestoneStatus } from '../common/enums';
 import { EscrowService } from '../escrow/escrow.service';
 import { CreateMilestoneDto } from './dto/create-milestone.dto';
+import {
+  assertTransition,
+  InvalidMilestoneTransitionError,
+} from './milestone-state-machine';
 
 @Injectable()
 export class MilestonesService {
@@ -46,10 +50,15 @@ export class MilestonesService {
   /** Sponsor funds the full milestone budget up front; distributed incrementally per issue. */
   async fund(id: string, funderAddress: string): Promise<Milestone> {
     const milestone = await this.findOne(id);
-    if (milestone.status !== MilestoneStatus.OPEN) {
-      throw new BadRequestException(
-        `Milestone ${id} is not OPEN (current: ${milestone.status})`,
-      );
+    try {
+      assertTransition(milestone.status, MilestoneStatus.FUNDED);
+    } catch (err) {
+      if (err instanceof InvalidMilestoneTransitionError) {
+        throw new BadRequestException(
+          `Milestone ${id} is not OPEN (current: ${milestone.status})`,
+        );
+      }
+      throw err;
     }
 
     const escrow = await this.escrowService.fund({
@@ -142,7 +151,7 @@ export class MilestonesService {
       (i) => i.state === IssueState.OPEN,
     );
 
-    // Reject when no issues remain open — fallback to divisor 1 would let a
+    // Reject when no issues remain open -- fallback to divisor 1 would let a
     // single call drain the entire remaining budget (#115).
     if (openIssues.length === 0) {
       throw new BadRequestException(
@@ -174,6 +183,9 @@ export class MilestonesService {
         Number(newDistributed) >= Number(milestone.budget) - 1e-7
           ? MilestoneStatus.COMPLETED
           : MilestoneStatus.IN_PROGRESS;
+
+      assertTransition(milestone.status, newStatus);
+
       await mgr.update(Milestone, milestoneId, {
         distributed: newDistributed,
         status: newStatus,
