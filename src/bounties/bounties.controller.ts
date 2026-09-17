@@ -53,7 +53,8 @@ export class BountiesController {
     difficulty?: BountyDifficulty,
     @Query('asset', new ParseEnumPipe(AssetType, { optional: true }))
     asset?: AssetType,
-    @Query('repositoryId') repositoryId?: string,
+    @Query('repositoryId', new ParseUUIDPipe({ optional: true }))
+    repositoryId?: string,
     @Query('primaryLanguage') primaryLanguage?: string,
   ) {
     return this.bountiesService.list({
