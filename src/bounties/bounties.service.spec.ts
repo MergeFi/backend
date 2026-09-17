@@ -5,6 +5,7 @@ import { BountiesService } from './bounties.service';
 import { EscrowService } from '../escrow/escrow.service';
 import { Bounty, Team, User } from '../common/entities';
 import { AssetType, BountyDifficulty, BountyStatus } from '../common/enums';
+import { ConflictException } from '@nestjs/common';
 import { InvalidBountyTransitionError } from './bounty-state-machine';
 
 describe('BountiesService', () => {
@@ -12,6 +13,7 @@ describe('BountiesService', () => {
   let bountyRepo: {
     findOne: jest.Mock;
     save: jest.Mock;
+    update: jest.Mock;
     create: jest.Mock;
     find: jest.Mock;
     createQueryBuilder: jest.Mock;
@@ -29,6 +31,7 @@ describe('BountiesService', () => {
     bountyRepo = {
       findOne: jest.fn(),
       save: jest.fn((b: Partial<Bounty>) => Promise.resolve(b)),
+      update: jest.fn().mockResolvedValue({ affected: 1 }),
       create: jest.fn((data: Partial<Bounty>) => ({
         id: 'bounty-1',
         status: BountyStatus.OPEN,
@@ -123,6 +126,42 @@ describe('BountiesService', () => {
       InvalidBountyTransitionError,
     );
   });
+
+  it('rejects concurrent funding with ConflictException when atomic update affects 0 rows (#377)', async () => {
+    bountyRepo.findOne.mockResolvedValue({
+      id: 'b1',
+      status: BountyStatus.OPEN,
+      amount: '100',
+      asset: AssetType.USDC,
+      sponsorId: 'sponsor-1',
+    });
+    bountyRepo.update.mockResolvedValue({ affected: 0 });
+
+    await expect(service.fund('b1', 'GFUNDER')).rejects.toThrow(
+      ConflictException,
+    );
+    expect(escrowService.fund).not.toHaveBeenCalled();
+  });
+
+  it('reverts status to OPEN if escrowService.fund throws (#377)', async () => {
+    bountyRepo.findOne.mockResolvedValue({
+      id: 'b1',
+      status: BountyStatus.OPEN,
+      amount: '100',
+      asset: AssetType.USDC,
+      sponsorId: 'sponsor-1',
+    });
+    bountyRepo.update.mockResolvedValue({ affected: 1 });
+    escrowService.fund.mockRejectedValue(new Error('Soroban network error'));
+
+    await expect(service.fund('b1', 'GFUNDER')).rejects.toThrow(
+      'Soroban network error',
+    );
+    expect(bountyRepo.update).toHaveBeenCalledWith('b1', {
+      status: BountyStatus.OPEN,
+    });
+  });
+
 
   it('rejects claiming a bounty that is still OPEN (not yet funded)', async () => {
     bountyRepo.findOne.mockResolvedValue({

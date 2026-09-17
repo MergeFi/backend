@@ -1,4 +1,4 @@
-import { Injectable, NotFoundException, Optional } from '@nestjs/common';
+import { ConflictException, Injectable, NotFoundException, Optional } from '@nestjs/common';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { InjectRepository } from '@nestjs/typeorm';
 import { In, Repository } from 'typeorm';
@@ -57,21 +57,39 @@ export class BountiesService {
     if (!bounty) throw new NotFoundException(`Bounty ${id} not found`);
     assertTransition(bounty.status, BountyStatus.FUNDED);
 
-    const escrow = await this.escrowService.fund({
-      amount: bounty.amount,
-      asset: bounty.asset,
-      funderAddress,
-      bountyId: bounty.id,
-      sponsorId: bounty.sponsorId,
-      // The on-chain escrow contract is keyed by the GitHub issue id (#158).
-      onChainIssueId: bounty.issue?.githubIssueId ?? null,
-      deadline: bounty.deadline,
-    });
+    // Atomically claim the transition from OPEN to FUNDED (#377).
+    // Prevents concurrent requests from locking a second escrow that would become permanently orphaned.
+    const updateResult = await this.bountyRepo.update(
+      { id, status: BountyStatus.OPEN },
+      { status: BountyStatus.FUNDED },
+    );
+    if (!updateResult.affected || updateResult.affected === 0) {
+      throw new ConflictException(
+        `Bounty ${id} is already funded or being funded concurrently`,
+      );
+    }
 
-    bounty.escrow = escrow;
-    bounty.escrowId = escrow.id;
-    bounty.status = BountyStatus.FUNDED;
-    return this.bountyRepo.save(bounty);
+    try {
+      const escrow = await this.escrowService.fund({
+        amount: bounty.amount,
+        asset: bounty.asset,
+        funderAddress,
+        bountyId: bounty.id,
+        sponsorId: bounty.sponsorId,
+        // The on-chain escrow contract is keyed by the GitHub issue id (#158).
+        onChainIssueId: bounty.issue?.githubIssueId ?? null,
+        deadline: bounty.deadline,
+      });
+
+      bounty.escrow = escrow;
+      bounty.escrowId = escrow.id;
+      bounty.status = BountyStatus.FUNDED;
+      return await this.bountyRepo.save(bounty);
+    } catch (err) {
+      // Revert status back to OPEN if escrow funding failed before on-chain lock
+      await this.bountyRepo.update(id, { status: BountyStatus.OPEN });
+      throw err;
+    }
   }
 
   /** Contributor claims a funded bounty. */
