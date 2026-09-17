@@ -3,6 +3,7 @@ import {
   Controller,
   Get,
   HttpCode,
+  Logger,
   Post,
   Req,
   Res,
@@ -22,6 +23,8 @@ import type { UpsertFromGithubInput } from '../users/users.service';
 @ApiTags('auth')
 @Controller('auth')
 export class AuthController {
+  private readonly logger = new Logger(AuthController.name);
+
   constructor(
     private readonly authService: AuthService,
     private readonly configService: ConfigService<AppConfig, true>,
@@ -61,15 +64,17 @@ export class AuthController {
     res.redirect(`${frontendUrl}/auth/callback?code=${code}`);
   }
 
-  @Post('handoff')
+    @Post('handoff')
   @HttpCode(200)
   @ApiExcludeEndpoint()
   exchangeHandoff(@Body('code') code: string) {
     if (!code || typeof code !== 'string') {
+      this.logger.warn('Handoff code exchange rejected: missing or invalid payload');
       throw new UnauthorizedException('Missing handoff code');
     }
     const token = this.authService.consumeHandoffCode(code);
     if (!token) {
+      this.logger.warn('Handoff code exchange rejected: invalid or expired code');
       throw new UnauthorizedException('Invalid or expired handoff code');
     }
     return { accessToken: token };
@@ -79,12 +84,14 @@ export class AuthController {
   @HttpCode(200)
   @ApiExcludeEndpoint()
   exchangeHandoffAlias(@Body('code') code: string) {
-    // Alias for POST /auth/exchange — same single-use semantics as /handoff.
+    // Alias for POST /auth/exchange - same single-use semantics as /handoff.
     if (!code || typeof code !== 'string') {
+      this.logger.warn('Handoff code exchange rejected (alias): missing or invalid payload');
       throw new UnauthorizedException('Missing handoff code');
     }
     const token = this.authService.consumeHandoffCode(code);
     if (!token) {
+      this.logger.warn('Handoff code exchange rejected (alias): invalid or expired code');
       throw new UnauthorizedException('Invalid or expired handoff code');
     }
     return { accessToken: token };

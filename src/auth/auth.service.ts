@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { randomBytes } from 'crypto';
 import { User } from '../common/entities';
@@ -6,6 +6,7 @@ import { UsersService, UpsertFromGithubInput } from '../users/users.service';
 
 @Injectable()
 export class AuthService {
+  private readonly logger = new Logger(AuthService.name);
   private readonly handoffCodes = new Map<
     string,
     { token: string; expiresAt: number }
@@ -22,6 +23,7 @@ export class AuthService {
   ): Promise<{ user: User; accessToken: string }> {
     const user = await this.usersService.upsertFromGithub(profile);
     const accessToken = this.signToken(user);
+    this.logger.log(`User authenticated successfully with GitHub: ${user.id}`);
     return { user, accessToken };
   }
 
