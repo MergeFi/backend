@@ -1,5 +1,5 @@
 import { Test, TestingModule } from '@nestjs/testing';
-import { BadRequestException } from '@nestjs/common';
+import { BadRequestException, ConflictException } from '@nestjs/common';
 import { getRepositoryToken } from '@nestjs/typeorm';
 import { DataSource } from 'typeorm';
 import { MilestonesService } from './milestones.service';
@@ -30,7 +30,7 @@ describe('MilestonesService', () => {
     milestoneRepo = {
       findOne: jest.fn(),
       save: jest.fn((m: Partial<Milestone>) => Promise.resolve(m)),
-      update: jest.fn(),
+      update: jest.fn().mockResolvedValue({ affected: 1 }),
     };
     issueRepo = {
       findOne: jest.fn(),
@@ -127,6 +127,42 @@ describe('MilestonesService', () => {
         'Milestone m1 is not OPEN (current: funded)',
       );
     });
+
+    it('rejects concurrent funding with ConflictException when atomic update affects 0 rows (#378)', async () => {
+      milestoneRepo.findOne.mockResolvedValue({
+        id: 'm1',
+        status: MilestoneStatus.OPEN,
+        budget: '500',
+        asset: AssetType.USDC,
+        sponsorId: 'sponsor-1',
+      });
+      milestoneRepo.update.mockResolvedValue({ affected: 0 });
+
+      await expect(service.fund('m1', 'GFUNDER')).rejects.toThrow(
+        ConflictException,
+      );
+      expect(escrowService.fund).not.toHaveBeenCalled();
+    });
+
+    it('reverts status to OPEN if escrowService.fund throws (#378)', async () => {
+      milestoneRepo.findOne.mockResolvedValue({
+        id: 'm1',
+        status: MilestoneStatus.OPEN,
+        budget: '500',
+        asset: AssetType.USDC,
+        sponsorId: 'sponsor-1',
+      });
+      milestoneRepo.update.mockResolvedValue({ affected: 1 });
+      escrowService.fund.mockRejectedValue(new Error('Soroban network timeout'));
+
+      await expect(service.fund('m1', 'GFUNDER')).rejects.toThrow(
+        'Soroban network timeout',
+      );
+      expect(milestoneRepo.update).toHaveBeenCalledWith('m1', {
+        status: MilestoneStatus.OPEN,
+      });
+    });
+
   });
 
   describe('addIssue', () => {
