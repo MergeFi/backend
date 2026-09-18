@@ -10,13 +10,14 @@ import { Request } from 'express';
 import { Repository } from 'typeorm';
 import { User } from '../../common/entities';
 import { UserRole } from '../../common/enums';
+import type { AuthenticatedUser } from '../../common/decorators/current-user.decorator';
 import { ROLES_KEY } from '../decorators/roles.decorator';
 
 interface AuthenticatedRequest extends Request {
-  user?: { userId: string };
+  user?: AuthenticatedUser;
 }
 
-/** Requires at least one role declared by @Roles, reading current roles from the database. */
+/** Requires at least one role declared by @Roles, using roles from the authenticated user when available. */
 @Injectable()
 export class RolesGuard implements CanActivate {
   constructor(
@@ -34,6 +35,10 @@ export class RolesGuard implements CanActivate {
     const request = context.switchToHttp().getRequest<AuthenticatedRequest>();
     if (!request.user?.userId) {
       throw new UnauthorizedException('Authentication is required');
+    }
+
+    if (request.user.roles) {
+      return requiredRoles.some((role) => request.user!.roles.includes(role));
     }
 
     const user = await this.userRepo.findOne({
