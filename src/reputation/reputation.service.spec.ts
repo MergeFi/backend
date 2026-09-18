@@ -1,7 +1,7 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { getRepositoryToken } from '@nestjs/typeorm';
 import { ReputationService } from './reputation.service';
-import { Bounty, ReputationSnapshot } from '../common/entities';
+import { Bounty, Payment, ReputationSnapshot } from '../common/entities';
 import * as sql from '../common/stats/contributor-stats.sql';
 
 jest.mock('../common/stats/contributor-stats.sql', () => ({
@@ -18,6 +18,10 @@ describe('ReputationService', () => {
     createQueryBuilder: jest.fn(),
   };
 
+  const mockPaymentRepo = {
+    createQueryBuilder: jest.fn(),
+  };
+
   const mockSnapshotRepo = {
     create: jest.fn((dto: Record<string, unknown>) => dto),
     save: jest.fn((entity) => Promise.resolve({ id: 'snap-1', ...entity })),
@@ -30,6 +34,7 @@ describe('ReputationService', () => {
       providers: [
         ReputationService,
         { provide: getRepositoryToken(Bounty), useValue: mockBountyRepo },
+        { provide: getRepositoryToken(Payment), useValue: mockPaymentRepo },
         {
           provide: getRepositoryToken(ReputationSnapshot),
           useValue: mockSnapshotRepo,
@@ -67,6 +72,11 @@ describe('ReputationService', () => {
     expect(result.completionRate).toBe('0.00');
     expect(result.onTimeDeliveryPercentage).toBe('0.00');
     expect(mockBountyRepo.find).not.toHaveBeenCalled();
+    expect(mockedSql.queryContributorCoreStats).toHaveBeenCalledWith(
+      mockBountyRepo,
+      mockPaymentRepo,
+      'user-1',
+    );
   });
 
   it('should compute completion-rate and on-time-delivery math correctly', async () => {

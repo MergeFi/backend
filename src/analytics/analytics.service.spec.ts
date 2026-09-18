@@ -3,7 +3,11 @@ import { ConfigService } from '@nestjs/config';
 import { getRepositoryToken } from '@nestjs/typeorm';
 import { BadRequestException } from '@nestjs/common';
 import { AnalyticsService } from './analytics.service';
-import { Bounty, Repository as RepositoryEntity } from '../common/entities';
+import {
+  Bounty,
+  Payment,
+  Repository as RepositoryEntity,
+} from '../common/entities';
 import * as sql from '../common/stats/contributor-stats.sql';
 import { heatmapRange } from '../common/stats/contributor-stats.sql';
 import { TtlCache } from './ttl-cache';
@@ -92,6 +96,9 @@ describe('AnalyticsService', () => {
   const mockRepositoryRepo = {
     count: jest.fn(),
   };
+  const mockPaymentRepo = {
+    createQueryBuilder: jest.fn(),
+  };
 
   beforeEach(async () => {
     const module: TestingModule = await Test.createTestingModule({
@@ -101,6 +108,10 @@ describe('AnalyticsService', () => {
         {
           provide: getRepositoryToken(RepositoryEntity),
           useValue: mockRepositoryRepo,
+        },
+        {
+          provide: getRepositoryToken(Payment),
+          useValue: mockPaymentRepo,
         },
         {
           provide: ConfigService,
@@ -147,6 +158,20 @@ describe('AnalyticsService', () => {
     expect(result.heatmap).toEqual([]);
     expect(result.topClients).toEqual([]);
     expect(mockBountyRepo.find).not.toHaveBeenCalled();
+    expect(mockedSql.queryContributorCoreStats).toHaveBeenCalledWith(
+      mockBountyRepo,
+      mockPaymentRepo,
+      '11111111-1111-4111-8111-111111111111',
+    );
+    expect(mockedSql.queryPayoutHeatmap).toHaveBeenCalledWith(
+      mockPaymentRepo,
+      '11111111-1111-4111-8111-111111111111',
+      expect.any(Object),
+    );
+    expect(mockedSql.queryTopClients).toHaveBeenCalledWith(
+      mockPaymentRepo,
+      '11111111-1111-4111-8111-111111111111',
+    );
   });
 
   it('should compute heatmap date-bucketing and merge-rate correctly', async () => {

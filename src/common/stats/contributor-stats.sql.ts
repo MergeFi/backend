@@ -1,7 +1,7 @@
 import { BadRequestException } from '@nestjs/common';
 import { Repository } from 'typeorm';
-import { Bounty } from '../entities';
-import { BountyStatus } from '../enums';
+import { Bounty, Payment } from '../entities';
+import { BountyStatus, PaymentStatus } from '../enums';
 import { MERGED_BOUNTY_STATUSES } from './contributor-stats.util';
 
 /** Max calendar-day buckets returned for a payout heatmap. */
@@ -13,6 +13,7 @@ const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
 
 /** UTC calendar-day expression matching `Date#toISOString().slice(0, 10)`. */
 export const PAYOUT_UTC_DATE_SQL = `to_char((bounty.paidAt AT TIME ZONE 'UTC'), 'YYYY-MM-DD')`;
+export const PAYMENT_PAYOUT_UTC_DATE_SQL = `to_char((payment.createdAt AT TIME ZONE 'UTC'), 'YYYY-MM-DD')`;
 
 const MERGED_SQL = MERGED_BOUNTY_STATUSES.map((s) => `'${s}'`).join(', ');
 
@@ -92,30 +93,30 @@ export function heatmapFromRaw(
 }
 
 export async function queryPayoutHeatmap(
-  bountyRepo: Repository<Bounty>,
+  paymentRepo: Repository<Payment>,
   userId: string,
   range: HeatmapRange = {},
 ): Promise<HeatmapBucket[]> {
-  const qb = bountyRepo
-    .createQueryBuilder('bounty')
-    .select(PAYOUT_UTC_DATE_SQL, 'date')
+  const qb = paymentRepo
+    .createQueryBuilder('payment')
+    .select(PAYMENT_PAYOUT_UTC_DATE_SQL, 'date')
     .addSelect('COUNT(*)', 'count')
-    .where('bounty.claimedById = :userId', { userId })
-    .andWhere('bounty.status = :paid', { paid: BountyStatus.PAID })
-    .andWhere('bounty.paidAt IS NOT NULL');
+    .where('payment.recipientId = :userId', { userId })
+    .andWhere('payment.status = :status', { status: PaymentStatus.CONFIRMED })
+    .andWhere('payment.createdAt IS NOT NULL');
 
   if (range.from) {
-    qb.andWhere('bounty.paidAt >= :from', { from: range.from });
+    qb.andWhere('payment.createdAt >= :from', { from: range.from });
   }
   if (range.toExclusive) {
-    qb.andWhere('bounty.paidAt < :toExclusive', {
+    qb.andWhere('payment.createdAt < :toExclusive', {
       toExclusive: range.toExclusive,
     });
   }
 
   const rows = await qb
-    .groupBy(PAYOUT_UTC_DATE_SQL)
-    .orderBy(PAYOUT_UTC_DATE_SQL, 'DESC')
+    .groupBy(PAYMENT_PAYOUT_UTC_DATE_SQL)
+    .orderBy(PAYMENT_PAYOUT_UTC_DATE_SQL, 'DESC')
     .limit(HEATMAP_MAX_DAYS)
     .getRawMany<{ date: string; count: string }>();
 
@@ -123,17 +124,18 @@ export async function queryPayoutHeatmap(
 }
 
 export async function queryTopClients(
-  bountyRepo: Repository<Bounty>,
+  paymentRepo: Repository<Payment>,
   userId: string,
 ): Promise<TopClientRow[]> {
-  const rows = await bountyRepo
-    .createQueryBuilder('bounty')
-    .select('bounty.sponsorId', 'sponsorId')
-    .addSelect('COALESCE(SUM(bounty.amount), 0)', 'totalPaid')
-    .where('bounty.claimedById = :userId', { userId })
-    .andWhere('bounty.status = :paid', { paid: BountyStatus.PAID })
-    .andWhere('bounty.sponsorId IS NOT NULL')
-    .groupBy('bounty.sponsorId')
+  const rows = await paymentRepo
+    .createQueryBuilder('payment')
+    .innerJoin('payment.escrow', 'escrow')
+    .select('escrow.sponsorId', 'sponsorId')
+    .addSelect('COALESCE(SUM(payment.amount), 0)', 'totalPaid')
+    .where('payment.recipientId = :userId', { userId })
+    .andWhere('payment.status = :status', { status: PaymentStatus.CONFIRMED })
+    .andWhere('escrow.sponsorId IS NOT NULL')
+    .groupBy('escrow.sponsorId')
     .orderBy('totalPaid', 'DESC')
     .limit(TOP_CLIENTS_LIMIT)
     .getRawMany<{ sponsorId: string; totalPaid: string }>();
@@ -146,9 +148,10 @@ export async function queryTopClients(
 
 export async function queryContributorCoreStats(
   bountyRepo: Repository<Bounty>,
+  paymentRepo: Repository<Payment>,
   userId: string,
 ): Promise<ContributorCoreSqlStats> {
-  const [counts, languagesRows, orgsRows] = await Promise.all([
+  const [counts, languagesRows, orgsRows, earningsRow] = await Promise.all([
     bountyRepo
       .createQueryBuilder('bounty')
       .leftJoin('bounty.issue', 'issue')
@@ -161,10 +164,6 @@ export async function queryContributorCoreStats(
       .addSelect(
         `COUNT(*) FILTER (WHERE bounty.status IN ('${BountyStatus.CLAIMED}', '${BountyStatus.IN_REVIEW}'))`,
         'openBountiesClaimed',
-      )
-      .addSelect(
-        `COALESCE(SUM(bounty.amount) FILTER (WHERE bounty.status = '${BountyStatus.PAID}'), 0)`,
-        'lifetimeEarnings',
       )
       .addSelect(
         `COALESCE(AVG(EXTRACT(EPOCH FROM (bounty.mergedAt - bounty.claimedAt)) / 3600) FILTER (WHERE bounty.status IN (${MERGED_SQL}) AND bounty.claimedAt IS NOT NULL AND bounty.mergedAt IS NOT NULL), 0)`,
@@ -181,7 +180,6 @@ export async function queryContributorCoreStats(
         claimedCount: string;
         mergedCount: string;
         openBountiesClaimed: string;
-        lifetimeEarnings: string;
         avgReviewTimeHours: string;
         onTimeCount: string;
         repoCount: string;
@@ -205,6 +203,14 @@ export async function queryContributorCoreStats(
       .where('bounty.claimedById = :userId', { userId })
       .andWhere('repository.owner IS NOT NULL')
       .getRawMany<{ owner: string }>(),
+    paymentRepo
+      .createQueryBuilder('payment')
+      .select('COALESCE(SUM(payment.amount), 0)', 'lifetimeEarnings')
+      .where('payment.recipientId = :userId', { userId })
+      .andWhere('payment.status = :status', {
+        status: PaymentStatus.CONFIRMED,
+      })
+      .getRawOne<{ lifetimeEarnings: string }>(),
   ]);
 
   const claimedCount = Number(counts?.claimedCount ?? 0);
@@ -225,7 +231,7 @@ export async function queryContributorCoreStats(
     mergedCount,
     completionRate,
     avgReviewTimeHours: Number(counts?.avgReviewTimeHours ?? 0),
-    lifetimeEarnings: Number(counts?.lifetimeEarnings ?? 0),
+    lifetimeEarnings: Number(earningsRow?.lifetimeEarnings ?? 0),
     openBountiesClaimed: Number(counts?.openBountiesClaimed ?? 0),
     onTimeCount,
     onTimeDeliveryPercentage,
