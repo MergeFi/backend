@@ -70,11 +70,7 @@ jobs:
       - name: Build Application
         run: npm run build
 
-      - name: Run Unit & Integration Tests
-        env:
-          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/mergefi
-          NODE_ENV: test
-        run: npm run test
+      
 
       - name: Run Coverage Tests
         env:
