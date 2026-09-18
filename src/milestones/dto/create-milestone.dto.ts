@@ -1,9 +1,11 @@
 import { ApiProperty } from '@nestjs/swagger';
 import {
   IsISO8601,
+  IsNotEmpty,
   IsOptional,
   IsString,
   IsUUID,
+  Matches,
   MaxLength,
 } from 'class-validator';
 import { AssetType } from '../../common/enums';
@@ -24,6 +26,8 @@ export class CreateMilestoneDto {
 
   @ApiProperty({ maxLength: 200 })
   @IsString()
+  @IsNotEmpty()
+  @Matches(/\S/)
   @MaxLength(200)
   title: string;
 

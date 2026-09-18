@@ -2,10 +2,12 @@ import { ApiProperty } from '@nestjs/swagger';
 import { Type } from 'class-transformer';
 import {
   ArrayMinSize,
+  IsNotEmpty,
   IsNumber,
   IsOptional,
   IsString,
   IsUUID,
+  Matches,
   Max,
   MaxLength,
   Min,
@@ -33,6 +35,8 @@ export class TeamMemberSplitDto {
 export class CreateTeamDto {
   @ApiProperty()
   @IsString()
+  @IsNotEmpty()
+  @Matches(/\S/)
   name: string;
 
   @ApiProperty({ required: false })
