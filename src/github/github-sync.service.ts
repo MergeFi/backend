@@ -246,7 +246,38 @@ export class GithubSyncService {
     const issue = existing
       ? this.issueRepo.merge(existing, attrs)
       : this.issueRepo.create(attrs);
-    return { issue: await this.issueRepo.save(issue), applied: true };
+
+    try {
+      return { issue: await this.issueRepo.save(issue), applied: true };
+    } catch (err: unknown) {
+      const dbErr = err as { code?: string; message?: string };
+      const isUniqueViolation =
+        dbErr?.code === '23505' ||
+        (typeof dbErr?.message === 'string' &&
+          dbErr.message.toLowerCase().includes('unique constraint'));
+
+      if (isUniqueViolation) {
+        this.logger.warn(
+          Concurrent insert detected for issue  (#);  +
+            
+e-fetching existing record to resolve race,
+        );
+        const reFetched = await this.issueRepo.findOne({
+          where: { githubIssueId },
+        });
+        if (
+          reFetched?.githubUpdatedAt &&
+          reFetched.githubUpdatedAt.getTime() > incomingUpdatedAt.getTime()
+        ) {
+          return { issue: reFetched, applied: false };
+        }
+        if (reFetched) {
+          const merged = this.issueRepo.merge(reFetched, attrs);
+          return { issue: await this.issueRepo.save(merged), applied: true };
+        }
+      }
+      throw err;
+    }
   }
 
   async findRepositoryByGithubId(
