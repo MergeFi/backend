@@ -7,7 +7,7 @@ import {
   Post,
   UseGuards,
 } from '@nestjs/common';
-import { ApiTags } from '@nestjs/swagger';
+import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { IsOptional, IsUUID } from 'class-validator';
 import { Throttle } from '@nestjs/throttler';
 import { MilestonesService } from './milestones.service';
@@ -39,28 +39,50 @@ export class MilestonesController {
   constructor(private readonly milestonesService: MilestonesService) {}
 
   @Post()
+  @ApiBearerAuth()
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles(UserRole.SPONSOR, UserRole.MAINTAINER)
+  @ApiOperation({
+    summary: 'Create a milestone',
+    description:
+      'Creates a milestone grouped by issues with a dedicated budget cap. Requires sponsor or maintainer role.',
+  })
   create(@Body() dto: CreateMilestoneDto) {
     return this.milestonesService.create(dto);
   }
 
   @Throttle({ long: { limit: 1000, ttl: 3600000 } })
   @Get()
+  @ApiOperation({
+    summary: 'List milestones',
+    description:
+      'Retrieves all project milestones with budget allocations and progress status.',
+  })
   list() {
     return this.milestonesService.list();
   }
 
   @Get(':id')
+  @ApiOperation({
+    summary: 'Get milestone details',
+    description:
+      'Retrieves detailed information, associated issues, and funding status for a single milestone.',
+  })
   findOne(@Param('id', new ParseUUIDPipe()) id: string) {
     return this.milestonesService.findOne(id);
   }
 
   @Throttle({ short: { limit: 1, ttl: 1000 } })
   @Idempotent('milestone.fund')
+  @ApiBearerAuth()
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles(UserRole.SPONSOR, UserRole.MAINTAINER)
   @Post(':id/fund')
+  @ApiOperation({
+    summary: 'Fund a milestone',
+    description:
+      'Deposits stellar assets into the milestone escrow budget. Requires sponsor or maintainer role.',
+  })
   fund(
     @Param('id', new ParseUUIDPipe()) id: string,
     @Body() dto: FundMilestoneDto,
@@ -69,8 +91,14 @@ export class MilestonesController {
   }
 
   @Post(':id/issues/:issueId')
+  @ApiBearerAuth()
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles(UserRole.MAINTAINER)
+  @ApiOperation({
+    summary: 'Attach an issue to a milestone',
+    description:
+      'Links a tracked issue to an existing milestone for payout tracking. Restricted to maintainers.',
+  })
   addIssue(
     @Param('id', new ParseUUIDPipe()) id: string,
     @Param('issueId', new ParseUUIDPipe()) issueId: string,
@@ -79,9 +107,15 @@ export class MilestonesController {
   }
 
   @Idempotent('milestone.resolveIssue')
+  @ApiBearerAuth()
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles(UserRole.MAINTAINER)
   @Post(':id/issues/:issueId/resolve')
+  @ApiOperation({
+    summary: 'Resolve milestone issue and disburse payment',
+    description:
+      'Marks a milestone-linked issue as resolved and triggers reward disbursement to recipient. Restricted to maintainers.',
+  })
   resolveIssue(
     @Param('id', new ParseUUIDPipe()) id: string,
     @Param('issueId', new ParseUUIDPipe()) issueId: string,
@@ -96,9 +130,15 @@ export class MilestonesController {
   }
 
   @Idempotent('milestone.allocateBudget')
+  @ApiBearerAuth()
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles(UserRole.MAINTAINER)
   @Post(':id/allocate')
+  @ApiOperation({
+    summary: 'Allocate milestone budget',
+    description:
+      'Recalculates and locks budget shares among attached issues in the milestone. Restricted to maintainers.',
+  })
   allocateBudget(@Param('id', new ParseUUIDPipe()) id: string) {
     return this.milestonesService.allocateBudget(id);
   }

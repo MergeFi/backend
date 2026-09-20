@@ -7,7 +7,7 @@ import {
   Post,
   UseGuards,
 } from '@nestjs/common';
-import { ApiTags } from '@nestjs/swagger';
+import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { Throttle } from '@nestjs/throttler';
 import { IsOptional, IsUUID } from 'class-validator';
 import { MaintenancePoolService } from './maintenance-pool.service';
@@ -49,26 +49,48 @@ export class MaintenancePoolController {
   constructor(private readonly poolService: MaintenancePoolService) {}
 
   @Post()
+  @ApiBearerAuth()
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles(UserRole.SPONSOR, UserRole.MAINTAINER)
+  @ApiOperation({
+    summary: 'Create a maintenance pool',
+    description:
+      'Creates a continuous funding pool for open-source repository maintenance. Requires sponsor or maintainer role.',
+  })
   create(@Body() dto: CreatePoolDto) {
     return this.poolService.create(dto);
   }
 
   @Get()
+  @ApiOperation({
+    summary: 'List maintenance pools',
+    description:
+      'Retrieves all active maintenance funding pools and current balances.',
+  })
   list() {
     return this.poolService.list();
   }
 
   @Get(':id')
+  @ApiOperation({
+    summary: 'Get maintenance pool details',
+    description:
+      'Retrieves metadata, funding history, and remaining balance for a specific maintenance pool.',
+  })
   findOne(@Param('id', new ParseUUIDPipe()) id: string) {
     return this.poolService.findOne(id);
   }
 
   @Idempotent('pool.deposit')
+  @ApiBearerAuth()
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles(UserRole.SPONSOR, UserRole.MAINTAINER)
   @Post(':id/deposit')
+  @ApiOperation({
+    summary: 'Deposit into maintenance pool',
+    description:
+      'Funds an existing maintenance pool using a Stellar account. Requires sponsor or maintainer role.',
+  })
   deposit(
     @Param('id', new ParseUUIDPipe()) id: string,
     @Body() dto: DepositDto,
@@ -79,9 +101,15 @@ export class MaintenancePoolController {
   // High-value mutation protection (Requirement: max 1 req/sec against DoS/flooding)
   @Throttle({ short: { limit: 1, ttl: 1000 } })
   @Idempotent('pool.assignReward')
+  @ApiBearerAuth()
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles(UserRole.MAINTAINER)
   @Post(':id/assign-reward')
+  @ApiOperation({
+    summary: 'Assign reward from maintenance pool',
+    description:
+      'Disburses reward funds from the pool to a designated recipient for issue resolution. Restricted to maintainers.',
+  })
   assignReward(
     @Param('id', new ParseUUIDPipe()) id: string,
     @Body() dto: AssignRewardDto,
