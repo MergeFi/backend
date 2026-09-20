@@ -359,6 +359,15 @@ export class GithubWebhooksService {
           continue;
         }
 
+        // Verify the PR author is actually the contributor who claimed the bounty
+        const prAuthor = payload.pull_request?.user?.login;
+        const claimedBy = (bounty as any).claimedBy || (bounty as any).contributor?.githubUsername;
+        if (claimedBy && prAuthor && prAuthor.toLowerCase() !== claimedBy.toLowerCase()) {
+          this.logger.warn(`Skipping IN_REVIEW transition for bounty ${bounty.id}: PR author @${prAuthor} does not match claim contributor @${claimedBy}`);
+          outcomes.push({ issueNumber: number, outcome: 'skipped' });
+          continue;
+        }
+
         await this.bountiesService.markInReview(
           bounty.id,
           payload.pull_request.html_url,
