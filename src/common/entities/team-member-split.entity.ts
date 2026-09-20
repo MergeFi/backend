@@ -1,10 +1,10 @@
 import {
-  Column,
-  CreateDateColumn,
   Entity,
-  JoinColumn,
-  ManyToOne,
   PrimaryGeneratedColumn,
+  Column,
+  ManyToOne,
+  JoinColumn,
+  Index,
 } from 'typeorm';
 import { Team } from './team.entity';
 import { User } from './user.entity';
@@ -14,28 +14,22 @@ export class TeamMemberSplit {
   @PrimaryGeneratedColumn('uuid')
   id: string;
 
-  @ManyToOne(() => Team, (team) => team.splits, { onDelete: 'CASCADE' })
-  @JoinColumn()
-  team: Team;
-
-  @Column()
+  // Adding an index on teamId improves delete and join performance
+  @Index()
+  @Column({ type: 'uuid' })
   teamId: string;
 
-  @ManyToOne(() => User, { onDelete: 'CASCADE' })
-  @JoinColumn()
-  user: User;
-
-  @Column()
+  @Column({ type: 'uuid' })
   userId: string;
 
-  /** Free-text label describing the member's contribution, e.g. "frontend". */
-  @Column({ type: 'varchar', length: 50, nullable: true })
-  role: string | null;
+  @Column('decimal', { precision: 5, scale: 2 })
+  percentage: number;
 
-  /** Percentage of the bounty payout, 0-100. Sum across a team must equal 100. */
-  @Column({ type: 'decimal', precision: 5, scale: 2 })
-  percentage: string;
+  @ManyToOne(() => Team, (team) => team.splits, { onDelete: 'CASCADE' })
+  @JoinColumn({ name: 'teamId' })
+  team: Team;
 
-  @CreateDateColumn()
-  createdAt: Date;
+  @ManyToOne(() => User, (user) => user.teamSplits)
+  @JoinColumn({ name: 'userId' })
+  user: User;
 }
