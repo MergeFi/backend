@@ -310,6 +310,83 @@ describe('GithubSyncService', () => {
         expect.objectContaining({ title: 'Fresh update', state: 'closed' }),
       );
     });
+
+    it('recovers gracefully from concurrent insert race (23505) and applies newer data (#376)', async () => {
+      // 1st findOne returns null (race condition)
+      // save throws unique violation 23505
+      // 2nd findOne returns the racer row
+      // 2nd save succeeds with merged record
+      issueRepo.findOne
+        .mockResolvedValueOnce(null)
+        .mockResolvedValueOnce({
+          id: 'issue-1',
+          githubIssueId: '1',
+          githubUpdatedAt: new Date('2026-01-01T00:00:00Z'),
+        });
+
+      const uniqueViolationError = new Error('duplicate key value violates unique constraint');
+      (uniqueViolationError as unknown as { code: string }).code = '23505';
+
+      issueRepo.save
+        .mockRejectedValueOnce(uniqueViolationError)
+        .mockResolvedValueOnce({
+          id: 'issue-1',
+          githubIssueId: '1',
+          title: 'Concurrent win',
+          state: 'open',
+          githubUpdatedAt: new Date('2026-01-10T00:00:00Z'),
+        });
+
+      const { applied } = await service.upsertIssueRecord('repo-1', {
+        id: 1,
+        number: 1,
+        title: 'Concurrent win',
+        state: 'open',
+        html_url: 'x',
+        updated_at: '2026-01-10T00:00:00Z',
+      });
+
+      expect(applied).toBe(true);
+      expect(warnSpy).toHaveBeenCalledWith(
+        expect.stringContaining('Concurrent insert detected for issue 1'),
+      );
+      expect(issueRepo.findOne).toHaveBeenCalledTimes(2);
+      expect(issueRepo.save).toHaveBeenCalledTimes(2);
+    });
+
+    it('recovers from concurrent insert race and skips write if racer row is newer (#376)', async () => {
+      // 1st findOne returns null
+      // save throws unique violation 23505
+      // 2nd findOne returns a row fresher than our payload -> applied: false
+      issueRepo.findOne
+        .mockResolvedValueOnce(null)
+        .mockResolvedValueOnce({
+          id: 'issue-1',
+          githubIssueId: '1',
+          githubUpdatedAt: new Date('2026-01-15T00:00:00Z'),
+        });
+
+      const uniqueViolationError = new Error('duplicate key value violates unique constraint');
+      (uniqueViolationError as unknown as { code: string }).code = '23505';
+
+      issueRepo.save.mockRejectedValueOnce(uniqueViolationError);
+
+      const { applied } = await service.upsertIssueRecord('repo-1', {
+        id: 1,
+        number: 1,
+        title: 'Stale concurrent payload',
+        state: 'open',
+        html_url: 'x',
+        updated_at: '2026-01-10T00:00:00Z', // older than racer's Jan 15
+      });
+
+      expect(applied).toBe(false);
+      expect(warnSpy).toHaveBeenCalledWith(
+        expect.stringContaining('Concurrent insert detected for issue 1'),
+      );
+      expect(issueRepo.findOne).toHaveBeenCalledTimes(2);
+      expect(issueRepo.save).toHaveBeenCalledTimes(1); // not called again
+    });
   });
 
   describe('syncRepository — rate-limit budget logging (#24, #62)', () => {
