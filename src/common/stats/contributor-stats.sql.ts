@@ -163,7 +163,7 @@ export async function queryContributorCoreStats(
         'openBountiesClaimed',
       )
       .addSelect(
-        `COALESCE(SUM(bounty.amount) FILTER (WHERE bounty.status = '${BountyStatus.PAID}'), 0)`,
+        `COALESCE(SUM(CASE WHEN bounty.status = '${BountyStatus.PAID}' THEN bounty.amount ELSE 0 END), 0)`,
         'lifetimeEarnings',
       )
       .addSelect(
