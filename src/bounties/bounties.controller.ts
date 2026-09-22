@@ -6,6 +6,7 @@ import {
   ParseEnumPipe,
   ParseUUIDPipe,
   Post,
+  Req,
   Query,
   UseGuards,
 } from '@nestjs/common';
@@ -88,12 +89,15 @@ export class BountiesController {
   @Idempotent('bounty.claim')
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles(UserRole.CONTRIBUTOR)
+  @UseGuards(JwtAuthGuard)
   @Post(':id/claim')
   claim(
     @Param('id', new ParseUUIDPipe()) id: string,
     @Body() dto: ClaimBountyDto,
+    @Req() req: any,
   ) {
-    return this.bountiesService.claim(id, dto.contributorId);
+    const callerId = req.user?.id || dto.contributorId;
+    return this.bountiesService.claim(id, callerId);
   }
 
   @Idempotent('bounty.approve')
