@@ -25,6 +25,7 @@ import { Idempotent } from '../common/idempotency/idempotent.decorator';
 export class EscrowController {
   constructor(private readonly escrowService: EscrowService) {}
 
+  @UseGuards(JwtAuthGuard)
   @Idempotent('escrow.fund')
   @Post('fund')
   async fund(@Body() dto: FundEscrowDto) {
