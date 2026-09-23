@@ -1,3 +1,4 @@
+import { IsStellarAddress } from '../../common/validators/stellar-address.validator';
 import { ApiProperty } from '@nestjs/swagger';
 import { IsOptional, IsUUID } from 'class-validator';
 import { AssetType } from '../../common/enums';
