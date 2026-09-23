@@ -24,6 +24,14 @@ export class TeamsService {
   async create(dto: CreateTeamDto): Promise<Team> {
     validateSplitPercentages(dto.members);
 
+    // Verify all member userIds exist
+    for (const member of dto.members) {
+      const userExists = await this.userRepo.findOne({ where: { id: member.userId } });
+      if (!userExists) {
+        throw new NotFoundException(`User ${member.userId} not found`);
+      }
+    }
+
     const team = await this.teamRepo.save(
       this.teamRepo.create({
         name: dto.name,
@@ -64,6 +72,14 @@ export class TeamsService {
   ): Promise<Team> {
     const team = await this.findOne(teamId);
     validateSplitPercentages(members);
+
+    // Verify all member userIds exist
+    for (const member of members) {
+      const userExists = await this.userRepo.findOne({ where: { id: member.userId } });
+      if (!userExists) {
+        throw new NotFoundException(`User ${member.userId} not found`);
+      }
+    }
 
     // Remove existing splits
     await this.splitRepo.delete({ teamId: team.id });

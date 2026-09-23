@@ -1,8 +1,15 @@
-import { Injectable, NotFoundException, Optional } from '@nestjs/common';
+import {
+  BadRequestException,
+  ForbiddenException,
+  Injectable,
+  NotFoundException,
+  Optional,
+} from '@nestjs/common';
+import { BadRequestException, Injectable, NotFoundException, Optional } from '@nestjs/common';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { InjectRepository } from '@nestjs/typeorm';
 import { In, Repository } from 'typeorm';
-import { Bounty, Team, User } from '../common/entities';
+import { Bounty, Issue, Team, User } from '../common/entities';
 import { AssetType, BountyDifficulty, BountyStatus } from '../common/enums';
 import { ANALYTICS_PLATFORM_INVALIDATE_EVENT } from '../analytics/analytics.events';
 import { assertTransition } from './bounty-state-machine';
@@ -23,11 +30,24 @@ export class BountiesService {
     @InjectRepository(Bounty) private readonly bountyRepo: Repository<Bounty>,
     @InjectRepository(User) private readonly userRepo: Repository<User>,
     @InjectRepository(Team) private readonly teamRepo: Repository<Team>,
+    @InjectRepository(Issue) private readonly issueRepo: Repository<Issue>,
     private readonly escrowService: EscrowService,
     @Optional() private readonly eventEmitter?: EventEmitter2,
   ) {}
 
-  async create(dto: CreateBountyDto): Promise<Bounty> {
+  async create(dto: CreateBountyDto, callerUserId: string): Promise<Bounty> {
+    // Verify issueId exists
+    const issueExists = await this.issueRepo.findOne({ where: { id: dto.issueId } });
+    if (!issueExists) {
+      throw new NotFoundException(`Issue ${dto.issueId} not found`);
+    }
+
+    // Verify sponsorId exists
+    const sponsorExists = await this.userRepo.findOne({ where: { id: dto.sponsorId } });
+    if (!sponsorExists) {
+      throw new NotFoundException(`Sponsor ${dto.sponsorId} not found`);
+    }
+
     const bounty = this.bountyRepo.create({
       issueId: dto.issueId,
       sponsorId: dto.sponsorId,
@@ -49,12 +69,18 @@ export class BountiesService {
   }
 
   /** Sponsor funds the bounty: locks the amount in the escrow contract and moves OPEN -> FUNDED. */
-  async fund(id: string, funderAddress: string): Promise<Bounty> {
+  async fund(id: string, funderAddress: string, callerUserId: string): Promise<Bounty> {
     const bounty = await this.bountyRepo.findOne({
       where: { id },
       relations: { issue: true },
     });
     if (!bounty) throw new NotFoundException(`Bounty ${id} not found`);
+
+    // Verify caller is the sponsor (or admin - admin role checked by guard)
+    if (bounty.sponsorId !== callerUserId) {
+      throw new ForbiddenException('Only the bounty sponsor can fund this bounty');
+    }
+
     assertTransition(bounty.status, BountyStatus.FUNDED);
 
     const escrow = await this.escrowService.fund({
@@ -75,9 +101,25 @@ export class BountiesService {
   }
 
   /** Contributor claims a funded bounty. */
-  async claim(id: string, contributorId: string): Promise<Bounty> {
+  async claim(id: string, callerUserId: string): Promise<Bounty> {
     const bounty = await this.findOne(id);
     assertTransition(bounty.status, BountyStatus.CLAIMED);
+
+    // Verify caller is claiming for themselves
+    bounty.claimedById = callerUserId;
+    const contributor = await this.userRepo.findOne({
+      where: { id: contributorId },
+    });
+    if (!contributor) {
+      throw new BadRequestException(
+        `Contributor ${contributorId} does not correspond to a known user`,
+      );
+    }
+    if (!contributor.stellarAddress) {
+      throw new BadRequestException(
+        `Contributor ${contributorId} has no linked Stellar address`,
+      );
+    }
 
     bounty.claimedById = contributorId;
     bounty.status = BountyStatus.CLAIMED;
@@ -120,6 +162,7 @@ export class BountiesService {
     const bounty = await this.findOne(id);
     assertTransition(bounty.status, BountyStatus.MERGED);
 
+    const previousStatus = bounty.status;
     bounty.status = BountyStatus.MERGED;
     bounty.mergedAt = new Date();
     await this.bountyRepo.save(bounty);
@@ -129,36 +172,46 @@ export class BountiesService {
       return bounty;
     }
 
-    if (bounty.teamId) {
-      const team = await this.teamRepo.findOne({
-        where: { id: bounty.teamId },
-        relations: { splits: true },
-      });
-      if (team && team.splits.length > 0) {
-        const userIds = team.splits.map((s) => s.userId);
-        const users = await this.userRepo.find({
-          where: { id: In(userIds) },
+    try {
+      if (bounty.teamId) {
+        const team = await this.teamRepo.findOne({
+          where: { id: bounty.teamId },
+          relations: { splits: true },
         });
-        const userMap = new Map(users.map((u) => [u.id, u]));
-        const recipients = team.splits.map((split) => {
-          const user = userMap.get(split.userId);
-          return {
-            recipientId: split.userId,
-            recipientAddress: user?.stellarAddress ?? '',
-            percentage: Number(split.percentage),
-          };
+        if (team && team.splits.length > 0) {
+          const userIds = team.splits.map((s) => s.userId);
+          const users = await this.userRepo.find({
+            where: { id: In(userIds) },
+          });
+          const userMap = new Map(users.map((u) => [u.id, u]));
+          const recipients = team.splits.map((split) => {
+            const user = userMap.get(split.userId);
+            return {
+              recipientId: split.userId,
+              recipientAddress: user?.stellarAddress ?? '',
+              percentage: Number(split.percentage),
+            };
+          });
+          await this.escrowService.splitRelease(bounty.escrowId, recipients);
+        }
+      } else if (bounty.claimedById) {
+        const contributor = await this.userRepo.findOne({
+          where: { id: bounty.claimedById },
         });
-        await this.escrowService.splitRelease(bounty.escrowId, recipients);
+        await this.escrowService.release(
+          bounty.escrowId,
+          contributor?.stellarAddress ?? '',
+          bounty.claimedById,
+        );
       }
-    } else if (bounty.claimedById) {
-      const contributor = await this.userRepo.findOne({
-        where: { id: bounty.claimedById },
-      });
-      await this.escrowService.release(
-        bounty.escrowId,
-        contributor?.stellarAddress ?? '',
-        bounty.claimedById,
-      );
+    } catch (err) {
+      // Escrow release failed — transition to RELEASE_FAILED so the bounty
+      // is not permanently stuck. A retry via markMergedAndRelease is
+      // possible because the state machine allows RELEASE_FAILED -> MERGED.
+      assertTransition(bounty.status, BountyStatus.RELEASE_FAILED);
+      bounty.status = BountyStatus.RELEASE_FAILED;
+      await this.bountyRepo.save(bounty);
+      throw err;
     }
 
     assertTransition(bounty.status, BountyStatus.PAID);
@@ -170,8 +223,14 @@ export class BountiesService {
   }
 
   /** Sponsor (or admin/expiry job) reclaims escrowed funds. */
-  async refund(id: string): Promise<Bounty> {
+  async refund(id: string, callerUserId: string): Promise<Bounty> {
     const bounty = await this.findOne(id);
+
+    // Verify caller is the sponsor
+    if (bounty.sponsorId !== callerUserId) {
+      throw new ForbiddenException('Only the bounty sponsor can refund this bounty');
+    }
+
     assertTransition(bounty.status, BountyStatus.REFUNDED);
 
     if (bounty.escrowId) {
