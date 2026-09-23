@@ -5,7 +5,7 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { InjectDataSource, InjectRepository } from '@nestjs/typeorm';
-import { DataSource, In, Repository } from 'typeorm';
+import { DataSource, EntityManager, In, Repository } from 'typeorm';
 import { Escrow, Payment, User } from '../common/entities';
 import { AssetType, EscrowStatus, PaymentStatus } from '../common/enums';
 import {
@@ -240,12 +240,19 @@ export class EscrowService {
    * distributed incrementally as individual issues resolve. The escrow
    * moves to RELEASED once the cumulative released amount reaches the
    * total locked amount.
+   *
+   * When an `EntityManager` is supplied (e.g. from an outer
+   * `dataSource.transaction`), the Payment insert and optional escrow-status
+   * flip share that manager's transaction, guaranteeing atomicity with the
+   * caller's other writes (#254). Without one, a self-contained transaction
+   * is opened for backward compatibility.
    */
   async releasePartial(
     escrowId: string,
     amount: string,
     recipientAddress: string,
     recipientId?: string,
+    manager?: EntityManager,
   ): Promise<Payment> {
     const escrow = await this.getOrThrow(escrowId);
     this.assertLocked(escrow);
@@ -287,10 +294,11 @@ export class EscrowService {
 
     // The Payment insert and the (conditional) escrow-status flip share one
     // transaction so the two can't diverge — same guarantee as release()
-    // and splitRelease() (#154).
+    // and splitRelease() (#154). When an outer `manager` is supplied, reuse
+    // it so the caller's transaction also covers these writes (#254).
     let payment!: Payment;
-    await this.dataSource.transaction(async (manager) => {
-      payment = await manager.save(
+    const run = async (mgr: EntityManager) => {
+      payment = await mgr.save(
         Payment,
         this.paymentRepo.create({
           escrowId: escrow.id,
@@ -307,9 +315,15 @@ export class EscrowService {
         escrow.status = EscrowStatus.RELEASED;
         escrow.releaseTxHash = result.txHash;
         escrow.releasedAt = new Date();
-        await manager.save(Escrow, escrow);
+        await mgr.save(Escrow, escrow);
       }
-    });
+    };
+
+    if (manager) {
+      await run(manager);
+    } else {
+      await this.dataSource.transaction(run);
+    }
 
     return payment;
   }

@@ -7,6 +7,7 @@ import {
   MaxLength,
 } from 'class-validator';
 import { AssetType } from '../../common/enums';
+import { IsFutureDate } from '../../common/validators/date.validator';
 import {
   IsMoneyAmount,
   IsSupportedEscrowAsset,
@@ -44,5 +45,6 @@ export class CreateMilestoneDto {
   @ApiProperty({ required: false })
   @IsOptional()
   @IsISO8601()
+  @IsFutureDate()
   deadline?: string;
 }

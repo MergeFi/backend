@@ -1,7 +1,13 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import {
+  BadRequestException,
+  ForbiddenException,
+  Injectable,
+  NotFoundException,
+} from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
-import { Bounty, Team, TeamMemberSplit } from '../common/entities';
+import { Bounty, Team, TeamMemberSplit, User } from '../common/entities';
+import { BountyStatus, UserRole } from '../common/enums';
 import { CreateTeamDto, TeamMemberSplitDto } from './dto/create-team.dto';
 import { validateSplitPercentages } from './team-split.util';
 
@@ -12,6 +18,7 @@ export class TeamsService {
     @InjectRepository(TeamMemberSplit)
     private readonly splitRepo: Repository<TeamMemberSplit>,
     @InjectRepository(Bounty) private readonly bountyRepo: Repository<Bounty>,
+    @InjectRepository(User) private readonly userRepo: Repository<User>,
   ) {}
 
   async create(dto: CreateTeamDto): Promise<Team> {
@@ -77,10 +84,39 @@ export class TeamsService {
   }
 
   /** Attaches an existing team to a bounty so its payout is split on merge. */
-  async assignToBounty(teamId: string, bountyId: string): Promise<Bounty> {
+  async assignToBounty(
+    teamId: string,
+    bountyId: string,
+    callerId: string,
+  ): Promise<Bounty> {
     await this.findOne(teamId); // ensures team exists
     const bounty = await this.bountyRepo.findOne({ where: { id: bountyId } });
     if (!bounty) throw new NotFoundException(`Bounty ${bountyId} not found`);
+
+    const assignableStatuses: BountyStatus[] = [
+      BountyStatus.OPEN,
+      BountyStatus.FUNDED,
+      BountyStatus.CLAIMED,
+    ];
+    if (!assignableStatuses.includes(bounty.status)) {
+      throw new BadRequestException(
+        `Bounty ${bountyId} cannot be assigned in "${bounty.status}" status`,
+      );
+    }
+
+    const caller = await this.userRepo.findOne({
+      where: { id: callerId },
+      select: { roles: true },
+    });
+    if (
+      !caller?.roles.includes(UserRole.MAINTAINER) &&
+      bounty.sponsorId !== callerId
+    ) {
+      throw new ForbiddenException(
+        'Only the bounty sponsor or a maintainer can assign a team',
+      );
+    }
+
     bounty.teamId = teamId;
     return this.bountyRepo.save(bounty);
   }

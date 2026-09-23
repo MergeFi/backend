@@ -106,8 +106,9 @@ export class MilestonesService {
    * budget evenly across still-unresolved issues at the time of each call.
    *
    * The escrow release, milestone distributed-total update, and issue close
-   * are wrapped in a single DB transaction to prevent desync between the
-   * Payment ledger and `milestone.distributed` (#117).
+   * are now truly atomic: `releasePartial` receives the outer transaction's
+   * `EntityManager` so the Payment write, the milestone counter update, and
+   * the issue close all commit or roll back together (#254, #117).
    */
   async resolveIssue(
     milestoneId: string,
@@ -167,6 +168,7 @@ export class MilestonesService {
         share.toFixed(7),
         recipientAddress,
         recipientId,
+        mgr,
       );
 
       const newDistributed = (Number(milestone.distributed) + share).toFixed(7);
