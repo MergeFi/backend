@@ -38,9 +38,10 @@ class ResolveIssueDto {
 export class MilestonesController {
   constructor(private readonly milestonesService: MilestonesService) {}
 
-  @Post()
+  @Idempotent('milestone.create')
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles(UserRole.SPONSOR, UserRole.MAINTAINER)
+  @Post()
   create(@Body() dto: CreateMilestoneDto) {
     return this.milestonesService.create(dto);
   }
