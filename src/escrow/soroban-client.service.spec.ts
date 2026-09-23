@@ -2,7 +2,12 @@ import { ConfigService } from '@nestjs/config';
 import { nativeToScVal, rpc } from '@stellar/stellar-sdk';
 import { AssetType } from '../common/enums';
 import { AppConfig } from '../config/configuration';
-import { SorobanClientService } from './soroban-client.service';
+import {
+  SorobanClientService,
+  U64,
+  u64,
+  ESCROW_METHOD_ABI_TYPES,
+} from './soroban-client.service';
 
 jest.mock('@stellar/stellar-sdk', () => ({
   ...jest.requireActual('@stellar/stellar-sdk'),
@@ -199,6 +204,39 @@ describe('SorobanClientService', () => {
         'Soroban transaction submission failed',
       );
     });
+
+    it('encodes issue_id and deadline as u64 while encoding amount as i128 on fund (#301)', async () => {
+      const sponsor =
+        'GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAVAWHV';
+      const token = 'CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAVAWHV';
+      const issueId = 4242n;
+      const amount = 1_000_000n;
+      const deadline = 1800000000n;
+
+      await service.invoke('fund', [issueId, sponsor, token, amount, deadline]);
+
+      expect(nativeToScValMock).toHaveBeenCalledWith(issueId, { type: 'u64' });
+      expect(nativeToScValMock).toHaveBeenCalledWith(amount, { type: 'i128' });
+      expect(nativeToScValMock).toHaveBeenCalledWith(deadline, { type: 'u64' });
+    });
+
+    it('encodes issue_id as u64 on refund and release (#301)', async () => {
+      const issueId = 7007n;
+      await service.invoke('refund', [issueId]);
+      expect(nativeToScValMock).toHaveBeenCalledWith(issueId, { type: 'u64' });
+
+      nativeToScValMock.mockClear();
+      const recipient =
+        'GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAVAWHV';
+      await service.invoke('release', [issueId, [[recipient, 10000]]]);
+      expect(nativeToScValMock).toHaveBeenCalledWith(issueId, { type: 'u64' });
+    });
+
+    it('respects caller-specified types overrides via opts.types (#301)', async () => {
+      const val = 12345n;
+      await service.invoke('custom', [val], { types: ['u64'] });
+      expect(nativeToScValMock).toHaveBeenCalledWith(val, { type: 'u64' });
+    });
   });
 
   describe('pollTransaction (via invoke)', () => {
@@ -303,7 +341,7 @@ describe('SorobanClientService', () => {
       expect(encoded).toEqual(Buffer.from(hash));
     });
 
-    it('encodes bigints as i128', () => {
+    it('encodes bigints as i128 by default', () => {
       const encoded = (
         service as unknown as { toScVal(v: unknown): unknown }
       ).toScVal(1_000_000n);
@@ -312,6 +350,56 @@ describe('SorobanClientService', () => {
         type: 'i128',
       });
       expect(encoded).toBe(1_000_000n);
+    });
+
+    it('encodes bigints as u64 when typeHint is u64 (#301)', () => {
+      const encoded = (
+        service as unknown as { toScVal(v: unknown, hint?: string): unknown }
+      ).toScVal(4242n, 'u64');
+
+      expect(nativeToScValMock).toHaveBeenCalledWith(4242n, {
+        type: 'u64',
+      });
+      expect(encoded).toBe(4242n);
+    });
+
+    it('encodes U64 marker wrapper as u64 ScVal (#301)', () => {
+      const wrapped = u64(7007n);
+      const encoded = (
+        service as unknown as { toScVal(v: unknown): unknown }
+      ).toScVal(wrapped);
+
+      expect(nativeToScValMock).toHaveBeenCalledWith(7007n, {
+        type: 'u64',
+      });
+      expect(encoded).toBe(7007n);
+    });
+
+    it('encodes TypedScVal object with type u64 (#301)', () => {
+      const typed = { type: 'u64' as const, value: 9999n };
+      const encoded = (
+        service as unknown as { toScVal(v: unknown): unknown }
+      ).toScVal(typed);
+
+      expect(nativeToScValMock).toHaveBeenCalledWith(9999n, {
+        type: 'u64',
+      });
+      expect(encoded).toBe(9999n);
+    });
+
+    it('exposes ESCROW_METHOD_ABI_TYPES and U64 class (#301)', () => {
+      expect(ESCROW_METHOD_ABI_TYPES.fund).toEqual([
+        'u64',
+        'Address',
+        'Address',
+        'i128',
+        'u64',
+      ]);
+      const instance = new U64(123n);
+      expect(instance.type).toBe('u64');
+      expect(instance.value).toBe(123n);
+      expect(instance.toString()).toBe('123');
+      expect(instance.valueOf()).toBe(123n);
     });
 
     it('encodes short/plain strings with generic native encoding', () => {
