@@ -30,9 +30,18 @@ export class TeamMemberSplitDto {
   percentage: number;
 }
 
+export class UpdateTeamSplitsDto {
+  @ApiProperty({ type: [TeamMemberSplitDto] })
+  @ArrayMinSize(1)
+  @ValidateNested({ each: true })
+  @Type(() => TeamMemberSplitDto)
+  splits: TeamMemberSplitDto[];
+}
+
 export class CreateTeamDto {
   @ApiProperty()
   @IsString()
+  @MaxLength(100)
   name: string;
 
   @ApiProperty({ required: false })

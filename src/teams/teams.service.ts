@@ -1,7 +1,11 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import {
+  BadRequestException,
+  Injectable,
+  NotFoundException,
+} from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
-import { Bounty, Team, TeamMemberSplit } from '../common/entities';
+import { Bounty, Team, TeamMemberSplit, User } from '../common/entities';
 import { CreateTeamDto, TeamMemberSplitDto } from './dto/create-team.dto';
 import { validateSplitPercentages } from './team-split.util';
 
@@ -12,10 +16,19 @@ export class TeamsService {
     @InjectRepository(TeamMemberSplit)
     private readonly splitRepo: Repository<TeamMemberSplit>,
     @InjectRepository(Bounty) private readonly bountyRepo: Repository<Bounty>,
+    @InjectRepository(User) private readonly userRepo: Repository<User>,
   ) {}
 
   async create(dto: CreateTeamDto): Promise<Team> {
     validateSplitPercentages(dto.members);
+
+    // Verify all member userIds exist
+    for (const member of dto.members) {
+      const userExists = await this.userRepo.findOne({ where: { id: member.userId } });
+      if (!userExists) {
+        throw new NotFoundException(`User ${member.userId} not found`);
+      }
+    }
 
     const team = await this.teamRepo.save(
       this.teamRepo.create({
@@ -57,6 +70,14 @@ export class TeamsService {
   ): Promise<Team> {
     const team = await this.findOne(teamId);
     validateSplitPercentages(members);
+
+    // Verify all member userIds exist
+    for (const member of members) {
+      const userExists = await this.userRepo.findOne({ where: { id: member.userId } });
+      if (!userExists) {
+        throw new NotFoundException(`User ${member.userId} not found`);
+      }
+    }
 
     // Remove existing splits
     await this.splitRepo.delete({ teamId: team.id });

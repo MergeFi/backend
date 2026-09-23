@@ -7,6 +7,7 @@ import {
   ParseUUIDPipe,
   Post,
   Query,
+  Req,
   UseGuards,
 } from '@nestjs/common';
 import { ApiTags } from '@nestjs/swagger';
@@ -21,6 +22,7 @@ import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
 import { Roles } from '../auth/decorators/roles.decorator';
 import { UserRole } from '../common/enums';
+import { Request } from 'express';
 
 class FundBountyDto {
   @IsStellarAddress()
@@ -36,8 +38,9 @@ export class BountiesController {
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles(UserRole.SPONSOR, UserRole.MAINTAINER)
   @Post()
-  create(@Body() dto: CreateBountyDto) {
-    return this.bountiesService.create(dto);
+  create(@Body() dto: CreateBountyDto, @Req() req: Request) {
+    const userId = (req.user as any).userId;
+    return this.bountiesService.create(dto, userId);
   }
 
   // Public list: Lenient but protected against resource exhaustion (max 1000/hr)
@@ -79,8 +82,10 @@ export class BountiesController {
   fund(
     @Param('id', new ParseUUIDPipe()) id: string,
     @Body() dto: FundBountyDto,
+    @Req() req: Request,
   ) {
-    return this.bountiesService.fund(id, dto.funderAddress);
+    const userId = (req.user as any).userId;
+    return this.bountiesService.fund(id, dto.funderAddress, userId);
   }
 
   // High-value mutation: Strict rate limiting (max 1 req/sec)
@@ -91,9 +96,10 @@ export class BountiesController {
   @Post(':id/claim')
   claim(
     @Param('id', new ParseUUIDPipe()) id: string,
-    @Body() dto: ClaimBountyDto,
+    @Req() req: Request,
   ) {
-    return this.bountiesService.claim(id, dto.contributorId);
+    const userId = (req.user as any).userId;
+    return this.bountiesService.claim(id, userId);
   }
 
   @Idempotent('bounty.approve')
@@ -118,7 +124,8 @@ export class BountiesController {
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles(UserRole.SPONSOR, UserRole.MAINTAINER)
   @Post(':id/refund')
-  refund(@Param('id', new ParseUUIDPipe()) id: string) {
-    return this.bountiesService.refund(id);
+  refund(@Param('id', new ParseUUIDPipe()) id: string, @Req() req: Request) {
+    const userId = (req.user as any).userId;
+    return this.bountiesService.refund(id, userId);
   }
 }

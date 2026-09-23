@@ -1,5 +1,6 @@
 import {
   BadRequestException,
+  ForbiddenException,
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
@@ -21,7 +22,16 @@ export class MilestonesService {
     private readonly escrowService: EscrowService,
   ) {}
 
-  async create(dto: CreateMilestoneDto): Promise<Milestone> {
+  async create(dto: CreateMilestoneDto, callerUserId: string): Promise<Milestone> {
+    // Verify repositoryId exists
+    const repoExists = await this.dataSource.query(
+      'SELECT 1 FROM repositories WHERE id = $1',
+      [dto.repositoryId],
+    );
+    if (!repoExists.length) {
+      throw new NotFoundException(`Repository ${dto.repositoryId} not found`);
+    }
+
     const milestone = this.milestoneRepo.create({
       repositoryId: dto.repositoryId,
       sponsorId: dto.sponsorId ?? null,
@@ -45,8 +55,19 @@ export class MilestonesService {
   }
 
   /** Sponsor funds the full milestone budget up front; distributed incrementally per issue. */
-  async fund(id: string, funderAddress: string): Promise<Milestone> {
+  async fund(id: string, funderAddress: string, callerUserId: string): Promise<Milestone> {
     const milestone = await this.findOne(id);
+
+    // Verify caller is the sponsor
+    if (milestone.sponsorId && milestone.sponsorId !== callerUserId) {
+      throw new ForbiddenException('Only the milestone sponsor can fund this milestone');
+    }
+
+    if (milestone.status !== MilestoneStatus.OPEN) {
+      throw new BadRequestException(
+        `Milestone ${id} is not OPEN (current: ${milestone.status})`,
+      );
+    }
     assertTransition(milestone.status, MilestoneStatus.FUNDED);
 
     const escrow = await this.escrowService.fund({
