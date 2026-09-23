@@ -1,13 +1,26 @@
-import { Controller, Get, Param, ParseUUIDPipe, Query } from '@nestjs/common';
-import { ApiOperation, ApiQuery, ApiTags } from '@nestjs/swagger';
+import {
+  Controller,
+  ForbiddenException,
+  Get,
+  Param,
+  ParseUUIDPipe,
+  Query,
+  UseGuards,
+} from '@nestjs/common';
+import { ApiBearerAuth, ApiOperation, ApiQuery, ApiTags } from '@nestjs/swagger';
 import { HEATMAP_MAX_DAYS } from '../common/stats/contributor-stats.sql';
 import { AnalyticsService } from './analytics.service';
+import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
+import { CurrentUser } from '../common/decorators/current-user.decorator';
+import type { AuthenticatedUser } from '../common/decorators/current-user.decorator';
 
 @ApiTags('analytics')
 @Controller('analytics')
 export class AnalyticsController {
   constructor(private readonly analyticsService: AnalyticsService) {}
 
+  @ApiBearerAuth()
+  @UseGuards(JwtAuthGuard)
   @Get('contributors/:userId')
   @ApiOperation({
     summary: 'Contributor analytics (SQL-aggregated)',
@@ -18,9 +31,15 @@ export class AnalyticsController {
   @ApiQuery({ name: 'to', required: false, example: '2023-12-31' })
   forContributor(
     @Param('userId', new ParseUUIDPipe()) userId: string,
+    @CurrentUser() user: AuthenticatedUser,
     @Query('from') from?: string,
     @Query('to') to?: string,
   ) {
+    if (user.userId !== userId) {
+      throw new ForbiddenException(
+        'You may only access your own analytics data',
+      );
+    }
     return this.analyticsService.forContributor(userId, { from, to });
   }
 
