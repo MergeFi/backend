@@ -1,11 +1,11 @@
 import { Module } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
-import { Bounty, Repository } from '../common/entities';
+import { Bounty, Payment, Repository } from '../common/entities';
 import { AnalyticsService } from './analytics.service';
 import { AnalyticsController } from './analytics.controller';
 
 @Module({
-  imports: [TypeOrmModule.forFeature([Bounty, Repository])],
+  imports: [TypeOrmModule.forFeature([Bounty, Payment, Repository])],
   controllers: [AnalyticsController],
   providers: [AnalyticsService],
   exports: [AnalyticsService],

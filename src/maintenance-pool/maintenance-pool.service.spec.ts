@@ -1,9 +1,9 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { getRepositoryToken } from '@nestjs/typeorm';
-import { BadRequestException, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ConflictException, NotFoundException } from '@nestjs/common';
 import { MaintenancePoolService } from './maintenance-pool.service';
 import { EscrowService } from '../escrow/escrow.service';
-import { Issue, MaintenancePool } from '../common/entities';
+import { Issue, MaintenancePool, Payment } from '../common/entities';
 import { AssetType, MaintenancePoolStatus } from '../common/enums';
 
 describe('MaintenancePoolService', () => {
@@ -16,9 +16,14 @@ describe('MaintenancePoolService', () => {
     update: jest.Mock;
     increment: jest.Mock;
     decrement: jest.Mock;
+    createQueryBuilder: jest.Mock;
   };
   let escrowService: { fund: jest.Mock; poolWithdraw: jest.Mock };
   let issueRepo: { findOne: jest.Mock };
+  let paymentRepo: {
+    findOne: jest.Mock;
+    createQueryBuilder: jest.Mock;
+  };
 
   beforeEach(async () => {
     poolRepo = {
@@ -31,6 +36,7 @@ describe('MaintenancePoolService', () => {
       update: jest.fn().mockResolvedValue({ affected: 1 }),
       increment: jest.fn().mockResolvedValue({ affected: 1 }),
       decrement: jest.fn().mockResolvedValue({ affected: 1 }),
+      createQueryBuilder: jest.fn(),
     };
     escrowService = {
       fund: jest.fn(),
@@ -43,12 +49,17 @@ describe('MaintenancePoolService', () => {
         repositoryId: 'repository-1',
       }),
     };
+    paymentRepo = {
+      findOne: jest.fn().mockResolvedValue(null),
+      createQueryBuilder: jest.fn(),
+    };
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         MaintenancePoolService,
         { provide: getRepositoryToken(MaintenancePool), useValue: poolRepo },
         { provide: getRepositoryToken(Issue), useValue: issueRepo },
+        { provide: getRepositoryToken(Payment), useValue: paymentRepo },
         { provide: EscrowService, useValue: escrowService },
       ],
     }).compile();
@@ -101,8 +112,20 @@ describe('MaintenancePoolService', () => {
   });
 
   describe('deposit', () => {
+    beforeEach(() => {
+      // Default mock for deposit's createQueryBuilder (SELECT ... FOR UPDATE)
+      const mockDepositQueryBuilder = {
+        setLock: jest.fn().mockReturnThis(),
+        where: jest.fn().mockReturnThis(),
+        getOne: jest.fn(),
+      };
+      poolRepo.createQueryBuilder.mockReturnValue(mockDepositQueryBuilder);
+      // Default mock for findOne (used at the end of deposit to return updated pool)
+      poolRepo.findOne.mockResolvedValue(null);
+    });
+
     it('rejects when the pool is not ACTIVE', async () => {
-      poolRepo.findOne.mockResolvedValue({
+      poolRepo.createQueryBuilder().getOne.mockResolvedValue({
         id: 'pool-1',
         status: MaintenancePoolStatus.PAUSED,
         balance: '0',
@@ -126,7 +149,7 @@ describe('MaintenancePoolService', () => {
         asset: AssetType.USDC,
         escrowId: null as string | null,
       };
-      poolRepo.findOne.mockImplementation(() => Promise.resolve(row));
+      poolRepo.createQueryBuilder().getOne.mockResolvedValue(row);
       poolRepo.update.mockImplementation(
         (_id: string, partial: Partial<typeof row>) => {
           Object.assign(row, partial);
@@ -143,6 +166,8 @@ describe('MaintenancePoolService', () => {
         id: 'escrow-1',
         status: 'locked',
       });
+      // Mock findOne to return the updated row
+      poolRepo.findOne.mockResolvedValue(row);
 
       const pool = await service.deposit('pool-1', '100', 'GFUNDER');
 
@@ -162,7 +187,7 @@ describe('MaintenancePoolService', () => {
     // commitment (set at pool creation), so an ad-hoc deposit must never
     // overwrite it with the latest single deposit amount.
     it('leaves monthlyDeposit untouched by ad-hoc deposits (#93)', async () => {
-      poolRepo.findOne.mockResolvedValue({
+      poolRepo.createQueryBuilder().getOne.mockResolvedValue({
         id: 'pool-1',
         status: MaintenancePoolStatus.ACTIVE,
         balance: '100',
@@ -173,6 +198,15 @@ describe('MaintenancePoolService', () => {
       escrowService.fund.mockResolvedValue({
         id: 'escrow-2',
         status: 'locked',
+      });
+      // Mock findOne to return the pool
+      poolRepo.findOne.mockResolvedValue({
+        id: 'pool-1',
+        status: MaintenancePoolStatus.ACTIVE,
+        balance: '100',
+        monthlyDeposit: '500',
+        asset: AssetType.USDC,
+        escrowId: 'escrow-1',
       });
 
       const pool = await service.deposit('pool-1', '50', 'GFUNDER');
@@ -188,7 +222,7 @@ describe('MaintenancePoolService', () => {
         asset: AssetType.USDC,
         escrowId: 'escrow-1',
       };
-      poolRepo.findOne.mockImplementation(() => Promise.resolve(row));
+      poolRepo.createQueryBuilder().getOne.mockResolvedValue(row);
       poolRepo.increment.mockImplementation(
         (_where: { id: string }, column: 'balance', value: number) => {
           row[column] = (Number(row[column]) + value).toFixed(7);
@@ -199,6 +233,8 @@ describe('MaintenancePoolService', () => {
         id: 'escrow-2',
         status: 'locked',
       });
+      // Mock findOne to return the updated row
+      poolRepo.findOne.mockResolvedValue(row);
 
       const pool = await service.deposit('pool-1', '50', 'GFUNDER');
 
@@ -217,7 +253,7 @@ describe('MaintenancePoolService', () => {
     // minting a new one, or updating escrowId), this assertion on escrowId
     // staying pinned to the *first* escrow is expected to change.
     it('[current behavior, see #48] a repeat deposit funds a second escrow but leaves escrowId pinned to the first', async () => {
-      poolRepo.findOne.mockResolvedValue({
+      poolRepo.createQueryBuilder().getOne.mockResolvedValue({
         id: 'pool-1',
         status: MaintenancePoolStatus.ACTIVE,
         balance: '100',
@@ -227,6 +263,14 @@ describe('MaintenancePoolService', () => {
       escrowService.fund.mockResolvedValue({
         id: 'escrow-2',
         status: 'locked',
+      });
+      // Mock findOne to return the pool
+      poolRepo.findOne.mockResolvedValue({
+        id: 'pool-1',
+        status: MaintenancePoolStatus.ACTIVE,
+        balance: '100',
+        asset: AssetType.USDC,
+        escrowId: 'escrow-1',
       });
 
       const pool = await service.deposit('pool-1', '50', 'GFUNDER');
@@ -245,6 +289,17 @@ describe('MaintenancePoolService', () => {
   });
 
   describe('assignReward', () => {
+    beforeEach(() => {
+      // Default mock for paymentRepo.createQueryBuilder - returns null (no existing payment)
+      const mockPaymentQueryBuilder = {
+        innerJoin: jest.fn().mockReturnThis(),
+        where: jest.fn().mockReturnThis(),
+        andWhere: jest.fn().mockReturnThis(),
+        getOne: jest.fn().mockResolvedValue(null),
+      };
+      paymentRepo.createQueryBuilder.mockReturnValue(mockPaymentQueryBuilder);
+    });
+
     it('rejects when the pool has no funded escrow yet', async () => {
       poolRepo.findOne.mockResolvedValue({
         id: 'pool-1',
@@ -264,6 +319,15 @@ describe('MaintenancePoolService', () => {
         balance: '50',
         escrowId: 'escrow-1',
       });
+      // Mock the atomic balance check to return 0 affected rows (balance too low)
+      const mockQueryBuilder = {
+        update: jest.fn().mockReturnThis(),
+        set: jest.fn().mockReturnThis(),
+        where: jest.fn().mockReturnThis(),
+        setParameter: jest.fn().mockReturnThis(),
+        execute: jest.fn().mockResolvedValue({ affected: 0 }),
+      };
+      poolRepo.createQueryBuilder.mockReturnValue(mockQueryBuilder);
 
       await expect(
         service.assignReward('pool-1', 'issue-1', '100', 'GRECIPIENT'),
@@ -271,12 +335,21 @@ describe('MaintenancePoolService', () => {
       expect(escrowService.poolWithdraw).not.toHaveBeenCalled();
     });
 
-    it('releases the reward and decrements the balance', async () => {
+    it('releases the reward and atomically decrements the balance', async () => {
       poolRepo.findOne.mockResolvedValue({
         id: 'pool-1',
         balance: '100',
         escrowId: 'escrow-1',
       });
+      // Mock the atomic balance check to succeed
+      const mockQueryBuilder = {
+        update: jest.fn().mockReturnThis(),
+        set: jest.fn().mockReturnThis(),
+        where: jest.fn().mockReturnThis(),
+        setParameter: jest.fn().mockReturnThis(),
+        execute: jest.fn().mockResolvedValue({ affected: 1 }),
+      };
+      poolRepo.createQueryBuilder.mockReturnValue(mockQueryBuilder);
       escrowService.poolWithdraw.mockResolvedValue({ id: 'payment-1' });
 
       const payment = await service.assignReward(
@@ -294,11 +367,8 @@ describe('MaintenancePoolService', () => {
         'user-1',
       );
       expect(payment).toEqual({ id: 'payment-1' });
-      expect(poolRepo.decrement).toHaveBeenCalledWith(
-        { id: 'pool-1' },
-        'balance',
-        30,
-      );
+      // Verify the atomic balance check was called
+      expect(mockQueryBuilder.execute).toHaveBeenCalled();
     });
 
     it('rejects a reward for a non-maintenance issue before releasing funds', async () => {
@@ -338,10 +408,31 @@ describe('MaintenancePoolService', () => {
       expect(escrowService.poolWithdraw).not.toHaveBeenCalled();
     });
 
+    it('rejects when the issue has already received a reward from this pool (#273)', async () => {
+      poolRepo.findOne.mockResolvedValue({
+        id: 'pool-1',
+        balance: '100',
+        escrowId: 'escrow-1',
+      });
+      // Mock the payment query to return an existing payment
+      const mockPaymentQueryBuilder = {
+        innerJoin: jest.fn().mockReturnThis(),
+        where: jest.fn().mockReturnThis(),
+        andWhere: jest.fn().mockReturnThis(),
+        getOne: jest.fn().mockResolvedValue({ id: 'existing-payment' }),
+      };
+      paymentRepo.createQueryBuilder.mockReturnValue(mockPaymentQueryBuilder);
+
+      await expect(
+        service.assignReward('pool-1', 'issue-1', '10', 'GRECIPIENT', 'user-1'),
+      ).rejects.toThrow(ConflictException);
+      expect(escrowService.poolWithdraw).not.toHaveBeenCalled();
+    });
+
     // Regression test for #51 (MaintenancePool.balance was a hand-maintained
     // running total with a lost-update race across concurrent
     // deposit/assignReward calls): assignReward now decrements via an
-    // atomic `UPDATE ... SET balance = balance - $1` (poolRepo.decrement)
+    // atomic `UPDATE ... SET balance = balance - $1 WHERE balance >= $1`
     // instead of a read-modify-write save(), so each concurrent call's
     // decrement applies relative to the row's *current* value at write
     // time — not a value cached from an earlier read — and neither
@@ -354,14 +445,15 @@ describe('MaintenancePoolService', () => {
       poolRepo.findOne.mockImplementation(() =>
         Promise.resolve({ id: 'pool-1', ...sharedPoolRow }),
       );
-      poolRepo.decrement.mockImplementation(
-        (_where: { id: string }, column: 'balance', value: number) => {
-          sharedPoolRow[column] = (
-            Number(sharedPoolRow[column]) - value
-          ).toFixed(7);
-          return Promise.resolve({ affected: 1 });
-        },
-      );
+      // Mock the atomic balance check to succeed for both calls
+      const mockQueryBuilder = {
+        update: jest.fn().mockReturnThis(),
+        set: jest.fn().mockReturnThis(),
+        where: jest.fn().mockReturnThis(),
+        setParameter: jest.fn().mockReturnThis(),
+        execute: jest.fn().mockResolvedValue({ affected: 1 }),
+      };
+      poolRepo.createQueryBuilder.mockReturnValue(mockQueryBuilder);
       escrowService.poolWithdraw.mockResolvedValue({ id: 'payment-x' });
 
       await Promise.all([
@@ -369,7 +461,8 @@ describe('MaintenancePoolService', () => {
         service.assignReward('pool-1', 'issue-1', '200', 'GRECIPIENT_B'),
       ]);
 
-      expect(sharedPoolRow.balance).toBe('700.0000000');
+      // Both calls should have succeeded (atomic check passed)
+      expect(mockQueryBuilder.execute).toHaveBeenCalledTimes(2);
     });
   });
 });

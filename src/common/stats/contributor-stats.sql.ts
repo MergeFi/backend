@@ -1,7 +1,7 @@
 import { BadRequestException } from '@nestjs/common';
 import { Repository } from 'typeorm';
-import { Bounty } from '../entities';
-import { BountyStatus } from '../enums';
+import { Bounty, Payment } from '../entities';
+import { BountyStatus, PaymentStatus } from '../enums';
 import { MERGED_BOUNTY_STATUSES } from './contributor-stats.util';
 
 /** Max calendar-day buckets returned for a payout heatmap. */
@@ -13,6 +13,7 @@ const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
 
 /** UTC calendar-day expression matching `Date#toISOString().slice(0, 10)`. */
 export const PAYOUT_UTC_DATE_SQL = `to_char((bounty.paidAt AT TIME ZONE 'UTC'), 'YYYY-MM-DD')`;
+export const PAYMENT_UTC_DATE_SQL = `to_char((payment.createdAt AT TIME ZONE 'UTC'), 'YYYY-MM-DD')`;
 
 const MERGED_SQL = MERGED_BOUNTY_STATUSES.map((s) => `'${s}'`).join(', ');
 
@@ -95,6 +96,7 @@ export async function queryPayoutHeatmap(
   bountyRepo: Repository<Bounty>,
   userId: string,
   range: HeatmapRange = {},
+  paymentRepo?: Repository<Payment>,
 ): Promise<HeatmapBucket[]> {
   const qb = bountyRepo
     .createQueryBuilder('bounty')
@@ -113,18 +115,56 @@ export async function queryPayoutHeatmap(
     });
   }
 
-  const rows = await qb
+  const bountyRows = await qb
     .groupBy(PAYOUT_UTC_DATE_SQL)
     .orderBy(PAYOUT_UTC_DATE_SQL, 'DESC')
     .limit(HEATMAP_MAX_DAYS)
     .getRawMany<{ date: string; count: string }>();
 
-  return heatmapFromRaw(rows);
+  // Also include Payment rows from milestone/maintenance-pool payouts (#272).
+  let paymentRows: Array<{ date: string; count: string }> = [];
+  if (paymentRepo) {
+    const pQb = paymentRepo
+      .createQueryBuilder('payment')
+      .select(PAYMENT_UTC_DATE_SQL, 'date')
+      .addSelect('COUNT(*)', 'count')
+      .where('payment.recipientId = :userId', { userId })
+      .andWhere('payment.status = :paid', { paid: PaymentStatus.PAID });
+
+    if (range.from) {
+      pQb.andWhere('payment.createdAt >= :from', { from: range.from });
+    }
+    if (range.toExclusive) {
+      pQb.andWhere('payment.createdAt < :toExclusive', {
+        toExclusive: range.toExclusive,
+      });
+    }
+
+    paymentRows = await pQb
+      .groupBy(PAYMENT_UTC_DATE_SQL)
+      .orderBy(PAYMENT_UTC_DATE_SQL, 'DESC')
+      .limit(HEATMAP_MAX_DAYS)
+      .getRawMany<{ date: string; count: string }>();
+  }
+
+  // Merge bounty and payment rows by date.
+  const merged = new Map<string, number>();
+  for (const row of bountyRows) {
+    merged.set(row.date, (merged.get(row.date) ?? 0) + Number(row.count));
+  }
+  for (const row of paymentRows) {
+    merged.set(row.date, (merged.get(row.date) ?? 0) + Number(row.count));
+  }
+
+  return Array.from(merged.entries())
+    .map(([date, count]) => ({ date, count }))
+    .sort((a, b) => a.date.localeCompare(b.date));
 }
 
 export async function queryTopClients(
   bountyRepo: Repository<Bounty>,
   userId: string,
+  paymentRepo?: Repository<Payment>,
 ): Promise<TopClientRow[]> {
   const rows = await bountyRepo
     .createQueryBuilder('bounty')
@@ -138,17 +178,52 @@ export async function queryTopClients(
     .limit(TOP_CLIENTS_LIMIT)
     .getRawMany<{ sponsorId: string; totalPaid: string }>();
 
-  return rows.map((row) => ({
+  // Also include Payment rows from milestone/maintenance-pool payouts (#272).
+  // Note: Payment rows don't have a direct sponsorId, so we include them as
+  // "pool/milestone" payouts in the total.
+  let paymentTotal = 0;
+  if (paymentRepo) {
+    const paymentResult = await paymentRepo
+      .createQueryBuilder('payment')
+      .select('COALESCE(SUM(payment.amount), 0)', 'totalPaid')
+      .where('payment.recipientId = :userId', { userId })
+      .andWhere('payment.status = :paid', { paid: PaymentStatus.PAID })
+      .getRawOne<{ totalPaid: string }>();
+    paymentTotal = Number(paymentResult?.totalPaid ?? 0);
+  }
+
+  const result = rows.map((row) => ({
     sponsorId: row.sponsorId,
     totalPaid: Number(row.totalPaid),
   }));
+
+  // If there are payment totals from non-bounty sources, add them as a
+  // separate entry representing pool/milestone payouts.
+  if (paymentTotal > 0) {
+    const existingPoolEntry = result.find(
+      (r) => r.sponsorId === 'pool/milestone',
+    );
+    if (existingPoolEntry) {
+      existingPoolEntry.totalPaid += paymentTotal;
+    } else {
+      result.push({ sponsorId: 'pool/milestone', totalPaid: paymentTotal });
+    }
+    // Re-sort and re-limit after adding payment data.
+    result.sort((a, b) => b.totalPaid - a.totalPaid);
+    if (result.length > TOP_CLIENTS_LIMIT) {
+      result.length = TOP_CLIENTS_LIMIT;
+    }
+  }
+
+  return result;
 }
 
 export async function queryContributorCoreStats(
   bountyRepo: Repository<Bounty>,
   userId: string,
+  paymentRepo?: Repository<Payment>,
 ): Promise<ContributorCoreSqlStats> {
-  const [counts, languagesRows, orgsRows] = await Promise.all([
+  const [counts, languagesRows, orgsRows, paymentEarnings] = await Promise.all([
     bountyRepo
       .createQueryBuilder('bounty')
       .leftJoin('bounty.issue', 'issue')
@@ -205,6 +280,18 @@ export async function queryContributorCoreStats(
       .where('bounty.claimedById = :userId', { userId })
       .andWhere('repository.owner IS NOT NULL')
       .getRawMany<{ owner: string }>(),
+    // Also aggregate Payment rows from milestone/maintenance-pool payouts (#272).
+    paymentRepo
+      ? paymentRepo
+          .createQueryBuilder('payment')
+          .select(
+            'COALESCE(SUM(payment.amount) FILTER (WHERE payment.status = :paid), 0)',
+            'totalPaid',
+          )
+          .setParameter('paid', PaymentStatus.PAID)
+          .where('payment.recipientId = :userId', { userId })
+          .getRawOne<{ totalPaid: string }>()
+      : Promise.resolve({ totalPaid: '0' }),
   ]);
 
   const claimedCount = Number(counts?.claimedCount ?? 0);
@@ -220,12 +307,16 @@ export async function queryContributorCoreStats(
     languages[row.lang] = Number(row.count);
   }
 
+  // Add payment earnings from milestone/maintenance-pool payouts to lifetimeEarnings.
+  const bountyLifetimeEarnings = Number(counts?.lifetimeEarnings ?? 0);
+  const paymentLifetimeEarnings = Number(paymentEarnings?.totalPaid ?? 0);
+
   return {
     claimedCount,
     mergedCount,
     completionRate,
     avgReviewTimeHours: Number(counts?.avgReviewTimeHours ?? 0),
-    lifetimeEarnings: Number(counts?.lifetimeEarnings ?? 0),
+    lifetimeEarnings: bountyLifetimeEarnings + paymentLifetimeEarnings,
     openBountiesClaimed: Number(counts?.openBountiesClaimed ?? 0),
     onTimeCount,
     onTimeDeliveryPercentage,

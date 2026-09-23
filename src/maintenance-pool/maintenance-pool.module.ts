@@ -1,6 +1,6 @@
 import { Module } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
-import { Issue, MaintenancePool, User } from '../common/entities';
+import { Issue, MaintenancePool, Payment, User } from '../common/entities';
 import { IdempotencyKey } from '../common/entities/idempotency-key.entity';
 import { MaintenancePoolService } from './maintenance-pool.service';
 import { MaintenancePoolController } from './maintenance-pool.controller';
@@ -11,7 +11,13 @@ import { AuthModule } from '../auth/auth.module';
   imports: [
     // See TeamsModule/BountiesModule for why RolesGuard and @Idempotent()
     // need User/IdempotencyKey resolvable here too.
-    TypeOrmModule.forFeature([MaintenancePool, Issue, User, IdempotencyKey]),
+    TypeOrmModule.forFeature([
+      MaintenancePool,
+      Issue,
+      Payment,
+      User,
+      IdempotencyKey,
+    ]),
     EscrowModule,
     AuthModule,
   ],

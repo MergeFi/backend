@@ -1,7 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
-import { Bounty, ReputationSnapshot } from '../common/entities';
+import { Bounty, Payment, ReputationSnapshot } from '../common/entities';
 import { queryContributorCoreStats } from '../common/stats/contributor-stats.sql';
 
 export const REPUTATION_HISTORY_DEFAULT_LIMIT = 50;
@@ -16,6 +16,8 @@ export interface ReputationHistoryOptions {
 export class ReputationService {
   constructor(
     @InjectRepository(Bounty) private readonly bountyRepo: Repository<Bounty>,
+    @InjectRepository(Payment)
+    private readonly paymentRepo: Repository<Payment>,
     @InjectRepository(ReputationSnapshot)
     private readonly snapshotRepo: Repository<ReputationSnapshot>,
   ) {}
@@ -25,7 +27,11 @@ export class ReputationService {
    * bounty activity and appends a new snapshot row.
    */
   async computeAndSave(userId: string): Promise<ReputationSnapshot> {
-    const stats = await queryContributorCoreStats(this.bountyRepo, userId);
+    const stats = await queryContributorCoreStats(
+      this.bountyRepo,
+      userId,
+      this.paymentRepo,
+    );
 
     const snapshot = this.snapshotRepo.create({
       userId,
