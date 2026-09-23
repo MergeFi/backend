@@ -11,6 +11,8 @@ import {
 import { ApiTags } from '@nestjs/swagger';
 import { TeamsService } from './teams.service';
 import { CreateTeamDto, UpdateTeamSplitsDto } from './dto/create-team.dto';
+import { CreateTeamDto, TeamMemberSplitDto } from './dto/create-team.dto';
+import { Idempotent } from '../common/idempotency/idempotent.decorator';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
 import { Roles } from '../auth/decorators/roles.decorator';
@@ -21,6 +23,7 @@ import { UserRole } from '../common/enums';
 export class TeamsController {
   constructor(private readonly teamsService: TeamsService) {}
 
+  @Idempotent('team.create')
   @Post()
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles(UserRole.MAINTAINER, UserRole.SPONSOR)
@@ -33,6 +36,7 @@ export class TeamsController {
     return this.teamsService.findOne(id);
   }
 
+  @Idempotent('team.updateSplits')
   @Patch(':id/splits')
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles(UserRole.MAINTAINER, UserRole.SPONSOR)
@@ -43,6 +47,7 @@ export class TeamsController {
     return this.teamsService.updateSplits(id, dto.splits);
   }
 
+  @Idempotent('team.assign')
   @Post(':id/assign/:bountyId')
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles(UserRole.MAINTAINER, UserRole.SPONSOR)

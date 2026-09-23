@@ -166,56 +166,30 @@ export async function queryTopClients(
   userId: string,
   paymentRepo?: Repository<Payment>,
 ): Promise<TopClientRow[]> {
-  const rows = await bountyRepo
-    .createQueryBuilder('bounty')
-    .select('bounty.sponsorId', 'sponsorId')
-    .addSelect('COALESCE(SUM(bounty.amount), 0)', 'totalPaid')
-    .where('bounty.claimedById = :userId', { userId })
-    .andWhere('bounty.status = :paid', { paid: BountyStatus.PAID })
-    .andWhere('bounty.sponsorId IS NOT NULL')
-    .groupBy('bounty.sponsorId')
-    .orderBy('totalPaid', 'DESC')
-    .limit(TOP_CLIENTS_LIMIT)
-    .getRawMany<{ sponsorId: string; totalPaid: string }>();
-
-  // Also include Payment rows from milestone/maintenance-pool payouts (#272).
-  // Note: Payment rows don't have a direct sponsorId, so we include them as
-  // "pool/milestone" payouts in the total.
-  let paymentTotal = 0;
+  // Sum from the Payment ledger joined through escrow to get the sponsor,
+  // instead of summing bounty.amount which overstates team-split bounties.
+  let rows: { sponsorId: string; totalPaid: string }[] = [];
   if (paymentRepo) {
-    const paymentResult = await paymentRepo
+    rows = await paymentRepo
       .createQueryBuilder('payment')
-      .select('COALESCE(SUM(payment.amount), 0)', 'totalPaid')
-      .where('payment.recipientId = :userId', { userId })
-      .andWhere('payment.status = :paid', { paid: PaymentStatus.PAID })
-      .getRawOne<{ totalPaid: string }>();
-    paymentTotal = Number(paymentResult?.totalPaid ?? 0);
+      .innerJoin('payment.escrow', 'escrow')
+      .select('escrow.sponsorId', 'sponsorId')
+      .addSelect(
+        "COALESCE(SUM(payment.amount) FILTER (WHERE payment.status = :paid AND payment.recipientId = :userId AND escrow.sponsorId IS NOT NULL), 0)",
+        'totalPaid',
+      )
+      .setParameter('paid', PaymentStatus.PAID)
+      .setParameter('userId', userId)
+      .groupBy('escrow.sponsorId')
+      .orderBy('totalPaid', 'DESC')
+      .limit(TOP_CLIENTS_LIMIT)
+      .getRawMany<{ sponsorId: string; totalPaid: string }>();
   }
 
-  const result = rows.map((row) => ({
+  return rows.map((row) => ({
     sponsorId: row.sponsorId,
     totalPaid: Number(row.totalPaid),
   }));
-
-  // If there are payment totals from non-bounty sources, add them as a
-  // separate entry representing pool/milestone payouts.
-  if (paymentTotal > 0) {
-    const existingPoolEntry = result.find(
-      (r) => r.sponsorId === 'pool/milestone',
-    );
-    if (existingPoolEntry) {
-      existingPoolEntry.totalPaid += paymentTotal;
-    } else {
-      result.push({ sponsorId: 'pool/milestone', totalPaid: paymentTotal });
-    }
-    // Re-sort and re-limit after adding payment data.
-    result.sort((a, b) => b.totalPaid - a.totalPaid);
-    if (result.length > TOP_CLIENTS_LIMIT) {
-      result.length = TOP_CLIENTS_LIMIT;
-    }
-  }
-
-  return result;
 }
 
 export async function queryContributorCoreStats(
@@ -236,10 +210,6 @@ export async function queryContributorCoreStats(
       .addSelect(
         `COUNT(*) FILTER (WHERE bounty.status IN ('${BountyStatus.CLAIMED}', '${BountyStatus.IN_REVIEW}'))`,
         'openBountiesClaimed',
-      )
-      .addSelect(
-        `COALESCE(SUM(bounty.amount) FILTER (WHERE bounty.status = '${BountyStatus.PAID}'), 0)`,
-        'lifetimeEarnings',
       )
       .addSelect(
         `COALESCE(AVG(EXTRACT(EPOCH FROM (bounty.mergedAt - bounty.claimedAt)) / 3600) FILTER (WHERE bounty.status IN (${MERGED_SQL}) AND bounty.claimedAt IS NOT NULL AND bounty.mergedAt IS NOT NULL), 0)`,
@@ -281,15 +251,17 @@ export async function queryContributorCoreStats(
       .andWhere('repository.owner IS NOT NULL')
       .getRawMany<{ owner: string }>(),
     // Also aggregate Payment rows from milestone/maintenance-pool payouts (#272).
+    // This is now the sole source of truth for lifetimeEarnings — summing from
+    // the Payment ledger instead of bounty.amount to correctly handle team splits.
     paymentRepo
       ? paymentRepo
           .createQueryBuilder('payment')
           .select(
-            'COALESCE(SUM(payment.amount) FILTER (WHERE payment.status = :paid), 0)',
+            "COALESCE(SUM(payment.amount) FILTER (WHERE payment.status = :paid AND payment.recipientId = :userId), 0)",
             'totalPaid',
           )
           .setParameter('paid', PaymentStatus.PAID)
-          .where('payment.recipientId = :userId', { userId })
+          .setParameter('userId', userId)
           .getRawOne<{ totalPaid: string }>()
       : Promise.resolve({ totalPaid: '0' }),
   ]);
@@ -307,16 +279,15 @@ export async function queryContributorCoreStats(
     languages[row.lang] = Number(row.count);
   }
 
-  // Add payment earnings from milestone/maintenance-pool payouts to lifetimeEarnings.
-  const bountyLifetimeEarnings = Number(counts?.lifetimeEarnings ?? 0);
-  const paymentLifetimeEarnings = Number(paymentEarnings?.totalPaid ?? 0);
+  // Use the Payment ledger as the source of truth for lifetime earnings.
+  const lifetimeEarnings = Number(paymentEarnings?.totalPaid ?? 0);
 
   return {
     claimedCount,
     mergedCount,
     completionRate,
     avgReviewTimeHours: Number(counts?.avgReviewTimeHours ?? 0),
-    lifetimeEarnings: bountyLifetimeEarnings + paymentLifetimeEarnings,
+    lifetimeEarnings,
     openBountiesClaimed: Number(counts?.openBountiesClaimed ?? 0),
     onTimeCount,
     onTimeDeliveryPercentage,

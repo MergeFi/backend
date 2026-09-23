@@ -40,12 +40,15 @@ class ResolveIssueDto {
 export class MilestonesController {
   constructor(private readonly milestonesService: MilestonesService) {}
 
-  @Post()
+  @Idempotent('milestone.create')
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles(UserRole.SPONSOR, UserRole.MAINTAINER)
   create(@Body() dto: CreateMilestoneDto, @Req() req: Request) {
     const userId = (req.user as any).userId;
     return this.milestonesService.create(dto, userId);
+  @Post()
+  create(@Body() dto: CreateMilestoneDto) {
+    return this.milestonesService.create(dto);
   }
 
   @Throttle({ long: { limit: 1000, ttl: 3600000 } })

@@ -31,6 +31,11 @@ export function validatePercentageSplits(
   if (splits.length === 0) {
     throw new BadRequestException(`At least one ${label} entry is required`);
   }
+  if (splits.some((s) => !Number.isFinite(s.percentage))) {
+    throw new BadRequestException(
+      `Each ${label} percentage must be a finite number`,
+    );
+  }
   if (splits.some((s) => s.percentage <= 0 || s.percentage > 100)) {
     throw new BadRequestException(
       `Each ${label} percentage must be greater than 0 and at most 100`,
