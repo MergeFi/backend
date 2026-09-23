@@ -1,4 +1,4 @@
-import { Injectable, NotFoundException, Optional } from '@nestjs/common';
+import { BadRequestException, Injectable, NotFoundException, Optional } from '@nestjs/common';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { InjectRepository } from '@nestjs/typeorm';
 import { In, Repository } from 'typeorm';
@@ -79,6 +79,20 @@ export class BountiesService {
     const bounty = await this.findOne(id);
     assertTransition(bounty.status, BountyStatus.CLAIMED);
 
+    const contributor = await this.userRepo.findOne({
+      where: { id: contributorId },
+    });
+    if (!contributor) {
+      throw new BadRequestException(
+        `Contributor ${contributorId} does not correspond to a known user`,
+      );
+    }
+    if (!contributor.stellarAddress) {
+      throw new BadRequestException(
+        `Contributor ${contributorId} has no linked Stellar address`,
+      );
+    }
+
     bounty.claimedById = contributorId;
     bounty.status = BountyStatus.CLAIMED;
     bounty.claimedAt = new Date();
@@ -120,6 +134,7 @@ export class BountiesService {
     const bounty = await this.findOne(id);
     assertTransition(bounty.status, BountyStatus.MERGED);
 
+    const previousStatus = bounty.status;
     bounty.status = BountyStatus.MERGED;
     bounty.mergedAt = new Date();
     await this.bountyRepo.save(bounty);
@@ -129,36 +144,46 @@ export class BountiesService {
       return bounty;
     }
 
-    if (bounty.teamId) {
-      const team = await this.teamRepo.findOne({
-        where: { id: bounty.teamId },
-        relations: { splits: true },
-      });
-      if (team && team.splits.length > 0) {
-        const userIds = team.splits.map((s) => s.userId);
-        const users = await this.userRepo.find({
-          where: { id: In(userIds) },
+    try {
+      if (bounty.teamId) {
+        const team = await this.teamRepo.findOne({
+          where: { id: bounty.teamId },
+          relations: { splits: true },
         });
-        const userMap = new Map(users.map((u) => [u.id, u]));
-        const recipients = team.splits.map((split) => {
-          const user = userMap.get(split.userId);
-          return {
-            recipientId: split.userId,
-            recipientAddress: user?.stellarAddress ?? '',
-            percentage: Number(split.percentage),
-          };
+        if (team && team.splits.length > 0) {
+          const userIds = team.splits.map((s) => s.userId);
+          const users = await this.userRepo.find({
+            where: { id: In(userIds) },
+          });
+          const userMap = new Map(users.map((u) => [u.id, u]));
+          const recipients = team.splits.map((split) => {
+            const user = userMap.get(split.userId);
+            return {
+              recipientId: split.userId,
+              recipientAddress: user?.stellarAddress ?? '',
+              percentage: Number(split.percentage),
+            };
+          });
+          await this.escrowService.splitRelease(bounty.escrowId, recipients);
+        }
+      } else if (bounty.claimedById) {
+        const contributor = await this.userRepo.findOne({
+          where: { id: bounty.claimedById },
         });
-        await this.escrowService.splitRelease(bounty.escrowId, recipients);
+        await this.escrowService.release(
+          bounty.escrowId,
+          contributor?.stellarAddress ?? '',
+          bounty.claimedById,
+        );
       }
-    } else if (bounty.claimedById) {
-      const contributor = await this.userRepo.findOne({
-        where: { id: bounty.claimedById },
-      });
-      await this.escrowService.release(
-        bounty.escrowId,
-        contributor?.stellarAddress ?? '',
-        bounty.claimedById,
-      );
+    } catch (err) {
+      // Escrow release failed — transition to RELEASE_FAILED so the bounty
+      // is not permanently stuck. A retry via markMergedAndRelease is
+      // possible because the state machine allows RELEASE_FAILED -> MERGED.
+      assertTransition(bounty.status, BountyStatus.RELEASE_FAILED);
+      bounty.status = BountyStatus.RELEASE_FAILED;
+      await this.bountyRepo.save(bounty);
+      throw err;
     }
 
     assertTransition(bounty.status, BountyStatus.PAID);
