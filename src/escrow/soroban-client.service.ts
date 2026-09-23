@@ -22,6 +22,48 @@ export interface ContractInvocationResult {
   status: string;
 }
 
+export type ScValTypeHint =
+  'u64' | 'i128' | 'u32' | 'i32' | 'bytes' | 'string' | 'symbol';
+
+export interface TypedScVal<T = unknown> {
+  type: ScValTypeHint;
+  value: T;
+}
+
+/** Marker wrapper for u64 numeric arguments passed to Soroban contracts (#301). */
+export class U64 {
+  readonly type = 'u64' as const;
+  readonly value: bigint;
+
+  constructor(value: bigint | number | string) {
+    this.value = BigInt(value);
+  }
+
+  toString(): string {
+    return this.value.toString();
+  }
+
+  valueOf(): bigint {
+    return this.value;
+  }
+}
+
+export function u64(value: bigint | number | string): U64 {
+  return new U64(value);
+}
+
+/**
+ * Expected parameter types for core escrow contract methods (#301).
+ * Maps parameter positions to their intended ScVal type hint so callers passing
+ * plain numbers/bigints have u64 vs i128 encoded accurately according to the
+ * contract ABI without requiring manual wrapping.
+ */
+export const ESCROW_METHOD_ABI_TYPES: Record<string, string[]> = {
+  fund: ['u64', 'Address', 'Address', 'i128', 'u64'],
+  release: ['u64', 'Vec<(Address, u32)>'],
+  refund: ['u64'],
+};
+
 /**
  * Thin wrapper around the Stellar/Soroban RPC client used to invoke the
  * escrow smart contract deployed by the sibling `mergefi-contracts` repo.
@@ -134,7 +176,7 @@ export class SorobanClientService {
   async invoke(
     method: string,
     args: unknown[],
-    opts: { contractId?: string } = {},
+    opts: { contractId?: string; types?: string[] } = {},
   ): Promise<ContractInvocationResult> {
     if (!this.isConfigured()) {
       this.logger.warn(
@@ -159,7 +201,10 @@ export class SorobanClientService {
     const contract = this.getContract(opts.contractId);
     const account = await this.server.getAccount(keypair.publicKey());
 
-    const scArgs = args.map((arg) => this.toScVal(arg));
+    const methodTypes = opts.types ?? ESCROW_METHOD_ABI_TYPES[method];
+    const scArgs = args.map((arg, idx) =>
+      this.toScVal(arg, methodTypes?.[idx]),
+    );
 
     const tx = new TransactionBuilder(account, {
       fee: BASE_FEE,
@@ -219,7 +264,25 @@ export class SorobanClientService {
     );
   }
 
-  private toScVal(value: unknown): xdr.ScVal {
+  private isTypedScVal(value: unknown): value is TypedScVal {
+    return (
+      typeof value === 'object' &&
+      value !== null &&
+      'type' in value &&
+      'value' in value &&
+      typeof (value as { type: unknown }).type === 'string'
+    );
+  }
+
+  private toScVal(value: unknown, typeHint?: string): xdr.ScVal {
+    if (this.isTypedScVal(value)) {
+      const type = value.type;
+      const inner =
+        type === 'u64' || type === 'i128'
+          ? BigInt(value.value as string | number | bigint)
+          : value.value;
+      return nativeToScVal(inner, { type: type });
+    }
     if (Buffer.isBuffer(value) || value instanceof Uint8Array) {
       // BytesN<32> arguments (metadata hashes, description hashes, etc.)
       // arrive as raw bytes, not strings — without this branch they fell
@@ -253,7 +316,15 @@ export class SorobanClientService {
       }
     }
     if (typeof value === 'bigint') {
-      return nativeToScVal(value, { type: 'i128' });
+      const type = typeHint === 'u64' ? 'u64' : 'i128';
+      return nativeToScVal(value, { type });
+    }
+    if (
+      typeHint === 'u64' &&
+      ((typeof value === 'number' && Number.isInteger(value) && value >= 0) ||
+        (typeof value === 'string' && /^\d+$/.test(value)))
+    ) {
+      return nativeToScVal(BigInt(value), { type: 'u64' });
     }
     return nativeToScVal(value);
   }
