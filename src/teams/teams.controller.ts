@@ -17,6 +17,10 @@ import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
 import { Roles } from '../auth/decorators/roles.decorator';
 import { UserRole } from '../common/enums';
+import {
+  AuthenticatedUser,
+  CurrentUser,
+} from '../common/decorators/current-user.decorator';
 
 @ApiTags('teams')
 @Controller('teams')
@@ -54,7 +58,8 @@ export class TeamsController {
   assign(
     @Param('id', new ParseUUIDPipe()) id: string,
     @Param('bountyId', new ParseUUIDPipe()) bountyId: string,
+    @CurrentUser() user: AuthenticatedUser,
   ) {
-    return this.teamsService.assignToBounty(id, bountyId);
+    return this.teamsService.assignToBounty(id, bountyId, user.userId);
   }
 }

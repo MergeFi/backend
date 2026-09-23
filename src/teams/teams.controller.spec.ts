@@ -72,10 +72,10 @@ describe('TeamsController', () => {
   });
 
   describe('assign', () => {
-    it('calls teamsService.assignToBounty with id and bountyId', async () => {
-      await controller.assign('t1', 'b1');
+    it('calls teamsService.assignToBounty with id, bountyId, and caller id', async () => {
+      await controller.assign('t1', 'b1', { userId: 'u1', username: 'test' });
 
-      expect(teamsService.assignToBounty).toHaveBeenCalledWith('t1', 'b1');
+      expect(teamsService.assignToBounty).toHaveBeenCalledWith('t1', 'b1', 'u1');
     });
   });
 
