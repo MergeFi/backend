@@ -120,6 +120,9 @@ export class MaintenancePoolService {
     recipientId?: string,
   ) {
     const pool = await this.findOne(id);
+    if (pool.status !== MaintenancePoolStatus.ACTIVE) {
+      throw new BadRequestException(`Pool ${id} is not ACTIVE`);
+    }
     const issue = await this.issueRepo.findOne({ where: { id: issueId } });
     if (!issue) throw new NotFoundException(`Issue ${issueId} not found`);
     if (!issue.isMaintenanceType) {
