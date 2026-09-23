@@ -48,8 +48,13 @@ export class SponsorsController {
   milestoneProgress(
     @Param('id', new ParseUUIDPipe()) id: string,
     @CurrentUser() user: AuthenticatedUser,
+    @Query('limit') limit?: string,
+    @Query('offset') offset?: string,
   ) {
     this.assertOwnsSponsor(user, id);
-    return this.sponsorsService.milestoneProgress(id);
+    return this.sponsorsService.milestoneProgress(id, {
+      limit: limit ? Number(limit) : undefined,
+      offset: offset ? Number(offset) : undefined,
+    });
   }
 }

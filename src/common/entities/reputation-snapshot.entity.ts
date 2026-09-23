@@ -2,6 +2,7 @@ import {
   Column,
   CreateDateColumn,
   Entity,
+  Index,
   JoinColumn,
   ManyToOne,
   PrimaryGeneratedColumn,
@@ -15,6 +16,7 @@ import { User } from './user.entity';
  * most recent snapshot per user.
  */
 @Entity('reputation_snapshots')
+@Index(['userId', 'computedAt'])
 export class ReputationSnapshot {
   @PrimaryGeneratedColumn('uuid')
   id: string;

@@ -35,7 +35,10 @@ export class SponsorsService {
   ) {}
 
   /** Bounties this sponsor has created that are still in flight (not paid/refunded/expired). */
-  async activeBounties(sponsorId: string): Promise<Bounty[]> {
+  async activeBounties(
+    sponsorId: string,
+    options: SponsorDashboardOptions = {},
+  ): Promise<Bounty[]> {
     return this.bountyRepo
       .createQueryBuilder('bounty')
       .where('bounty.sponsorId = :sponsorId', { sponsorId })
@@ -46,6 +49,8 @@ export class SponsorsService {
           BountyStatus.EXPIRED,
         ],
       })
+      .take(options.limit ?? 20)
+      .skip(options.offset ?? 0)
       .getMany();
   }
 
@@ -90,20 +95,30 @@ export class SponsorsService {
     return Number(row?.total ?? 0);
   }
 
-  async activeMilestones(sponsorId: string): Promise<Milestone[]> {
+  async activeMilestones(
+    sponsorId: string,
+    options: SponsorDashboardOptions = {},
+  ): Promise<Milestone[]> {
     return this.milestoneRepo.find({
       where: [
         { sponsorId, status: MilestoneStatus.FUNDED },
         { sponsorId, status: MilestoneStatus.IN_PROGRESS },
       ],
+      take: options.limit ?? 20,
+      skip: options.offset ?? 0,
     });
   }
 
   /** Progress (0-1) of every milestone this sponsor funded: distributed / budget. */
   async milestoneProgress(
     sponsorId: string,
+    options: SponsorDashboardOptions = {},
   ): Promise<Array<{ milestoneId: string; title: string; progress: number }>> {
-    const milestones = await this.milestoneRepo.find({ where: { sponsorId } });
+    const milestones = await this.milestoneRepo.find({
+      where: { sponsorId },
+      take: options.limit ?? 20,
+      skip: options.offset ?? 0,
+    });
     return milestones.map((m) => ({
       milestoneId: m.id,
       title: m.title,
@@ -118,10 +133,10 @@ export class SponsorsService {
   ): Promise<SponsorDashboard> {
     const [activeBounties, totalSpent, budgetLocked, activeMilestones] =
       await Promise.all([
-        this.activeBounties(sponsorId),
+        this.activeBounties(sponsorId, options),
         this.totalSpend(sponsorId),
         this.budgetLocked(sponsorId),
-        this.activeMilestones(sponsorId),
+        this.activeMilestones(sponsorId, options),
       ]);
 
     // Joins on escrow.sponsorId directly (not escrow.bounty.sponsorId): the
