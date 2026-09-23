@@ -10,7 +10,7 @@ import {
 } from '@nestjs/common';
 import { ApiTags } from '@nestjs/swagger';
 import { TeamsService } from './teams.service';
-import { CreateTeamDto, TeamMemberSplitDto } from './dto/create-team.dto';
+import { CreateTeamDto, UpdateTeamSplitsDto } from './dto/create-team.dto';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
 import { Roles } from '../auth/decorators/roles.decorator';
@@ -38,9 +38,9 @@ export class TeamsController {
   @Roles(UserRole.MAINTAINER, UserRole.SPONSOR)
   updateSplits(
     @Param('id', new ParseUUIDPipe()) id: string,
-    @Body() members: TeamMemberSplitDto[],
+    @Body() dto: UpdateTeamSplitsDto,
   ) {
-    return this.teamsService.updateSplits(id, members);
+    return this.teamsService.updateSplits(id, dto.splits);
   }
 
   @Post(':id/assign/:bountyId')

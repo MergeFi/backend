@@ -5,6 +5,7 @@ import {
   Param,
   ParseUUIDPipe,
   Post,
+  Req,
   UseGuards,
 } from '@nestjs/common';
 import { ApiTags } from '@nestjs/swagger';
@@ -18,6 +19,7 @@ import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
 import { Roles } from '../auth/decorators/roles.decorator';
 import { UserRole } from '../common/enums';
+import { Request } from 'express';
 
 class FundMilestoneDto {
   @IsStellarAddress()
@@ -41,8 +43,9 @@ export class MilestonesController {
   @Post()
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles(UserRole.SPONSOR, UserRole.MAINTAINER)
-  create(@Body() dto: CreateMilestoneDto) {
-    return this.milestonesService.create(dto);
+  create(@Body() dto: CreateMilestoneDto, @Req() req: Request) {
+    const userId = (req.user as any).userId;
+    return this.milestonesService.create(dto, userId);
   }
 
   @Throttle({ long: { limit: 1000, ttl: 3600000 } })
@@ -64,8 +67,10 @@ export class MilestonesController {
   fund(
     @Param('id', new ParseUUIDPipe()) id: string,
     @Body() dto: FundMilestoneDto,
+    @Req() req: Request,
   ) {
-    return this.milestonesService.fund(id, dto.funderAddress);
+    const userId = (req.user as any).userId;
+    return this.milestonesService.fund(id, dto.funderAddress, userId);
   }
 
   @Post(':id/issues/:issueId')
