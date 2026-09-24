@@ -7,20 +7,7 @@ import { AppModule } from './app.module';
 import { AppConfig } from './config/configuration';
 import { assertRequiredConfig } from './config/validate-required-config';
 import { GlobalExceptionFilter } from './common/filters/global-exception.filter';
-
-import { LogLevel } from '@nestjs/common';
-
-const LOG_LEVEL_MAP: Record<string, LogLevel[]> = {
-  error: ['error'],
-  warn: ['error', 'warn'],
-  log: ['error', 'warn', 'log'],
-  debug: ['error', 'warn', 'log', 'debug'],
-  verbose: ['error', 'warn', 'log', 'debug', 'verbose'],
-};
-
-function resolveLogLevels(level: string): LogLevel[] {
-  return LOG_LEVEL_MAP[level.toLowerCase()] ?? LOG_LEVEL_MAP.log;
-}
+import { resolveLogLevels, startupMessage } from './config/log-levels';
 
 async function bootstrap() {
   // rawBody: true preserves the raw request buffer on req.rawBody, which the
@@ -79,10 +66,6 @@ async function bootstrap() {
   const port = configService.get('port', { infer: true });
   await app.listen(port);
 
-  console.log(
-    env === 'production'
-      ? `MergeFi backend listening on port ${port}`
-      : `MergeFi backend listening on port ${port} — docs at /api/docs`,
-  );
+  console.log(startupMessage(env, port));
 }
 void bootstrap();
