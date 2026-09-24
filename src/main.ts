@@ -1,6 +1,6 @@
 import { NestFactory } from '@nestjs/core';
 import { ConfigService } from '@nestjs/config';
-import { ValidationPipe } from '@nestjs/common';
+import { Logger, ValidationPipe } from '@nestjs/common';
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
 import helmet from 'helmet';
 import { AppModule } from './app.module';
@@ -66,6 +66,8 @@ async function bootstrap() {
   const port = configService.get('port', { infer: true });
   await app.listen(port);
 
-  console.log(startupMessage(env, port));
+  // Go through Nest's Logger (not raw stdout) so the banner honours
+  // LOG_LEVEL and any logger/transport installed via app.useLogger (#362).
+  new Logger('Bootstrap').log(startupMessage(env, port));
 }
 void bootstrap();
