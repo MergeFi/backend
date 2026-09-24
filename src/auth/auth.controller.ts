@@ -3,6 +3,8 @@ import {
   Controller,
   Get,
   HttpCode,
+  Ip,
+  Logger,
   Post,
   Req,
   Res,
@@ -22,6 +24,8 @@ import type { UpsertFromGithubInput } from '../users/users.service';
 @ApiTags('auth')
 @Controller('auth')
 export class AuthController {
+  private readonly logger = new Logger(AuthController.name);
+
   constructor(
     private readonly authService: AuthService,
     private readonly configService: ConfigService<AppConfig, true>,
@@ -64,27 +68,35 @@ export class AuthController {
   @Post('handoff')
   @HttpCode(200)
   @ApiExcludeEndpoint()
-  exchangeHandoff(@Body('code') code: string) {
-    if (!code || typeof code !== 'string') {
-      throw new UnauthorizedException('Missing handoff code');
-    }
-    const token = this.authService.consumeHandoffCode(code);
-    if (!token) {
-      throw new UnauthorizedException('Invalid or expired handoff code');
-    }
-    return { accessToken: token };
+  exchangeHandoff(@Body('code') code: string, @Ip() ip: string) {
+    return this.exchangeCode(code, ip, '/auth/handoff');
   }
 
   @Post('exchange')
   @HttpCode(200)
   @ApiExcludeEndpoint()
-  exchangeHandoffAlias(@Body('code') code: string) {
+  exchangeHandoffAlias(@Body('code') code: string, @Ip() ip: string) {
     // Alias for POST /auth/exchange — same single-use semantics as /handoff.
+    return this.exchangeCode(code, ip, '/auth/exchange');
+  }
+
+  /**
+   * Shared single-use handoff-code exchange for /handoff and /exchange.
+   * Failed attempts are logged at warn (#366) so bursts of guessed or
+   * replayed codes are visible server-side. The code itself is never logged.
+   */
+  private exchangeCode(code: unknown, ip: string, route: string) {
     if (!code || typeof code !== 'string') {
+      this.logger.warn(
+        `Handoff exchange rejected on ${route} from ${ip}: missing code`,
+      );
       throw new UnauthorizedException('Missing handoff code');
     }
     const token = this.authService.consumeHandoffCode(code);
     if (!token) {
+      this.logger.warn(
+        `Handoff exchange rejected on ${route} from ${ip}: invalid or expired code`,
+      );
       throw new UnauthorizedException('Invalid or expired handoff code');
     }
     return { accessToken: token };
