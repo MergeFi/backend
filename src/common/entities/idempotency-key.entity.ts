@@ -92,6 +92,7 @@ export class IdempotencyKey {
    * than this are safe to garbage-collect since no legitimate client retry
    * would plausibly arrive this late.
    */
+  @Index()
   @Column({ type: 'timestamptz' })
   expiresAt: Date;
 }
