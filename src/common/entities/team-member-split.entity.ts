@@ -1,5 +1,6 @@
 import {
   Column,
+  Index,
   CreateDateColumn,
   Entity,
   JoinColumn,
@@ -10,6 +11,7 @@ import { Team } from './team.entity';
 import { User } from './user.entity';
 
 @Entity('team_member_splits')
+@Index('IDX_team_member_splits_team_id', ['teamId'])
 export class TeamMemberSplit {
   @PrimaryGeneratedColumn('uuid')
   id: string;
