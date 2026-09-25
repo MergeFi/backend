@@ -4,6 +4,7 @@ import {
   ForbiddenException,
   Get,
   Param,
+  ParseIntPipe,
   ParseUUIDPipe,
   Query,
   UseGuards,
@@ -17,6 +18,14 @@ import { ApiInternalErrorResponse } from '../common/swagger/api-common-responses
 
 const MAX_PAGE_LIMIT = 100;
 
+function validatePage(limit?: number, offset?: number) {
+  if (limit !== undefined && (limit < 1 || limit > MAX_PAGE_LIMIT)) {
+    throw new BadRequestException(`limit must be between 1 and ${MAX_PAGE_LIMIT}`);
+  }
+  if (offset !== undefined && offset < 0) {
+    throw new BadRequestException('offset must be >= 0');
+  }
+  return { limit, offset };
 /**
  * Parse optional limit/offset query params, rejecting NaN, negatives,
  * non-integers, and limits above MAX_PAGE_LIMIT with a 400 (#280).
@@ -58,10 +67,12 @@ export class SponsorsController {
   dashboard(
     @Param('id', new ParseUUIDPipe()) id: string,
     @CurrentUser() user: AuthenticatedUser,
-    @Query('limit') limit?: string,
-    @Query('offset') offset?: string,
+    // #280 — reject NaN/negative/fractional values and cap the page size.
+    @Query('limit', new ParseIntPipe({ optional: true })) limit?: number,
+    @Query('offset', new ParseIntPipe({ optional: true })) offset?: number,
   ) {
     this.assertOwnsSponsor(user, id);
+    return this.sponsorsService.dashboard(id, validatePage(limit, offset));
     return this.sponsorsService.dashboard(id, parsePagination(limit, offset));
   }
 
@@ -71,10 +82,15 @@ export class SponsorsController {
   milestoneProgress(
     @Param('id', new ParseUUIDPipe()) id: string,
     @CurrentUser() user: AuthenticatedUser,
-    @Query('limit') limit?: string,
-    @Query('offset') offset?: string,
+    // #280 — reject NaN/negative/fractional values and cap the page size.
+    @Query('limit', new ParseIntPipe({ optional: true })) limit?: number,
+    @Query('offset', new ParseIntPipe({ optional: true })) offset?: number,
   ) {
     this.assertOwnsSponsor(user, id);
+    return this.sponsorsService.milestoneProgress(
+      id,
+      validatePage(limit, offset),
+    );
     return this.sponsorsService.milestoneProgress(id, parsePagination(limit, offset));
   }
 }
