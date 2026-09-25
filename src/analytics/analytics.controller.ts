@@ -13,9 +13,11 @@ import { AnalyticsService } from './analytics.service';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
 import type { AuthenticatedUser } from '../common/decorators/current-user.decorator';
+import { ApiInternalErrorResponse } from '../common/swagger/api-common-responses.decorator';
 
 @ApiTags('analytics')
 @Controller('analytics')
+@ApiInternalErrorResponse()
 export class AnalyticsController {
   constructor(private readonly analyticsService: AnalyticsService) {}
 

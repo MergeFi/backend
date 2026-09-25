@@ -171,10 +171,13 @@ export class UsersService {
   async setStellarAddress(
     userId: string,
     stellarAddress: string,
-  ): Promise<User> {
+  ): Promise<PublicUserDto> {
     const user = await this.findOneRaw(userId);
     user.stellarAddress = stellarAddress;
-    return this.userRepo.save(user);
+    // #359: return the same public shape as every other user-facing
+    // method — the raw entity leaks email and the full nested
+    // githubAccount object that toPublicUser exists specifically to strip.
+    return toPublicUser(await this.userRepo.save(user));
   }
 
   async list(): Promise<PublicUserDto[]> {
