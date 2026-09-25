@@ -18,6 +18,10 @@ services:
     environment:
       # Override DATABASE_URL to target the postgres container inside the docker network
       - DATABASE_URL=postgresql://postgres:postgres@db:5432/mergefi
+      # Docker Compose is a local development target, so bootstrap tables from
+      # entities on first start. Keep .env.example safe by default for native
+      # and production-like runs.
+      - DATABASE_SYNCHRONIZE=true
       - PORT=3000
       - NODE_ENV=development
     depends_on:

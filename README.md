@@ -240,6 +240,7 @@ docker compose up --build
 - **Services**:
   - The API is served at `http://localhost:3000/api` (Swagger docs at `http://localhost:3000/api/docs`).
   - PostgreSQL is mapped to port `5432` on your localhost with credentials `postgres:postgres` and database name `mergefi`.
+- **Database bootstrap**: the `app` service sets `DATABASE_SYNCHRONIZE=true` for this Docker development target, so TypeORM creates the local schema from entities when the app starts. This keeps the one-command quick-start usable with a fresh `postgres_data` volume.
 
 ### 2. Local Development Natively on Host
 
@@ -256,7 +257,12 @@ docker compose up -d db
 cp .env.example .env
 # Set DATABASE_URL=postgresql://postgres:postgres@localhost:5432/mergefi
 
-# D. Start NestJS in development mode
+# D. Create or update the local schema
+npm run migration:run
+# For throwaway local development only, you may instead set
+# DATABASE_SYNCHRONIZE=true in .env before starting the app.
+
+# E. Start NestJS in development mode
 npm run start:dev
 ```
 
@@ -309,7 +315,7 @@ Unit tests cover critical domains including:
 - `src/database/escrow-fk-integrity.integration.spec.ts` — **integration** test against a real Postgres (requires `DATABASE_URL`, not mocked): the exactly-one-parent CHECK constraint on `escrows`, and that sponsor dashboard figures survive a parent bounty/milestone being deleted.
 - `src/analytics/analytics.integration.spec.ts` — Postgres load/parity test: SQL heatmap + top-N match the old JS bucketing on a small fixture; a 3,000-bounty seed must not call `find`/`getMany` (O(n) entity load → O(days)+O(1) aggregates), `forContributor` under 2s, cached homepage summary on a second call.
 
-`DATABASE_SYNCHRONIZE=true` (set in development) will auto-create tables from entities for fast local iteration. Real deployments should run migrations instead — see `src/database/migrations/` and the `migration:*` npm scripts below.
+`DATABASE_SYNCHRONIZE=true` is enabled only by the Docker Compose `app` service for local bootstrapping. The checked-in `.env.example` keeps `DATABASE_SYNCHRONIZE=false`; native development can either run migrations with `npm run migration:run` or explicitly opt in to synchronize for a throwaway local database. Real deployments should always run migrations instead - see `src/database/migrations/` and the `migration:*` npm scripts below.
 
 ### Migrations
 
