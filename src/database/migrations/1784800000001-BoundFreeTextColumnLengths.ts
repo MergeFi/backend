@@ -6,8 +6,8 @@ import { MigrationInterface, QueryRunner } from 'typeorm';
  * `title`, or a maintenance pool `name` (#151). Matches the `@MaxLength(...)`
  * constraints added to the corresponding DTOs.
  */
-export class BoundFreeTextColumnLengths1784800000000 implements MigrationInterface {
-  name = 'BoundFreeTextColumnLengths1784800000000';
+export class BoundFreeTextColumnLengths1784800000001 implements MigrationInterface {
+  name = 'BoundFreeTextColumnLengths1784800000001';
 
   public async up(queryRunner: QueryRunner): Promise<void> {
     await queryRunner.query(
