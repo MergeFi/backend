@@ -26,6 +26,25 @@ function validatePage(limit?: number, offset?: number) {
     throw new BadRequestException('offset must be >= 0');
   }
   return { limit, offset };
+/**
+ * Parse optional limit/offset query params, rejecting NaN, negatives,
+ * non-integers, and limits above MAX_PAGE_LIMIT with a 400 (#280).
+ */
+function parsePagination(limit?: string, offset?: string) {
+  const parse = (name: string, raw: string | undefined, min: number, max: number) => {
+    if (raw === undefined || raw === '') return undefined;
+    const n = Number(raw);
+    if (!Number.isInteger(n) || n < min || n > max) {
+      throw new BadRequestException(
+        `${name} must be an integer between ${min} and ${max}`,
+      );
+    }
+    return n;
+  };
+  return {
+    limit: parse('limit', limit, 1, MAX_PAGE_LIMIT),
+    offset: parse('offset', offset, 0, Number.MAX_SAFE_INTEGER),
+  };
 }
 
 @ApiTags('sponsors')
@@ -54,6 +73,7 @@ export class SponsorsController {
   ) {
     this.assertOwnsSponsor(user, id);
     return this.sponsorsService.dashboard(id, validatePage(limit, offset));
+    return this.sponsorsService.dashboard(id, parsePagination(limit, offset));
   }
 
   @ApiBearerAuth()
@@ -71,5 +91,6 @@ export class SponsorsController {
       id,
       validatePage(limit, offset),
     );
+    return this.sponsorsService.milestoneProgress(id, parsePagination(limit, offset));
   }
 }
