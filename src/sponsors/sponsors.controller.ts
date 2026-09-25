@@ -1,4 +1,5 @@
 import {
+  BadRequestException,
   Controller,
   ForbiddenException,
   Get,
@@ -13,6 +14,29 @@ import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
 import type { AuthenticatedUser } from '../common/decorators/current-user.decorator';
 import { ApiInternalErrorResponse } from '../common/swagger/api-common-responses.decorator';
+
+const MAX_PAGE_LIMIT = 100;
+
+/**
+ * Parse optional limit/offset query params, rejecting NaN, negatives,
+ * non-integers, and limits above MAX_PAGE_LIMIT with a 400 (#280).
+ */
+function parsePagination(limit?: string, offset?: string) {
+  const parse = (name: string, raw: string | undefined, min: number, max: number) => {
+    if (raw === undefined || raw === '') return undefined;
+    const n = Number(raw);
+    if (!Number.isInteger(n) || n < min || n > max) {
+      throw new BadRequestException(
+        `${name} must be an integer between ${min} and ${max}`,
+      );
+    }
+    return n;
+  };
+  return {
+    limit: parse('limit', limit, 1, MAX_PAGE_LIMIT),
+    offset: parse('offset', offset, 0, Number.MAX_SAFE_INTEGER),
+  };
+}
 
 @ApiTags('sponsors')
 @Controller('sponsors')
@@ -38,10 +62,7 @@ export class SponsorsController {
     @Query('offset') offset?: string,
   ) {
     this.assertOwnsSponsor(user, id);
-    return this.sponsorsService.dashboard(id, {
-      limit: limit ? Number(limit) : undefined,
-      offset: offset ? Number(offset) : undefined,
-    });
+    return this.sponsorsService.dashboard(id, parsePagination(limit, offset));
   }
 
   @ApiBearerAuth()
@@ -54,9 +75,6 @@ export class SponsorsController {
     @Query('offset') offset?: string,
   ) {
     this.assertOwnsSponsor(user, id);
-    return this.sponsorsService.milestoneProgress(id, {
-      limit: limit ? Number(limit) : undefined,
-      offset: offset ? Number(offset) : undefined,
-    });
+    return this.sponsorsService.milestoneProgress(id, parsePagination(limit, offset));
   }
 }
