@@ -16,11 +16,24 @@ import { Escrow } from './escrow.entity';
 import { AssetType, BountyDifficulty, BountyStatus } from '../enums';
 
 @Entity('bounties')
+@Index('IDX_bounties_deadline_status', ['deadline', 'status'])
+@Index('IDX_bounties_claimedById_status', ['claimedById', 'status'])
+@Index('IDX_bounties_status_paid', ['status'], {
+  where: `"status" = 'paid'`,
+})
+@Index('IDX_bounties_paidAt_paid', ['paidAt'], {
+  where: `"status" = 'paid' AND "paidAt" IS NOT NULL`,
+})
 export class Bounty {
   @PrimaryGeneratedColumn('uuid')
   id: string;
 
-  @OneToOne(() => Issue, (issue) => issue.bounty, { onDelete: 'CASCADE' })
+  // RESTRICT, not CASCADE: a Bounty is a financial record (it may have a
+  // funded Escrow attached — see the `escrow` relation below), so deleting
+  // its parent Issue must never silently delete it too. Matches the
+  // RESTRICT/SET NULL convention used by every other financial relation in
+  // this file and in #27's EscrowFkIntegrityAndSponsorId migration. See #53.
+  @OneToOne(() => Issue, (issue) => issue.bounty, { onDelete: 'RESTRICT' })
   @JoinColumn()
   issue: Issue;
 

@@ -1,6 +1,7 @@
 import { Module } from '@nestjs/common';
 import { APP_GUARD } from '@nestjs/core';
 import { ConfigModule, ConfigService } from '@nestjs/config';
+import { EventEmitterModule } from '@nestjs/event-emitter';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { ThrottlerGuard, ThrottlerModule } from '@nestjs/throttler';
 import { ScheduleModule } from '@nestjs/schedule';
@@ -24,7 +25,17 @@ import { IdempotencyModule } from './common/idempotency/idempotency.module';
 @Module({
   imports: [
     ConfigModule.forRoot({ isGlobal: true, load: [configuration] }),
-    ThrottlerModule.forRoot([{ ttl: 60_000, limit: 120 }]),
+    EventEmitterModule.forRoot(),
+    // Named throttlers: @Throttle({ short | medium | long: ... }) only takes
+    // effect when a throttler of that name is registered here — with a single
+    // unnamed entry those overrides were silently no-ops (#287). The limits
+    // below are lenient app-wide defaults; per-route @Throttle tightens them.
+    ThrottlerModule.forRoot([
+      { name: 'default', ttl: 60_000, limit: 120 },
+      { name: 'short', ttl: 1_000, limit: 20 },
+      { name: 'medium', ttl: 60_000, limit: 120 },
+      { name: 'long', ttl: 3_600_000, limit: 5_000 },
+    ]),
     ScheduleModule.forRoot(),
     TypeOrmModule.forRootAsync({
       inject: [ConfigService],
@@ -53,6 +64,13 @@ import { IdempotencyModule } from './common/idempotency/idempotency.module';
     IdempotencyModule,
   ],
   controllers: [AppController],
-  providers: [AppService, { provide: APP_GUARD, useClass: ThrottlerGuard }],
+  providers: [
+    AppService,
+    // This executes your rate-limiting security guard
+    {
+      provide: APP_GUARD,
+      useClass: ThrottlerGuard,
+    },
+  ],
 })
 export class AppModule {}

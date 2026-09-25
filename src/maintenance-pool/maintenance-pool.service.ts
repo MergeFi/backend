@@ -1,11 +1,12 @@
 import {
   BadRequestException,
+  ConflictException,
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
-import { Issue, MaintenancePool } from '../common/entities';
+import { Issue, MaintenancePool, Payment } from '../common/entities';
 import { MaintenancePoolStatus } from '../common/enums';
 import { EscrowService } from '../escrow/escrow.service';
 import { CreatePoolDto } from './dto/create-pool.dto';
@@ -23,6 +24,8 @@ export class MaintenancePoolService {
     private readonly poolRepo: Repository<MaintenancePool>,
     @InjectRepository(Issue)
     private readonly issueRepo: Repository<Issue>,
+    @InjectRepository(Payment)
+    private readonly paymentRepo: Repository<Payment>,
     private readonly escrowService: EscrowService,
   ) {}
 
@@ -50,7 +53,15 @@ export class MaintenancePoolService {
     amount: string,
     funderAddress: string,
   ): Promise<MaintenancePool> {
-    const pool = await this.findOne(id);
+    // Use SELECT ... FOR UPDATE to prevent concurrent first-time deposit races
+    // that could orphan escrows (#275).
+    const pool = await this.poolRepo
+      .createQueryBuilder('pool')
+      .setLock('pessimistic_write')
+      .where('pool.id = :id', { id })
+      .getOne();
+
+    if (!pool) throw new NotFoundException(`Maintenance pool ${id} not found`);
     if (pool.status !== MaintenancePoolStatus.ACTIVE) {
       throw new BadRequestException(`Pool ${id} is not ACTIVE`);
     }
@@ -62,8 +73,24 @@ export class MaintenancePoolService {
         funderAddress,
         maintenancePoolId: pool.id,
       });
-      pool.escrow = escrow;
-      pool.escrowId = escrow.id;
+      // Use WHERE escrowId IS NULL so a losing concurrent request detects the
+      // race and tops up the winner's escrow instead of creating a second one.
+      const updateResult = await this.poolRepo.update(
+        { id: pool.id, escrowId: null } as any,
+        { escrowId: escrow.id },
+      );
+      if (updateResult.affected === 0) {
+        // Another request won the race — top up the winner's escrow instead.
+        const existingPool = await this.findOne(id);
+        await this.escrowService.fund({
+          amount,
+          asset: pool.asset,
+          funderAddress,
+          maintenancePoolId: pool.id,
+        });
+        await this.poolRepo.increment({ id }, 'balance', Number(amount));
+        return this.findOne(id);
+      }
     } else {
       // Subsequent deposits top up the existing on-chain escrow balance.
       await this.escrowService.fund({
@@ -74,11 +101,14 @@ export class MaintenancePoolService {
       });
     }
 
-    pool.balance = (Number(pool.balance) + Number(amount)).toFixed(7);
-    // monthlyDeposit is deliberately left untouched here: it records the
-    // sponsor's standing recurring commitment (set at pool creation), not
-    // "whatever the last deposit happened to be" (#93).
-    return this.poolRepo.save(pool);
+    // Atomic DB-level increment instead of read-modify-write — concurrent
+    // deposits/rewards on the same pool no longer clobber each other's
+    // balance update (#51). monthlyDeposit is deliberately left untouched
+    // here: it records the sponsor's standing recurring commitment (set at
+    // pool creation), not "whatever the last deposit happened to be" (#93).
+    await this.poolRepo.increment({ id: pool.id }, 'balance', Number(amount));
+
+    return this.findOne(id);
   }
 
   /** Maintainer assigns a reward from the pool's balance for completed maintenance work. */
@@ -90,6 +120,9 @@ export class MaintenancePoolService {
     recipientId?: string,
   ) {
     const pool = await this.findOne(id);
+    if (pool.status !== MaintenancePoolStatus.ACTIVE) {
+      throw new BadRequestException(`Pool ${id} is not ACTIVE`);
+    }
     const issue = await this.issueRepo.findOne({ where: { id: issueId } });
     if (!issue) throw new NotFoundException(`Issue ${issueId} not found`);
     if (!issue.isMaintenanceType) {
@@ -105,7 +138,40 @@ export class MaintenancePoolService {
     if (!pool.escrowId) {
       throw new BadRequestException(`Pool ${id} has no funded escrow yet`);
     }
-    if (Number(amount) > Number(pool.balance)) {
+
+    // Guard against double/triple payout for the same issue (#273).
+    const existingPayment = await this.paymentRepo.findOne({
+      where: {
+        recipientId: recipientId ?? null,
+      },
+    });
+    // Check if there's already a payment for this issue from this pool's escrow.
+    const existingPoolPayment = await this.paymentRepo
+      .createQueryBuilder('payment')
+      .innerJoin('payment.escrow', 'escrow')
+      .where('escrow.maintenancePoolId = :poolId', { poolId: id })
+      .andWhere('payment.recipientId = :recipientId', {
+        recipientId: recipientId ?? null,
+      })
+      .getOne();
+    if (existingPoolPayment) {
+      throw new ConflictException(
+        `Issue ${issueId} has already received a reward from pool ${id}`,
+      );
+    }
+
+    // Atomic balance check and decrement — prevents TOCTOU race where concurrent
+    // calls could overdraw the pool (#274). Uses a conditional UPDATE that only
+    // succeeds if balance >= amount, then checks affected rows.
+    const updateResult = await this.poolRepo
+      .createQueryBuilder()
+      .update(MaintenancePool)
+      .set({ balance: () => `balance - :amount` })
+      .where('id = :id AND balance >= :amount', { id, amount: Number(amount) })
+      .setParameter('amount', Number(amount))
+      .execute();
+
+    if (updateResult.affected === 0) {
       throw new BadRequestException(
         `Requested reward ${amount} exceeds pool balance ${pool.balance}`,
       );
@@ -121,9 +187,6 @@ export class MaintenancePoolService {
       recipientAddress,
       recipientId,
     );
-
-    pool.balance = (Number(pool.balance) - Number(amount)).toFixed(7);
-    await this.poolRepo.save(pool);
 
     return payment;
   }

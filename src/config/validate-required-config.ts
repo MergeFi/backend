@@ -65,7 +65,11 @@ export function collectConfigIssues(config: RequiredConfig): ConfigIssue[] {
         'JWT_SECRET is still the insecure dev default — set a long random value',
     });
   } else {
-    requireNonEmpty('JWT_SECRET', config.jwt.secret, 'session tokens cannot be signed');
+    requireNonEmpty(
+      'JWT_SECRET',
+      config.jwt.secret,
+      'session tokens cannot be signed',
+    );
   }
 
   if (

@@ -22,6 +22,13 @@ export interface AppConfig {
     apiToken: string;
     webhookSecret: string;
   };
+  analytics: {
+    /**
+     * In-process TTL for GET /analytics/platform. Also invalidated on
+     * bounty create/pay and first-time repository insert.
+     */
+    platformSummaryTtlMs: number;
+  };
   stellar: {
     network: string;
     sorobanRpcUrl: string;
@@ -72,13 +79,20 @@ export default (): AppConfig => ({
     expiresIn: process.env.JWT_EXPIRES_IN ?? '7d',
   },
   github: {
-    clientId: process.env.GITHUB_CLIENT_ID ?? '',
-    clientSecret: process.env.GITHUB_CLIENT_SECRET ?? '',
+    clientId: process.env.GITHUB_CLIENT_ID || 'mock_client_id_12345',
+    clientSecret: process.env.GITHUB_CLIENT_SECRET || 'mock_secret_key_67890',
     oauthCallbackUrl:
-      process.env.GITHUB_OAUTH_CALLBACK_URL ??
+      process.env.GITHUB_OAUTH_CALLBACK_URL ||
       'http://localhost:3000/api/auth/github/callback',
     apiToken: process.env.GITHUB_API_TOKEN ?? '',
     webhookSecret: process.env.GITHUB_WEBHOOK_SECRET ?? '',
+  },
+
+  analytics: {
+    platformSummaryTtlMs: parseInt(
+      process.env.ANALYTICS_PLATFORM_SUMMARY_TTL_MS ?? '60000',
+      10,
+    ),
   },
   stellar: {
     network: process.env.STELLAR_NETWORK ?? 'testnet',

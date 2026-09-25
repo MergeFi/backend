@@ -10,6 +10,7 @@ import {
   nativeToScVal,
   rpc,
   scValToNative,
+  xdr,
 } from '@stellar/stellar-sdk';
 import { AssetType } from '../common/enums';
 import { AppConfig } from '../config/configuration';
@@ -218,7 +219,15 @@ export class SorobanClientService {
     );
   }
 
-  private toScVal(value: unknown): unknown {
+  private toScVal(value: unknown): xdr.ScVal {
+    if (Buffer.isBuffer(value) || value instanceof Uint8Array) {
+      // BytesN<32> arguments (metadata hashes, description hashes, etc.)
+      // arrive as raw bytes, not strings — without this branch they fell
+      // through to the generic nativeToScVal(value) call below with no
+      // `bytes` type hint, which does not reliably encode a Buffer/
+      // Uint8Array as ScVal bytes (#45).
+      return nativeToScVal(Buffer.from(value), { type: 'bytes' });
+    }
     if (Array.isArray(value)) {
       // Vec<...> arguments, including the Vec<(Address, u32)> recipients
       // list escrow::release takes. A [address, basisPoints] pair encodes

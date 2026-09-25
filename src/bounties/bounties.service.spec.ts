@@ -1,5 +1,6 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { getRepositoryToken } from '@nestjs/typeorm';
+import { EventEmitter2 } from '@nestjs/event-emitter';
 import { BountiesService } from './bounties.service';
 import { EscrowService } from '../escrow/escrow.service';
 import { Bounty, Team, User } from '../common/entities';
@@ -52,6 +53,7 @@ describe('BountiesService', () => {
         { provide: getRepositoryToken(User), useValue: userRepo },
         { provide: getRepositoryToken(Team), useValue: teamRepo },
         { provide: EscrowService, useValue: escrowService },
+        { provide: EventEmitter2, useValue: { emit: jest.fn() } },
       ],
     }).compile();
 

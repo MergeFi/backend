@@ -6,6 +6,7 @@ import { EscrowService } from './escrow.service';
 import { SorobanClientService } from './soroban-client.service';
 import { Escrow, Payment, User } from '../common/entities';
 import { AssetType, EscrowStatus, PaymentStatus } from '../common/enums';
+import { TOTAL_BASIS_POINTS } from './split-math.util';
 
 describe('EscrowService', () => {
   let service: EscrowService;
@@ -23,7 +24,6 @@ describe('EscrowService', () => {
     tokenContractId: jest.Mock;
     escrowDeadlineSeconds: number;
   };
-  let soroban: { invoke: jest.Mock };
   let dataSource: { transaction: jest.Mock };
 
   beforeEach(async () => {
@@ -288,16 +288,20 @@ describe('EscrowService', () => {
         amount: '50',
         asset: AssetType.USDC,
         bountyId: 'bounty-3',
+        onChainId: '9100',
       });
 
       const escrow = await service.release('escrow-3', 'GRECIPIENT', 'user-1');
 
       expect(escrow.status).toBe(EscrowStatus.RELEASED);
       // Distinct from releasePartial's 'release_partial' method name (#159).
-      expect(soroban.invoke).toHaveBeenCalledWith('release', [
-        'bounty-3',
-        'GRECIPIENT',
-      ]);
+      // A single recipient is the degenerate [(addr, 10_000)] case of the
+      // release() recipients vector (#161).
+      expect(soroban.invoke).toHaveBeenCalledWith(
+        'release',
+        [9100n, [['GRECIPIENT', TOTAL_BASIS_POINTS]]],
+        {},
+      );
       expect(paymentRepo.save).toHaveBeenCalledWith(
         expect.objectContaining({
           recipientAddress: 'GRECIPIENT',
@@ -376,15 +380,10 @@ describe('EscrowService', () => {
       );
 
       expect(soroban.invoke).toHaveBeenCalledWith(
-        'release',
-        [9100n, 'GRECIPIENT', 300_000_000n],
+        'release_partial',
+        ['milestone-1', 'GRECIPIENT', 300_000_000n],
         {},
       );
-      expect(soroban.invoke).toHaveBeenCalledWith('release_partial', [
-        'milestone-1',
-        'GRECIPIENT',
-        300_000_000n,
-      ]);
       expect(paymentRepo.save).toHaveBeenCalledWith(
         expect.objectContaining({
           escrowId: 'escrow-partial',
@@ -432,15 +431,10 @@ describe('EscrowService', () => {
 
       expect(soroban.invoke).toHaveBeenNthCalledWith(
         2,
-        'release',
-        [9100n, 'GB', 600_000_000n],
+        'release_partial',
+        ['milestone-1', 'GB', 600_000_000n],
         {},
       );
-      expect(soroban.invoke).toHaveBeenNthCalledWith(2, 'release_partial', [
-        'milestone-1',
-        'GB',
-        600_000_000n,
-      ]);
       expect(escrowRepo.save).toHaveBeenCalledWith(
         expect.objectContaining({
           status: EscrowStatus.RELEASED,

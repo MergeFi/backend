@@ -30,11 +30,11 @@ docker-compose.yml
 .DS_Store
 Thumbs.db
 
-# Documentation and configs not needed in production container
+# Documentation and lint/format configs not needed in production container.
+# nest-cli.json, tsconfig.json, and tsconfig.build.json are NOT listed here —
+# the builder stage's `COPY . .` needs them in the build context for
+# `npm run build` (nest build) to succeed; excluding them broke the image build.
 README.md
-nest-cli.json
-tsconfig.json
-tsconfig.build.json
 eslint.config.mjs
 .prettierrc
 test/

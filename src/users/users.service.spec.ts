@@ -141,7 +141,11 @@ describe('UsersService', () => {
         if (where?.username === 'octocat-1') return null;
         if (where?.email === 'octocat@example.com') return null;
         if (where?.id === 'u1') {
-          return { id: 'u1', username: 'octocat-1', githubAccount: { id: 'ga1' } };
+          return {
+            id: 'u1',
+            username: 'octocat-1',
+            githubAccount: { id: 'ga1' },
+          };
         }
         return null;
       });

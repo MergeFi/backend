@@ -5,7 +5,7 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { InjectDataSource, InjectRepository } from '@nestjs/typeorm';
-import { DataSource, In, Repository } from 'typeorm';
+import { DataSource, EntityManager, In, Repository } from 'typeorm';
 import { Escrow, Payment, User } from '../common/entities';
 import { AssetType, EscrowStatus, PaymentStatus } from '../common/enums';
 import {
@@ -23,9 +23,10 @@ import {
   splitStroops,
   TOTAL_BASIS_POINTS,
 } from './split-math.util';
-import { validatePercentageSplits } from '../common/validators/split-percentage.validator';
-import { SorobanClientService } from './soroban-client.service';
-import { apportionBasisPoints, splitStroops } from './split-math.util';
+import {
+  assertUniqueSplitEntries,
+  validatePercentageSplits,
+} from '../common/validators/split-percentage.validator';
 
 export interface FundEscrowInput {
   amount: string;
@@ -195,7 +196,9 @@ export class EscrowService {
     const result = await this.invokeRelease(
       escrow,
       'splitRelease',
-      recipients.map((r, i) => [r.recipientAddress, bps[i]] as [string, number]),
+      recipients.map(
+        (r, i) => [r.recipientAddress, bps[i]] as [string, number],
+      ),
     );
 
     const shares = splitStroops(totalStroops, bps);
@@ -240,12 +243,19 @@ export class EscrowService {
    * distributed incrementally as individual issues resolve. The escrow
    * moves to RELEASED once the cumulative released amount reaches the
    * total locked amount.
+   *
+   * When an `EntityManager` is supplied (e.g. from an outer
+   * `dataSource.transaction`), the Payment insert and optional escrow-status
+   * flip share that manager's transaction, guaranteeing atomicity with the
+   * caller's other writes (#254). Without one, a self-contained transaction
+   * is opened for backward compatibility.
    */
   async releasePartial(
     escrowId: string,
     amount: string,
     recipientAddress: string,
     recipientId?: string,
+    manager?: EntityManager,
   ): Promise<Payment> {
     const escrow = await this.getOrThrow(escrowId);
     this.assertLocked(escrow);
@@ -254,12 +264,15 @@ export class EscrowService {
     const existingPayments = await this.paymentRepo.find({
       where: { escrowId: escrow.id },
     });
-    const releasedSoFar = existingPayments.reduce(
-      (sum, p) => sum + Number(p.amount),
-      0,
+    // Compare in stroops (BigInt) rather than Number to avoid IEEE-754
+    // precision loss / epsilon-fudge factors on financial amounts (#5).
+    const releasedSoFarStroops = existingPayments.reduce(
+      (sum, p) => sum + amountToStroops(p.amount),
+      0n,
     );
-    const requested = Number(amount);
-    if (releasedSoFar + requested > Number(escrow.amount) + 1e-7) {
+    const requestedStroops = amountToStroops(amount);
+    const escrowStroops = amountToStroops(escrow.amount);
+    if (releasedSoFarStroops + requestedStroops > escrowStroops) {
       throw new BadRequestException(
         `Partial release of ${amount} would exceed remaining escrow balance`,
       );
@@ -272,31 +285,23 @@ export class EscrowService {
       'releasePartial',
       () =>
         this.soroban.invoke(
-          'release',
+          'release_partial',
           [
-            this.onChainKeyFor(escrow),
+            escrow.milestoneId ?? escrow.bountyId ?? escrow.id,
             recipientAddress,
             this.toStroops(amount),
           ],
           this.contractOpts(escrow),
         ),
-        // Distinct on-chain method name from release()'s two-arg `release`
-        // (#159): a partial release carries an amount and is a different
-        // contract entrypoint, not an overload — so a contract implementer
-        // isn't left guessing which arg shape `release` is authoritative.
-        this.soroban.invoke('release_partial', [
-          escrow.milestoneId ?? escrow.bountyId ?? escrow.id,
-          recipientAddress,
-          this.toStroops(amount),
-        ]),
     );
 
     // The Payment insert and the (conditional) escrow-status flip share one
     // transaction so the two can't diverge — same guarantee as release()
-    // and splitRelease() (#154).
+    // and splitRelease() (#154). When an outer `manager` is supplied, reuse
+    // it so the caller's transaction also covers these writes (#254).
     let payment!: Payment;
-    await this.dataSource.transaction(async (manager) => {
-      payment = await manager.save(
+    const run = async (mgr: EntityManager) => {
+      payment = await mgr.save(
         Payment,
         this.paymentRepo.create({
           escrowId: escrow.id,
@@ -309,13 +314,19 @@ export class EscrowService {
         }),
       );
 
-      if (releasedSoFar + requested >= Number(escrow.amount) - 1e-7) {
+      if (releasedSoFarStroops + requestedStroops >= escrowStroops) {
         escrow.status = EscrowStatus.RELEASED;
         escrow.releaseTxHash = result.txHash;
         escrow.releasedAt = new Date();
-        await manager.save(Escrow, escrow);
+        await mgr.save(Escrow, escrow);
       }
-    });
+    };
+
+    if (manager) {
+      await run(manager);
+    } else {
+      await this.dataSource.transaction(run);
+    }
 
     return payment;
   }
@@ -353,11 +364,7 @@ export class EscrowService {
     const result = await this.invokeOnLockedEscrow(escrow, 'poolWithdraw', () =>
       this.soroban.invoke(
         'withdraw',
-        [
-          this.onChainKeyFor(escrow),
-          recipientAddress,
-          this.toStroops(amount),
-        ],
+        [this.onChainKeyFor(escrow), recipientAddress, this.toStroops(amount)],
         this.contractOpts(escrow),
       ),
     );
@@ -587,6 +594,14 @@ export class EscrowService {
    */
   assertValidSplits(recipients: SplitRecipient[]): void {
     validatePercentageSplits(recipients, 'split release');
+    // #358: the same recipient listed twice would otherwise silently
+    // receive a doubled share — reject it, keyed on recipientAddress since
+    // that's always present (recipientId is an optional internal ref).
+    assertUniqueSplitEntries(
+      recipients,
+      (r) => r.recipientAddress,
+      'split recipient',
+    );
   }
 
   /**

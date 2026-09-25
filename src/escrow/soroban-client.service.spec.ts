@@ -77,9 +77,9 @@ describe('SorobanClientService', () => {
 
   describe('contract resolvers (#157)', () => {
     it('exposes the configured escrow contract id', () => {
-      expect(makeService({ escrowContractId: 'CESCROW' }).escrowContractId).toBe(
-        'CESCROW',
-      );
+      expect(
+        makeService({ escrowContractId: 'CESCROW' }).escrowContractId,
+      ).toBe('CESCROW');
     });
 
     it('returns the dedicated maintenance-pool contract id when set', () => {
@@ -139,12 +139,10 @@ describe('SorobanClientService', () => {
       jest
         .spyOn(rpc.Server.prototype, 'simulateTransaction')
         .mockResolvedValue({} as never);
-      jest
-        .spyOn(rpc.Server.prototype, 'sendTransaction')
-        .mockResolvedValue({
-          status: 'PENDING',
-          hash: 'mock-hash',
-        } as never);
+      jest.spyOn(rpc.Server.prototype, 'sendTransaction').mockResolvedValue({
+        status: 'PENDING',
+        hash: 'mock-hash',
+      } as never);
       jest
         .spyOn(rpc.Server.prototype, 'getTransaction')
         .mockResolvedValue(
@@ -192,12 +190,10 @@ describe('SorobanClientService', () => {
     });
 
     it('throws when transaction submission errors', async () => {
-      jest
-        .spyOn(rpc.Server.prototype, 'sendTransaction')
-        .mockResolvedValue({
-          status: 'ERROR',
-          errorResult: { code: -1 },
-        } as never);
+      jest.spyOn(rpc.Server.prototype, 'sendTransaction').mockResolvedValue({
+        status: 'ERROR',
+        errorResult: { code: -1 },
+      } as never);
 
       await expect(service.invoke('refund', ['ref-1'])).rejects.toThrow(
         'Soroban transaction submission failed',
@@ -219,12 +215,10 @@ describe('SorobanClientService', () => {
       jest
         .spyOn(rpc.Server.prototype, 'simulateTransaction')
         .mockResolvedValue({} as never);
-      jest
-        .spyOn(rpc.Server.prototype, 'sendTransaction')
-        .mockResolvedValue({
-          status: 'PENDING',
-          hash: 'mock-hash',
-        } as never);
+      jest.spyOn(rpc.Server.prototype, 'sendTransaction').mockResolvedValue({
+        status: 'PENDING',
+        hash: 'mock-hash',
+      } as never);
       jest.useFakeTimers();
     });
 
@@ -285,6 +279,30 @@ describe('SorobanClientService', () => {
       expect(nativeToScValMock).not.toHaveBeenCalled();
     });
 
+    it('encodes a Buffer as BytesN bytes (#45)', () => {
+      const hash = Buffer.from('a'.repeat(32));
+
+      const encoded = (
+        service as unknown as { toScVal(v: unknown): unknown }
+      ).toScVal(hash);
+
+      expect(nativeToScValMock).toHaveBeenCalledWith(hash, { type: 'bytes' });
+      expect(encoded).toEqual(hash);
+    });
+
+    it('encodes a Uint8Array as BytesN bytes (#45)', () => {
+      const hash = new Uint8Array(32).fill(7);
+
+      const encoded = (
+        service as unknown as { toScVal(v: unknown): unknown }
+      ).toScVal(hash);
+
+      expect(nativeToScValMock).toHaveBeenCalledWith(Buffer.from(hash), {
+        type: 'bytes',
+      });
+      expect(encoded).toEqual(Buffer.from(hash));
+    });
+
     it('encodes bigints as i128', () => {
       const encoded = (
         service as unknown as { toScVal(v: unknown): unknown }
@@ -327,10 +345,8 @@ describe('SorobanClientService', () => {
     });
 
     it('encodes a Vec<(Address, u32)> recipients list element-by-element (#161)', () => {
-      const a =
-        'GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAVAWHV';
-      const b =
-        'GBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBAAAA';
+      const a = 'GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAVAWHV';
+      const b = 'GBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBAAAA';
 
       const encoded = (
         service as unknown as { toScVal(v: unknown): unknown }

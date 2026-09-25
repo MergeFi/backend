@@ -8,6 +8,8 @@ import { EscrowService } from '../src/escrow/escrow.service';
 import { IdempotencyKey } from '../src/common/entities/idempotency-key.entity';
 import { IdempotencyInterceptor } from '../src/common/idempotency/idempotency.interceptor';
 import { IdempotencyKeyStatus } from '../src/common/enums';
+import { JwtAuthGuard } from '../src/auth/guards/jwt-auth.guard';
+import { RolesGuard } from '../src/auth/guards/roles.guard';
 
 /**
  * In-memory stand-in for Repository<IdempotencyKey>, matching the DB's
@@ -108,7 +110,12 @@ describe('Escrow idempotency: cross-resource key reuse (#54)', () => {
           useValue: new FakeIdempotencyRepo(),
         },
       ],
-    }).compile();
+    })
+      .overrideGuard(JwtAuthGuard)
+      .useValue({ canActivate: () => true })
+      .overrideGuard(RolesGuard)
+      .useValue({ canActivate: () => true })
+      .compile();
 
     app = moduleFixture.createNestApplication();
     await app.init();

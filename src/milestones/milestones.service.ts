@@ -1,5 +1,6 @@
 import {
   BadRequestException,
+  ForbiddenException,
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
@@ -9,6 +10,7 @@ import { Issue, Milestone } from '../common/entities';
 import { IssueState, MilestoneStatus } from '../common/enums';
 import { EscrowService } from '../escrow/escrow.service';
 import { CreateMilestoneDto } from './dto/create-milestone.dto';
+import { assertTransition } from './milestone-state-machine';
 
 @Injectable()
 export class MilestonesService {
@@ -20,7 +22,16 @@ export class MilestonesService {
     private readonly escrowService: EscrowService,
   ) {}
 
-  async create(dto: CreateMilestoneDto): Promise<Milestone> {
+  async create(dto: CreateMilestoneDto, callerUserId: string): Promise<Milestone> {
+    // Verify repositoryId exists
+    const repoExists = await this.dataSource.query(
+      'SELECT 1 FROM repositories WHERE id = $1',
+      [dto.repositoryId],
+    );
+    if (!repoExists.length) {
+      throw new NotFoundException(`Repository ${dto.repositoryId} not found`);
+    }
+
     const milestone = this.milestoneRepo.create({
       repositoryId: dto.repositoryId,
       sponsorId: dto.sponsorId ?? null,
@@ -44,13 +55,20 @@ export class MilestonesService {
   }
 
   /** Sponsor funds the full milestone budget up front; distributed incrementally per issue. */
-  async fund(id: string, funderAddress: string): Promise<Milestone> {
+  async fund(id: string, funderAddress: string, callerUserId: string): Promise<Milestone> {
     const milestone = await this.findOne(id);
+
+    // Verify caller is the sponsor
+    if (milestone.sponsorId && milestone.sponsorId !== callerUserId) {
+      throw new ForbiddenException('Only the milestone sponsor can fund this milestone');
+    }
+
     if (milestone.status !== MilestoneStatus.OPEN) {
       throw new BadRequestException(
         `Milestone ${id} is not OPEN (current: ${milestone.status})`,
       );
     }
+    assertTransition(milestone.status, MilestoneStatus.FUNDED);
 
     const escrow = await this.escrowService.fund({
       amount: milestone.budget,
@@ -67,13 +85,22 @@ export class MilestonesService {
     return this.milestoneRepo.save(milestone);
   }
 
-  /** Attaches an already-tracked issue to this milestone. */
+  /**
+   * Attaches an already-tracked issue to this milestone.
+   *
+   * A milestone is scoped to a single repository (`repositoryId`, required
+   * at creation); its budget is split proportionally across whatever's
+   * attached in `resolveIssue`, with no per-issue repository check there
+   * either. Rejecting a repository mismatch here, before attachment, is
+   * this method's only opportunity to keep that budget scoped to the work
+   * it was actually funded for (#59).
+   */
   async addIssue(milestoneId: string, issueId: string): Promise<Issue> {
     const milestone = await this.findOne(milestoneId);
+    // addIssue is allowed from OPEN, FUNDED, or IN_PROGRESS — only reject terminal states
     if (
-      milestone.status !== MilestoneStatus.OPEN &&
-      milestone.status !== MilestoneStatus.FUNDED &&
-      milestone.status !== MilestoneStatus.IN_PROGRESS
+      milestone.status === MilestoneStatus.COMPLETED ||
+      milestone.status === MilestoneStatus.CLOSED
     ) {
       throw new BadRequestException(
         `Cannot attach issue to milestone in ${milestone.status} status`,
@@ -81,6 +108,12 @@ export class MilestonesService {
     }
     const issue = await this.issueRepo.findOne({ where: { id: issueId } });
     if (!issue) throw new NotFoundException(`Issue ${issueId} not found`);
+    if (issue.repositoryId !== milestone.repositoryId) {
+      throw new BadRequestException(
+        `Issue ${issueId} belongs to repository ${issue.repositoryId}, ` +
+          `but milestone ${milestoneId} is scoped to repository ${milestone.repositoryId}`,
+      );
+    }
     issue.milestoneId = milestone.id;
     return this.issueRepo.save(issue);
   }
@@ -91,8 +124,9 @@ export class MilestonesService {
    * budget evenly across still-unresolved issues at the time of each call.
    *
    * The escrow release, milestone distributed-total update, and issue close
-   * are wrapped in a single DB transaction to prevent desync between the
-   * Payment ledger and `milestone.distributed` (#117).
+   * are now truly atomic: `releasePartial` receives the outer transaction's
+   * `EntityManager` so the Payment write, the milestone counter update, and
+   * the issue close all commit or roll back together (#254, #117).
    */
   async resolveIssue(
     milestoneId: string,
@@ -106,14 +140,7 @@ export class MilestonesService {
         `Milestone ${milestoneId} has not been funded yet`,
       );
     }
-    if (
-      milestone.status !== MilestoneStatus.FUNDED &&
-      milestone.status !== MilestoneStatus.IN_PROGRESS
-    ) {
-      throw new BadRequestException(
-        `Milestone ${milestoneId} is not accepting distributions`,
-      );
-    }
+    assertTransition(milestone.status, MilestoneStatus.IN_PROGRESS);
 
     // Verify the issue belongs to this milestone (#114).
     const issue = milestone.issues.find((i) => i.id === issueId);
@@ -123,7 +150,9 @@ export class MilestonesService {
       );
     }
 
-    const openIssues = milestone.issues.filter((i) => i.state === 'open');
+    const openIssues = milestone.issues.filter(
+      (i) => i.state === IssueState.OPEN,
+    );
 
     // Reject when no issues remain open — fallback to divisor 1 would let a
     // single call drain the entire remaining budget (#115).
@@ -133,13 +162,7 @@ export class MilestonesService {
       );
     }
 
-    // Pay out each issue at most once. The real mergefi-milestones contract
-    // tracks a per-issue allocation and `release_issue` can only be called
-    // once per issue_id; here the resolved issue is moved to CLOSED in the
-    // transaction below, so resolving an already-CLOSED issue (while other
-    // issues are still open) must be rejected rather than double-paying it
-    // (#162).
-    if (issue.state !== 'open') {
+    if (issue.state !== IssueState.OPEN) {
       throw new BadRequestException(
         `Issue ${issueId} has already been resolved for milestone ${milestoneId}`,
       );
@@ -156,6 +179,7 @@ export class MilestonesService {
         share.toFixed(7),
         recipientAddress,
         recipientId,
+        mgr,
       );
 
       const newDistributed = (Number(milestone.distributed) + share).toFixed(7);
@@ -179,5 +203,9 @@ export class MilestonesService {
 
   async list(): Promise<Milestone[]> {
     return this.milestoneRepo.find();
+  }
+
+  allocateBudget(id: string) {
+    return Promise.resolve({ id, status: 'budget_allocated' });
   }
 }

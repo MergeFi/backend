@@ -5,10 +5,12 @@ import {
   JoinColumn,
   ManyToOne,
   PrimaryGeneratedColumn,
+  Index,
 } from 'typeorm';
 import { Team } from './team.entity';
 import { User } from './user.entity';
 
+@Index('IDX_team_member_splits_teamId', ['teamId'])
 @Entity('team_member_splits')
 export class TeamMemberSplit {
   @PrimaryGeneratedColumn('uuid')
@@ -21,12 +23,12 @@ export class TeamMemberSplit {
   @Column()
   teamId: string;
 
-  @ManyToOne(() => User, { onDelete: 'CASCADE' })
+  @ManyToOne(() => User, { onDelete: 'SET NULL', nullable: true })
   @JoinColumn()
-  user: User;
+  user: User | null;
 
-  @Column()
-  userId: string;
+  @Column({ type: 'varchar', nullable: true })
+  userId: string | null;
 
   /** Free-text label describing the member's contribution, e.g. "frontend". */
   @Column({ type: 'varchar', length: 50, nullable: true })

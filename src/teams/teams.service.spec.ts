@@ -1,15 +1,16 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { getRepositoryToken } from '@nestjs/typeorm';
-import { NotFoundException } from '@nestjs/common';
+import { BadRequestException, ForbiddenException, NotFoundException } from '@nestjs/common';
 import { TeamsService } from './teams.service';
-import { Bounty, Team, TeamMemberSplit } from '../common/entities';
-import { BountyStatus } from '../common/enums';
+import { Bounty, Team, TeamMemberSplit, User } from '../common/entities';
+import { BountyStatus, UserRole } from '../common/enums';
 
 describe('TeamsService', () => {
   let service: TeamsService;
   let teamRepo: { findOne: jest.Mock; save: jest.Mock; create: jest.Mock };
   let splitRepo: { save: jest.Mock; create: jest.Mock; delete: jest.Mock };
   let bountyRepo: { findOne: jest.Mock; save: jest.Mock };
+  let userRepo: { findOne: jest.Mock };
 
   beforeEach(async () => {
     teamRepo = {
@@ -21,16 +22,20 @@ describe('TeamsService', () => {
     };
     splitRepo = {
       create: jest.fn((s: Partial<TeamMemberSplit>) => s),
-      save: jest.fn((s: Partial<TeamMemberSplit> | Partial<TeamMemberSplit>[]) =>
-        Array.isArray(s)
-          ? Promise.resolve(s.map((x) => ({ id: `split-${x.userId}`, ...x })))
-          : Promise.resolve({ id: `split-${s.userId}`, ...s }),
+      save: jest.fn(
+        (s: Partial<TeamMemberSplit> | Partial<TeamMemberSplit>[]) =>
+          Array.isArray(s)
+            ? Promise.resolve(s.map((x) => ({ id: `split-${x.userId}`, ...x })))
+            : Promise.resolve({ id: `split-${s.userId}`, ...s }),
       ),
       delete: jest.fn().mockResolvedValue(undefined),
     };
     bountyRepo = {
       findOne: jest.fn(),
       save: jest.fn((b: Partial<Bounty>) => Promise.resolve(b)),
+    };
+    userRepo = {
+      findOne: jest.fn(),
     };
 
     const module: TestingModule = await Test.createTestingModule({
@@ -39,6 +44,7 @@ describe('TeamsService', () => {
         { provide: getRepositoryToken(Team), useValue: teamRepo },
         { provide: getRepositoryToken(TeamMemberSplit), useValue: splitRepo },
         { provide: getRepositoryToken(Bounty), useValue: bountyRepo },
+        { provide: getRepositoryToken(User), useValue: userRepo },
       ],
     }).compile();
 
@@ -52,7 +58,9 @@ describe('TeamsService', () => {
           name: 'Team A',
           members: [{ userId: 'u1', percentage: 60 }],
         }),
-      ).rejects.toThrow('Team split percentages must sum to 100, got 60.00');
+      ).rejects.toThrow(
+        'team member split percentages must sum to 100, got 60.00',
+      );
 
       expect(teamRepo.save).not.toHaveBeenCalled();
     });
@@ -129,7 +137,7 @@ describe('TeamsService', () => {
       teamRepo.findOne.mockResolvedValue(null);
 
       await expect(
-        service.assignToBounty('missing-team', 'b1'),
+        service.assignToBounty('missing-team', 'b1', 'sponsor-1'),
       ).rejects.toThrow(NotFoundException);
       expect(bountyRepo.findOne).not.toHaveBeenCalled();
     });
@@ -139,19 +147,24 @@ describe('TeamsService', () => {
       bountyRepo.findOne.mockResolvedValue(null);
 
       await expect(
-        service.assignToBounty('t1', 'missing-bounty'),
+        service.assignToBounty('t1', 'missing-bounty', 'sponsor-1'),
       ).rejects.toThrow(NotFoundException);
     });
 
-    it('sets the bounty.teamId and persists it when both exist', async () => {
+    it('sets the bounty.teamId and persists it when both exist and caller is sponsor', async () => {
       teamRepo.findOne.mockResolvedValue({ id: 't1', splits: [] });
       bountyRepo.findOne.mockResolvedValue({
         id: 'b1',
         status: BountyStatus.OPEN,
+        sponsorId: 'sponsor-1',
         teamId: null,
       });
+      userRepo.findOne.mockResolvedValue({
+        id: 'sponsor-1',
+        roles: [UserRole.SPONSOR],
+      });
 
-      const bounty = await service.assignToBounty('t1', 'b1');
+      const bounty = await service.assignToBounty('t1', 'b1', 'sponsor-1');
 
       expect(bounty.teamId).toBe('t1');
       expect(bountyRepo.save).toHaveBeenCalledWith(
@@ -159,38 +172,73 @@ describe('TeamsService', () => {
       );
     });
 
-    // Baseline/regression coverage for #41 (TeamsService.assignToBounty has
-    // no bounty-status or ownership guard, allowing payout hijack via
-    // last-second team assignment): this documents assignToBounty's current,
-    // unguarded behavior — reassignment succeeds regardless of the bounty's
-    // status or who currently claims it. Once #41 lands a guard, these two
-    // cases are expected to start throwing instead; update them alongside
-    // that fix rather than leaving this test silently describing stale
-    // behavior.
-    it('[current behavior, see #41] reassigns a bounty regardless of its status', async () => {
+    it('allows a MAINTAINER to assign even if not the sponsor', async () => {
+      teamRepo.findOne.mockResolvedValue({ id: 't1', splits: [] });
+      bountyRepo.findOne.mockResolvedValue({
+        id: 'b1',
+        status: BountyStatus.OPEN,
+        sponsorId: 'other-sponsor',
+        teamId: null,
+      });
+      userRepo.findOne.mockResolvedValue({
+        id: 'maintainer-1',
+        roles: [UserRole.MAINTAINER],
+      });
+
+      const bounty = await service.assignToBounty('t1', 'b1', 'maintainer-1');
+      expect(bounty.teamId).toBe('t1');
+    });
+
+    it('throws BadRequestException when bounty status is MERGED', async () => {
       teamRepo.findOne.mockResolvedValue({ id: 't1', splits: [] });
       bountyRepo.findOne.mockResolvedValue({
         id: 'b1',
         status: BountyStatus.MERGED,
-        claimedById: 'original-contributor',
+        sponsorId: 'sponsor-1',
         teamId: null,
       });
+      userRepo.findOne.mockResolvedValue({
+        id: 'sponsor-1',
+        roles: [UserRole.SPONSOR],
+      });
 
-      const bounty = await service.assignToBounty('t1', 'b1');
-
-      expect(bounty.teamId).toBe('t1');
-      expect(bounty.status).toBe(BountyStatus.MERGED);
+      await expect(
+        service.assignToBounty('t1', 'b1', 'sponsor-1'),
+      ).rejects.toThrow(BadRequestException);
     });
 
-    it('[current behavior, see #41] reassigns a bounty that is already assigned to a different team', async () => {
+    it('throws ForbiddenException when caller is not the sponsor and not a maintainer', async () => {
+      teamRepo.findOne.mockResolvedValue({ id: 't1', splits: [] });
+      bountyRepo.findOne.mockResolvedValue({
+        id: 'b1',
+        status: BountyStatus.OPEN,
+        sponsorId: 'sponsor-1',
+        teamId: null,
+      });
+      userRepo.findOne.mockResolvedValue({
+        id: 'outsider',
+        roles: [UserRole.CONTRIBUTOR],
+      });
+
+      await expect(
+        service.assignToBounty('t1', 'b1', 'outsider'),
+      ).rejects.toThrow(ForbiddenException);
+    });
+
+    it('allows reassignment to a different team when bounty is OPEN and caller is sponsor', async () => {
       teamRepo.findOne.mockResolvedValue({ id: 't2', splits: [] });
       bountyRepo.findOne.mockResolvedValue({
         id: 'b1',
-        status: BountyStatus.CLAIMED,
+        status: BountyStatus.OPEN,
+        sponsorId: 'sponsor-1',
         teamId: 't1',
       });
+      userRepo.findOne.mockResolvedValue({
+        id: 'sponsor-1',
+        roles: [UserRole.SPONSOR],
+      });
 
-      const bounty = await service.assignToBounty('t2', 'b1');
+      const bounty = await service.assignToBounty('t2', 'b1', 'sponsor-1');
 
       expect(bounty.teamId).toBe('t2');
     });

@@ -66,7 +66,7 @@ module.exports = {
     },
     Api: {
       isSimulationError: () => false,
-      GetTransactionStatus: { NOT_FOUND: 'NOT_FOUND' },
+      GetTransactionStatus: { NOT_FOUND: 'NOT_FOUND', SUCCESS: 'SUCCESS' },
     },
     assembleTransaction: (tx) => ({ build: () => tx }),
   },

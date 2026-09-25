@@ -1,7 +1,15 @@
-import { Inject, Injectable, Logger, NotFoundException } from '@nestjs/common';
+import {
+  Inject,
+  Injectable,
+  Logger,
+  NotFoundException,
+  Optional,
+} from '@nestjs/common';
+import { EventEmitter2 } from '@nestjs/event-emitter';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Octokit } from '@octokit/rest';
 import { Repository as TypeOrmRepository } from 'typeorm';
+import { ANALYTICS_PLATFORM_INVALIDATE_EVENT } from '../analytics/analytics.events';
 import { Issue, Repository } from '../common/entities';
 import { IssueState } from '../common/enums';
 import { GITHUB_OCTOKIT } from './octokit.provider';
@@ -77,9 +85,14 @@ export class GithubSyncService {
     private readonly repositoryRepo: TypeOrmRepository<Repository>,
     @InjectRepository(Issue)
     private readonly issueRepo: TypeOrmRepository<Issue>,
+    @Optional() private readonly eventEmitter?: EventEmitter2,
   ) {}
 
-  async syncRepository(owner: string, repo: string, page = 1): Promise<{ repository: Repository, synced: number, nextPage?: number }> {
+  async syncRepository(
+    owner: string,
+    repo: string,
+    page = 1,
+  ): Promise<{ repository: Repository; synced: number; nextPage?: number }> {
     const repoResponse = await this.octokit.repos.get({ owner, repo });
     this.logRateLimitFromHeaders(
       `before ${owner}/${repo}`,
@@ -91,6 +104,7 @@ export class GithubSyncService {
     let repository = await this.repositoryRepo.findOne({
       where: { githubRepoId: String(repoData.id) },
     });
+    const isNewRepository = !repository;
 
     const attrs = {
       githubRepoId: String(repoData.id),
@@ -109,9 +123,16 @@ export class GithubSyncService {
       ? this.repositoryRepo.merge(repository, attrs)
       : this.repositoryRepo.create(attrs);
     repository = await this.repositoryRepo.save(repository);
+    if (isNewRepository) {
+      this.eventEmitter?.emit(ANALYTICS_PLATFORM_INVALIDATE_EVENT);
+    }
 
     const result = await this.syncIssues(repository, owner, repo, page);
-    return { repository, synced: result.saved.length, nextPage: result.nextPage };
+    return {
+      repository,
+      synced: result.saved.length,
+      nextPage: result.nextPage,
+    };
   }
 
   /**
@@ -126,7 +147,7 @@ export class GithubSyncService {
     owner: string,
     repo: string,
     page = 1,
-  ): Promise<{ saved: Issue[], nextPage?: number }> {
+  ): Promise<{ saved: Issue[]; nextPage?: number }> {
     const saved: Issue[] = [];
 
     try {
@@ -155,7 +176,9 @@ export class GithubSyncService {
 
       const hasNextPage = response.headers.link?.includes('rel="next"');
 
-      this.logger.log(`Synced ${saved.length} issues for ${owner}/${repo} (page ${page})`);
+      this.logger.log(
+        `Synced ${saved.length} issues for ${owner}/${repo} (page ${page})`,
+      );
       return { saved, nextPage: hasNextPage ? page + 1 : undefined };
     } catch (err) {
       const cause = err as Error;
@@ -271,8 +294,16 @@ export class GithubSyncService {
     const limit = headers['x-ratelimit-limit'];
     const reset = headers['x-ratelimit-reset'];
     if (remaining != null && limit != null && reset != null) {
+      const remainingText =
+        typeof remaining === 'string' || typeof remaining === 'number'
+          ? String(remaining)
+          : 'unknown';
+      const limitText =
+        typeof limit === 'string' || typeof limit === 'number'
+          ? String(limit)
+          : 'unknown';
       this.logger.log(
-        `[rate-limit ${label}] core: ${remaining}/${limit} remaining, ` +
+        `[rate-limit ${label}] core: ${remainingText}/${limitText} remaining, ` +
           `resets at ${new Date(Number(reset) * 1000).toISOString()}`,
       );
     }

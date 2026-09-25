@@ -223,7 +223,12 @@ describe('SponsorsService', () => {
   describe('milestoneProgress', () => {
     it('computes distributed / budget for each milestone', async () => {
       milestoneRepo.find.mockResolvedValue([
-        { id: 'm1', title: 'One', budget: '100.0000000', distributed: '25.0000000' },
+        {
+          id: 'm1',
+          title: 'One',
+          budget: '100.0000000',
+          distributed: '25.0000000',
+        },
       ]);
 
       await expect(service.milestoneProgress('sponsor-1')).resolves.toEqual([

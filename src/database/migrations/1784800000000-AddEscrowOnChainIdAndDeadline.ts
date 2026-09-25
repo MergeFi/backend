@@ -17,9 +17,7 @@ import { MigrationInterface, QueryRunner } from 'typeorm';
  * and `EscrowService` falls back to the parent id / configured default
  * when either is absent.
  */
-export class AddEscrowOnChainIdAndDeadline1784800000000
-  implements MigrationInterface
-{
+export class AddEscrowOnChainIdAndDeadline1784800000000 implements MigrationInterface {
   name = 'AddEscrowOnChainIdAndDeadline1784800000000';
 
   public async up(queryRunner: QueryRunner): Promise<void> {

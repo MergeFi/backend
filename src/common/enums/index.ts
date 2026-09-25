@@ -27,6 +27,7 @@ export enum BountyStatus {
   CLAIMED = 'claimed',
   IN_REVIEW = 'in_review',
   MERGED = 'merged',
+  RELEASE_FAILED = 'release_failed',
   PAID = 'paid',
   REFUNDED = 'refunded',
   EXPIRED = 'expired',
@@ -85,6 +86,8 @@ export enum WebhookEventStatus {
   PROCESSED = 'processed',
   IGNORED = 'ignored',
   FAILED = 'failed',
+  /** Payload didn't have the shape its handler required; no business logic ran (#28). */
+  INVALID_PAYLOAD = 'invalid_payload',
 }
 
 /**

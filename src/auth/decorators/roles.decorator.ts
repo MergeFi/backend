@@ -1,5 +1,7 @@
 import { SetMetadata } from '@nestjs/common';
-import { UserRole } from '../../common/enums';
 
+// This is the secret key NestJS will use to track route roles
 export const ROLES_KEY = 'roles';
-export const Roles = (...roles: UserRole[]) => SetMetadata(ROLES_KEY, roles);
+
+// This allows us to type @Roles('maintainer') above any function
+export const Roles = (...roles: string[]) => SetMetadata(ROLES_KEY, roles);

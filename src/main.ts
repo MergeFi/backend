@@ -1,24 +1,13 @@
 import { NestFactory } from '@nestjs/core';
 import { ConfigService } from '@nestjs/config';
-import { ValidationPipe, LoggerService, Logger } from '@nestjs/common';
+import { Logger, ValidationPipe } from '@nestjs/common';
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
 import helmet from 'helmet';
 import { AppModule } from './app.module';
 import { AppConfig } from './config/configuration';
 import { assertRequiredConfig } from './config/validate-required-config';
 import { GlobalExceptionFilter } from './common/filters/global-exception.filter';
-
-const LOG_LEVEL_MAP: Record<string, string[]> = {
-  error: ['error'],
-  warn: ['error', 'warn'],
-  log: ['error', 'warn', 'log'],
-  debug: ['error', 'warn', 'log', 'debug'],
-  verbose: ['error', 'warn', 'log', 'debug', 'verbose'],
-};
-
-function resolveLogLevels(level: string): string[] {
-  return LOG_LEVEL_MAP[level.toLowerCase()] ?? LOG_LEVEL_MAP.log;
-}
+import { resolveLogLevels, startupMessage } from './config/log-levels';
 
 async function bootstrap() {
   // rawBody: true preserves the raw request buffer on req.rawBody, which the
@@ -29,7 +18,7 @@ async function bootstrap() {
 
   const env = configService.get('env', { infer: true });
   const logLevel = configService.get('logLevel', { infer: true });
-  app.useLogger(resolveLogLevels(logLevel));
+  app.useLogger(resolveLogLevels(logLevel || 'log'));
 
   // Fail fast and loudly if *any* required-in-production secret is missing —
   // not just JWT_SECRET. An empty GITHUB_WEBHOOK_SECRET, TREASURY_SECRET,
@@ -77,10 +66,8 @@ async function bootstrap() {
   const port = configService.get('port', { infer: true });
   await app.listen(port);
 
-  console.log(
-    env === 'production'
-      ? `MergeFi backend listening on port ${port}`
-      : `MergeFi backend listening on port ${port} — docs at /api/docs`,
-  );
+  // Go through Nest's Logger (not raw stdout) so the banner honours
+  // LOG_LEVEL and any logger/transport installed via app.useLogger (#362).
+  new Logger('Bootstrap').log(startupMessage(env, port));
 }
 void bootstrap();

@@ -10,6 +10,8 @@ import { EscrowService } from '../src/escrow/escrow.service';
 import { AssetType, IdempotencyKeyStatus } from '../src/common/enums';
 import { IdempotencyKey } from '../src/common/entities/idempotency-key.entity';
 import { IdempotencyInterceptor } from '../src/common/idempotency/idempotency.interceptor';
+import { JwtAuthGuard } from '../src/auth/guards/jwt-auth.guard';
+import { RolesGuard } from '../src/auth/guards/roles.guard';
 
 /**
  * Same in-memory stand-in as escrow-idempotency.e2e-spec.ts's
@@ -92,6 +94,10 @@ describe('Stellar address validation at the API boundary — escrow endpoints (#
     release: jest.Mock;
     splitRelease: jest.Mock;
   };
+  // Escrow.id is a real UUID column (ParseUUIDPipe on the route) — not the
+  // human-readable 'esc_1' this spec previously (and incorrectly) used as a
+  // path param.
+  const esc_1Id = randomUUID();
 
   beforeAll(async () => {
     escrowService = {
@@ -111,7 +117,12 @@ describe('Stellar address validation at the API boundary — escrow endpoints (#
           useValue: new FakeIdempotencyRepo(),
         },
       ],
-    }).compile();
+    })
+      .overrideGuard(JwtAuthGuard)
+      .useValue({ canActivate: () => true })
+      .overrideGuard(RolesGuard)
+      .useValue({ canActivate: () => true })
+      .compile();
 
     app = moduleFixture.createNestApplication();
     // Mirrors main.ts's ValidationPipe config exactly — this is what
@@ -177,7 +188,7 @@ describe('Stellar address validation at the API boundary — escrow endpoints (#
     'rejects POST /escrow/:id/release with a malformed recipientAddress (%p) as 400, never reaching EscrowService',
     async (bad) => {
       await request(app.getHttpServer())
-        .post('/escrow/esc_1/release')
+        .post(`/escrow/${esc_1Id}/release`)
         .set('Idempotency-Key', randomUUID())
         .send({ recipientAddress: bad })
         .expect(400);
@@ -188,7 +199,7 @@ describe('Stellar address validation at the API boundary — escrow endpoints (#
 
   it('accepts POST /escrow/:id/release with a valid recipientAddress', async () => {
     await request(app.getHttpServer())
-      .post('/escrow/esc_1/release')
+      .post(`/escrow/${esc_1Id}/release`)
       .set('Idempotency-Key', randomUUID())
       .send({ recipientAddress: Keypair.random().publicKey() })
       .expect(201);
@@ -198,7 +209,7 @@ describe('Stellar address validation at the API boundary — escrow endpoints (#
 
   it('rejects POST /escrow/:id/split-release when any recipient in the array has a malformed recipientAddress', async () => {
     await request(app.getHttpServer())
-      .post('/escrow/esc_1/split-release')
+      .post(`/escrow/${esc_1Id}/split-release`)
       .set('Idempotency-Key', randomUUID())
       .send({
         recipients: [
@@ -213,7 +224,7 @@ describe('Stellar address validation at the API boundary — escrow endpoints (#
 
   it('accepts POST /escrow/:id/split-release when every recipient has a valid recipientAddress', async () => {
     await request(app.getHttpServer())
-      .post('/escrow/esc_1/split-release')
+      .post(`/escrow/${esc_1Id}/split-release`)
       .set('Idempotency-Key', randomUUID())
       .send({
         recipients: [

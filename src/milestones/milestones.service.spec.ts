@@ -130,12 +130,17 @@ describe('MilestonesService', () => {
   });
 
   describe('addIssue', () => {
-    it('attaches an issue to an OPEN milestone', async () => {
+    it('attaches an issue to an OPEN milestone in the same repository', async () => {
       milestoneRepo.findOne.mockResolvedValue({
         id: 'm1',
         status: MilestoneStatus.OPEN,
+        repositoryId: 'repo-a',
       });
-      issueRepo.findOne.mockResolvedValue({ id: 'i1', state: 'open' });
+      issueRepo.findOne.mockResolvedValue({
+        id: 'i1',
+        state: 'open',
+        repositoryId: 'repo-a',
+      });
 
       const issue = await service.addIssue('m1', 'i1');
 
@@ -145,28 +150,56 @@ describe('MilestonesService', () => {
       );
     });
 
-    it('attaches an issue to a FUNDED milestone', async () => {
+    it('attaches an issue to a FUNDED milestone in the same repository', async () => {
       milestoneRepo.findOne.mockResolvedValue({
         id: 'm1',
         status: MilestoneStatus.FUNDED,
+        repositoryId: 'repo-a',
       });
-      issueRepo.findOne.mockResolvedValue({ id: 'i1', state: 'open' });
+      issueRepo.findOne.mockResolvedValue({
+        id: 'i1',
+        state: 'open',
+        repositoryId: 'repo-a',
+      });
 
       const issue = await service.addIssue('m1', 'i1');
 
       expect(issue.milestoneId).toBe('m1');
     });
 
-    it('attaches an issue to an IN_PROGRESS milestone', async () => {
+    it('attaches an issue to an IN_PROGRESS milestone in the same repository', async () => {
       milestoneRepo.findOne.mockResolvedValue({
         id: 'm1',
         status: MilestoneStatus.IN_PROGRESS,
+        repositoryId: 'repo-a',
       });
-      issueRepo.findOne.mockResolvedValue({ id: 'i1', state: 'open' });
+      issueRepo.findOne.mockResolvedValue({
+        id: 'i1',
+        state: 'open',
+        repositoryId: 'repo-a',
+      });
 
       const issue = await service.addIssue('m1', 'i1');
 
       expect(issue.milestoneId).toBe('m1');
+    });
+
+    it('rejects attaching an issue from a different repository than the milestone', async () => {
+      milestoneRepo.findOne.mockResolvedValue({
+        id: 'm1',
+        status: MilestoneStatus.OPEN,
+        repositoryId: 'repo-a',
+      });
+      issueRepo.findOne.mockResolvedValue({
+        id: 'i1',
+        state: 'open',
+        repositoryId: 'repo-b',
+      });
+
+      await expect(service.addIssue('m1', 'i1')).rejects.toThrow(
+        'Issue i1 belongs to repository repo-b, but milestone m1 is scoped to repository repo-a',
+      );
+      expect(issueRepo.save).not.toHaveBeenCalled();
     });
 
     it('rejects attaching an issue to a COMPLETED milestone', async () => {
@@ -212,7 +245,10 @@ describe('MilestonesService', () => {
         escrowId: 'escrow-1',
         budget: '500',
         distributed: '0',
-        issues: [{ id: 'i1', state: 'open' }, { id: 'i2', state: 'open' }],
+        issues: [
+          { id: 'i1', state: 'open' },
+          { id: 'i2', state: 'open' },
+        ],
       });
 
       const payment = await service.resolveIssue(
@@ -340,7 +376,9 @@ describe('MilestonesService', () => {
 
       await expect(
         service.resolveIssue('m1', 'issue-1', 'RECIPIENT'),
-      ).rejects.toThrow('No unresolved issues left to attribute this payout to');
+      ).rejects.toThrow(
+        'No unresolved issues left to attribute this payout to',
+      );
 
       expect(escrowService.releasePartial).not.toHaveBeenCalled();
     });
