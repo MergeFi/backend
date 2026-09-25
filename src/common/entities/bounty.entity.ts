@@ -17,6 +17,7 @@ import { AssetType, BountyDifficulty, BountyStatus } from '../enums';
 
 @Entity('bounties')
 @Index('IDX_bounties_claimedById_status', ['claimedById', 'status'])
+@Index('IDX_bounties_sponsorId_status', ['sponsorId', 'status'])
 @Index('IDX_bounties_status_paid', ['status'], {
   where: `"status" = 'paid'`,
 })
