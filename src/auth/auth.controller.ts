@@ -20,9 +20,11 @@ import { GithubAuthGuard } from './guards/github-auth.guard';
 import { JwtAuthGuard } from './guards/jwt-auth.guard';
 import { AppConfig } from '../config/configuration';
 import type { UpsertFromGithubInput } from '../users/users.service';
+import { ApiInternalErrorResponse } from '../common/swagger/api-common-responses.decorator';
 
 @ApiTags('auth')
 @Controller('auth')
+@ApiInternalErrorResponse()
 export class AuthController {
   private readonly logger = new Logger(AuthController.name);
 

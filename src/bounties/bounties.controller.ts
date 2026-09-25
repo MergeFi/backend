@@ -10,7 +10,7 @@ import {
   Req,
   UseGuards,
 } from '@nestjs/common';
-import { ApiTags } from '@nestjs/swagger';
+import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { Throttle } from '@nestjs/throttler'; // Import the Throttle decorator
 import { BountiesService } from './bounties.service';
 import { CreateBountyDto } from './dto/create-bounty.dto';
@@ -23,6 +23,10 @@ import { RolesGuard } from '../auth/guards/roles.guard';
 import { Roles } from '../auth/decorators/roles.decorator';
 import { UserRole } from '../common/enums';
 import { Request } from 'express';
+import {
+  ApiInternalErrorResponse,
+  ApiStandardErrorResponses,
+} from '../common/swagger/api-common-responses.decorator';
 
 class FundBountyDto {
   @IsStellarAddress()
@@ -31,9 +35,13 @@ class FundBountyDto {
 
 @ApiTags('bounties')
 @Controller('bounties')
+@ApiInternalErrorResponse()
 export class BountiesController {
   constructor(private readonly bountiesService: BountiesService) {}
 
+  @ApiOperation({ summary: 'Create a bounty' })
+  @ApiBearerAuth()
+  @ApiStandardErrorResponses()
   @Idempotent('bounty.create')
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles(UserRole.SPONSOR, UserRole.MAINTAINER)
@@ -43,6 +51,10 @@ export class BountiesController {
     return this.bountiesService.create(dto, userId);
   }
 
+  @ApiOperation({
+    summary: 'List bounties',
+    description: 'Public endpoint, rate-limited to 1000 requests/hour.',
+  })
   // Public list: Lenient but protected against resource exhaustion (max 1000/hr)
   @Throttle({ long: { limit: 1000, ttl: 3600000 } })
   @Get()
@@ -68,11 +80,19 @@ export class BountiesController {
     });
   }
 
+  @ApiOperation({ summary: 'Get a bounty by id' })
+  @ApiStandardErrorResponses()
   @Get(':id')
   findOne(@Param('id', new ParseUUIDPipe()) id: string) {
     return this.bountiesService.findOne(id);
   }
 
+  @ApiOperation({
+    summary: 'Fund a bounty',
+    description: 'Rate-limited to 1 request/second.',
+  })
+  @ApiBearerAuth()
+  @ApiStandardErrorResponses()
   // High-value mutation: Strict rate limiting (max 1 req/sec)
   @Throttle({ short: { limit: 1, ttl: 1000 } })
   @Idempotent('bounty.fund')
@@ -88,6 +108,12 @@ export class BountiesController {
     return this.bountiesService.fund(id, dto.funderAddress, userId);
   }
 
+  @ApiOperation({
+    summary: 'Claim a bounty',
+    description: 'Rate-limited to 1 request/second.',
+  })
+  @ApiBearerAuth()
+  @ApiStandardErrorResponses()
   // High-value mutation: Strict rate limiting (max 1 req/sec)
   @Throttle({ short: { limit: 1, ttl: 1000 } })
   @Idempotent('bounty.claim')
@@ -102,6 +128,9 @@ export class BountiesController {
     return this.bountiesService.claim(id, userId);
   }
 
+  @ApiOperation({ summary: 'Approve a claimed bounty' })
+  @ApiBearerAuth()
+  @ApiStandardErrorResponses()
   @Idempotent('bounty.approve')
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles(UserRole.MAINTAINER)
@@ -110,6 +139,9 @@ export class BountiesController {
     return this.bountiesService.approve(id);
   }
 
+  @ApiOperation({ summary: 'Reject a claimed bounty' })
+  @ApiBearerAuth()
+  @ApiStandardErrorResponses()
   @Idempotent('bounty.reject')
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles(UserRole.MAINTAINER)
@@ -118,6 +150,12 @@ export class BountiesController {
     return this.bountiesService.reject(id);
   }
 
+  @ApiOperation({
+    summary: 'Refund a bounty to its funder',
+    description: 'Rate-limited to 1 request/second.',
+  })
+  @ApiBearerAuth()
+  @ApiStandardErrorResponses()
   // High-value mutation: Strict rate limiting (max 1 req/sec)
   @Throttle({ short: { limit: 1, ttl: 1000 } })
   @Idempotent('bounty.refund')

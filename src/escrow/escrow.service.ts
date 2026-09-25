@@ -23,7 +23,10 @@ import {
   splitStroops,
   TOTAL_BASIS_POINTS,
 } from './split-math.util';
-import { validatePercentageSplits } from '../common/validators/split-percentage.validator';
+import {
+  assertUniqueSplitEntries,
+  validatePercentageSplits,
+} from '../common/validators/split-percentage.validator';
 
 export interface FundEscrowInput {
   amount: string;
@@ -591,6 +594,14 @@ export class EscrowService {
    */
   assertValidSplits(recipients: SplitRecipient[]): void {
     validatePercentageSplits(recipients, 'split release');
+    // #358: the same recipient listed twice would otherwise silently
+    // receive a doubled share — reject it, keyed on recipientAddress since
+    // that's always present (recipientId is an optional internal ref).
+    assertUniqueSplitEntries(
+      recipients,
+      (r) => r.recipientAddress,
+      'split recipient',
+    );
   }
 
   /**

@@ -11,6 +11,7 @@ import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { IsString } from 'class-validator';
 import { UsersService } from './users.service';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
+import { ApiInternalErrorResponse } from '../common/swagger/api-common-responses.decorator';
 
 class SetStellarAddressDto {
   @IsString()
@@ -19,6 +20,7 @@ class SetStellarAddressDto {
 
 @ApiTags('users')
 @Controller('users')
+@ApiInternalErrorResponse()
 export class UsersController {
   constructor(private readonly usersService: UsersService) {}
 
