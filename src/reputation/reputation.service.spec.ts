@@ -1,7 +1,7 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { getRepositoryToken } from '@nestjs/typeorm';
 import { ReputationService } from './reputation.service';
-import { Bounty, ReputationSnapshot } from '../common/entities';
+import { Bounty, Payment, ReputationSnapshot } from '../common/entities';
 import * as sql from '../common/stats/contributor-stats.sql';
 
 jest.mock('../common/stats/contributor-stats.sql', () => ({
@@ -30,6 +30,7 @@ describe('ReputationService', () => {
       providers: [
         ReputationService,
         { provide: getRepositoryToken(Bounty), useValue: mockBountyRepo },
+        { provide: getRepositoryToken(Payment), useValue: {} },
         {
           provide: getRepositoryToken(ReputationSnapshot),
           useValue: mockSnapshotRepo,
@@ -103,5 +104,23 @@ describe('ReputationService', () => {
     expect(mockSnapshotRepo.find).toHaveBeenCalledWith(
       expect.objectContaining({ take: 100, skip: 10 }),
     );
+  });
+  describe('getLatest', () => {
+    it('returns the most recent snapshot by querying computedAt DESC', async () => {
+      const snapshot = { id: 'snap-9', userId: 'user-1' };
+      mockSnapshotRepo.findOne.mockResolvedValue(snapshot);
+
+      await expect(service.getLatest('user-1')).resolves.toBe(snapshot);
+      expect(mockSnapshotRepo.findOne).toHaveBeenCalledWith({
+        where: { userId: 'user-1' },
+        order: { computedAt: 'DESC' },
+      });
+    });
+
+    it('returns null when the user has no snapshot yet', async () => {
+      mockSnapshotRepo.findOne.mockResolvedValue(null);
+
+      await expect(service.getLatest('new-user')).resolves.toBeNull();
+    });
   });
 });
