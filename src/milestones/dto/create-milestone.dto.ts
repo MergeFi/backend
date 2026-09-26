@@ -18,10 +18,9 @@ export class CreateMilestoneDto {
   @IsUUID()
   repositoryId: string;
 
-  @ApiProperty({ required: false })
-  @IsOptional()
+  @ApiProperty()
   @IsUUID()
-  sponsorId?: string;
+  sponsorId: string;
 
   @ApiProperty({ maxLength: 200 })
   @IsString()

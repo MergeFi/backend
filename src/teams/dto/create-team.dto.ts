@@ -44,10 +44,9 @@ export class CreateTeamDto {
   @MaxLength(100)
   name: string;
 
-  @ApiProperty({ required: false })
-  @IsOptional()
+  @ApiProperty()
   @IsUUID()
-  createdById?: string;
+  createdById: string;
 
   @ApiProperty({ type: [TeamMemberSplitDto] })
   @ArrayMinSize(1)
