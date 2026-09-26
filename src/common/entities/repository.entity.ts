@@ -40,6 +40,7 @@ export class Repository {
   private: boolean;
 
   @Column({ type: 'varchar', nullable: true })
+  @Index()
   primaryLanguage: string | null;
 
   @Column({ default: 0 })
