@@ -1,6 +1,7 @@
 import { ApiProperty } from '@nestjs/swagger';
 import {
   IsISO8601,
+  IsNotEmpty,
   IsOptional,
   IsString,
   IsUUID,
@@ -24,6 +25,7 @@ export class CreateMilestoneDto {
 
   @ApiProperty({ maxLength: 200 })
   @IsString()
+  @IsNotEmpty()
   @MaxLength(200)
   title: string;
 
