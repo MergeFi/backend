@@ -17,10 +17,9 @@ export class CreatePoolDto {
   @IsUUID()
   repositoryId?: string;
 
-  @ApiProperty({ required: false })
-  @IsOptional()
+  @ApiProperty()
   @IsUUID()
-  createdById?: string;
+  createdById: string;
 
   /** The sponsor's standing recurring commitment; deposits never overwrite it (#93). */
   @ApiProperty({ required: false })
