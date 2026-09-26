@@ -31,7 +31,10 @@ export class Bounty {
   // funded Escrow attached — see the `escrow` relation below), so deleting
   // its parent Issue must never silently delete it too. Matches the
   // RESTRICT/SET NULL convention used by every other financial relation in
-  // this file and in #27's EscrowFkIntegrityAndSponsorId migration. See #53.
+  // this file and in #27's EscrowFkIntegrityAndSponsorId migration. Note that
+  // this RESTRICT rule also intentionally prevents deleting a parent Repository
+  // if any of its linked Issues are bountied (Issue.repository CASCADE +
+  // Bounty.issue RESTRICT). See #53, #352.
   @OneToOne(() => Issue, (issue) => issue.bounty, { onDelete: 'RESTRICT' })
   @JoinColumn()
   issue: Issue;

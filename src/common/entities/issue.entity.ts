@@ -20,6 +20,11 @@ export class Issue {
   @PrimaryGeneratedColumn('uuid')
   id: string;
 
+  // CASCADE deletes issues when a Repository is deleted. NOTE: If any issue in
+  // the repository has a Bounty attached, Bounty.issue's RESTRICT onDelete
+  // rule (#53) will cause Postgres to abort the cascading delete and fail with
+  // a foreign key violation. This is by design: financial records must not be
+  // deleted via cascading repository cleanup. See #352.
   @ManyToOne(() => Repository, (repo) => repo.issues, { onDelete: 'CASCADE' })
   @JoinColumn()
   repository: Repository;
