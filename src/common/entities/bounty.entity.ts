@@ -23,6 +23,9 @@ import { AssetType, BountyDifficulty, BountyStatus } from '../enums';
 @Index('IDX_bounties_paidAt_paid', ['paidAt'], {
   where: `"status" = 'paid' AND "paidAt" IS NOT NULL`,
 })
+@Index('IDX_bounties_deadline_active', ['deadline'], {
+  where: `"status" IN ('open','funded','claimed') AND "deadline" IS NOT NULL`,
+})
 export class Bounty {
   @PrimaryGeneratedColumn('uuid')
   id: string;
