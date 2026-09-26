@@ -25,23 +25,29 @@ import {
 } from '../common/swagger/api-common-responses.decorator';
 
 class DepositDto {
+  @ApiProperty()
   @IsMoneyAmount()
   amount: string;
 
+  @ApiProperty()
   @IsStellarAddress()
   funderAddress: string;
 }
 
 class AssignRewardDto {
+  @ApiProperty()
   @IsUUID()
   issueId: string;
 
+  @ApiProperty()
   @IsMoneyAmount()
   amount: string;
 
+  @ApiProperty()
   @IsStellarAddress()
   recipientAddress: string;
 
+  @ApiProperty({ required: false })
   @IsOptional()
   @IsUUID()
   recipientId?: string;

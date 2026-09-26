@@ -29,6 +29,7 @@ import {
 } from '../common/swagger/api-common-responses.decorator';
 
 class FundBountyDto {
+  @ApiProperty()
   @IsStellarAddress()
   funderAddress: string;
 }

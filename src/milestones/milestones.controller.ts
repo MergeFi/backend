@@ -8,7 +8,7 @@ import {
   Req,
   UseGuards,
 } from '@nestjs/common';
-import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
+import { ApiBearerAuth, ApiOperation, ApiProperty, ApiTags } from '@nestjs/swagger';
 import { IsOptional, IsUUID } from 'class-validator';
 import { Throttle } from '@nestjs/throttler';
 import { MilestonesService } from './milestones.service';
@@ -26,14 +26,17 @@ import {
 } from '../common/swagger/api-common-responses.decorator';
 
 class FundMilestoneDto {
+  @ApiProperty()
   @IsStellarAddress()
   funderAddress!: string;
 }
 
 class ResolveIssueDto {
+  @ApiProperty()
   @IsStellarAddress()
   recipientAddress!: string;
 
+  @ApiProperty({ required: false })
   @IsOptional()
   @IsUUID()
   recipientId?: string;

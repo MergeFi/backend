@@ -7,13 +7,14 @@ import {
   Patch,
   UseGuards,
 } from '@nestjs/common';
-import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
+import { ApiBearerAuth, ApiProperty, ApiTags } from '@nestjs/swagger';
 import { IsString } from 'class-validator';
 import { UsersService } from './users.service';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { ApiInternalErrorResponse } from '../common/swagger/api-common-responses.decorator';
 
 class SetStellarAddressDto {
+  @ApiProperty()
   @IsString()
   stellarAddress: string;
 }
