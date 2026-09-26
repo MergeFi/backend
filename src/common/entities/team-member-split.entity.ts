@@ -3,6 +3,7 @@ import {
   Column,
   CreateDateColumn,
   Entity,
+  Index,
   JoinColumn,
   ManyToOne,
   PrimaryGeneratedColumn,
@@ -24,6 +25,7 @@ export class TeamMemberSplit {
   team: Team;
 
   @Column()
+  @Index()
   teamId: string;
 
   @ManyToOne(() => User, { onDelete: 'SET NULL', nullable: true })
