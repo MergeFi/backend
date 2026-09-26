@@ -257,10 +257,9 @@ docker compose up -d db
 cp .env.example .env
 # Set DATABASE_URL=postgresql://postgres:postgres@localhost:5432/mergefi
 
-# D. Create or update the local schema
-npm run migration:run
-# For throwaway local development only, you may instead set
-# DATABASE_SYNCHRONIZE=true in .env before starting the app.
+# D. Bootstrap the schema for this throwaway local database
+# Set DATABASE_SYNCHRONIZE=true in .env before starting the app.
+# The checked-in migrations are incremental and require an existing schema.
 
 # E. Start NestJS in development mode
 npm run start:dev
@@ -315,7 +314,7 @@ Unit tests cover critical domains including:
 - `src/database/escrow-fk-integrity.integration.spec.ts` — **integration** test against a real Postgres (requires `DATABASE_URL`, not mocked): the exactly-one-parent CHECK constraint on `escrows`, and that sponsor dashboard figures survive a parent bounty/milestone being deleted.
 - `src/analytics/analytics.integration.spec.ts` — Postgres load/parity test: SQL heatmap + top-N match the old JS bucketing on a small fixture; a 3,000-bounty seed must not call `find`/`getMany` (O(n) entity load → O(days)+O(1) aggregates), `forContributor` under 2s, cached homepage summary on a second call.
 
-`DATABASE_SYNCHRONIZE=true` is enabled only by the Docker Compose `app` service for local bootstrapping. The checked-in `.env.example` keeps `DATABASE_SYNCHRONIZE=false`; native development can either run migrations with `npm run migration:run` or explicitly opt in to synchronize for a throwaway local database. Real deployments should always run migrations instead - see `src/database/migrations/` and the `migration:*` npm scripts below.
+`DATABASE_SYNCHRONIZE=true` is enabled only by the Docker Compose `app` service for local bootstrapping. The checked-in `.env.example` keeps `DATABASE_SYNCHRONIZE=false`; native development must explicitly opt in to synchronize for a throwaway local database. The checked-in migrations are incremental and assume the base schema already exists. Keep synchronization disabled in production and apply reviewed migrations to an existing baseline schema - see `src/database/migrations/` and the `migration:*` npm scripts below.
 
 ### Migrations
 
