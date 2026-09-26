@@ -647,6 +647,12 @@ export class EscrowService {
         `Unsupported escrow asset: ${String(input.asset)}`,
       );
     }
+    const tokenContract = this.resolveTokenAddress(input.asset);
+    if (!tokenContract) {
+      throw new BadRequestException(
+        `Asset ${String(input.asset)} has no configured token contract on this server`,
+      );
+    }
     this.assertExactlyOneParent(input);
   }
 
