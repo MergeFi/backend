@@ -1,4 +1,5 @@
 import {
+  Check,
   Column,
   CreateDateColumn,
   Entity,
@@ -13,6 +14,10 @@ import { AssetType, PaymentStatus } from '../enums';
 
 /** A single payout leg from an escrow release — one per recipient (team splits produce many). */
 @Entity('payments')
+@Check(
+  'CHK_payment_split_percentage_range',
+  '"splitPercentage" IS NULL OR ("splitPercentage" >= 0 AND "splitPercentage" <= 100)',
+)
 export class Payment {
   @PrimaryGeneratedColumn('uuid')
   id: string;

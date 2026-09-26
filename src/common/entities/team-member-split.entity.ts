@@ -1,4 +1,5 @@
 import {
+  Check,
   Column,
   CreateDateColumn,
   Entity,
@@ -10,6 +11,10 @@ import { Team } from './team.entity';
 import { User } from './user.entity';
 
 @Entity('team_member_splits')
+@Check(
+  'CHK_team_member_split_percentage_range',
+  '"percentage" >= 0 AND "percentage" <= 100',
+)
 export class TeamMemberSplit {
   @PrimaryGeneratedColumn('uuid')
   id: string;
