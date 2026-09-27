@@ -49,6 +49,8 @@ export class SponsorsService {
           BountyStatus.EXPIRED,
         ],
       })
+      .orderBy('bounty.createdAt', 'DESC')
+      .addOrderBy('bounty.id', 'DESC')
       .take(options.limit ?? 20)
       .skip(options.offset ?? 0)
       .getMany();
@@ -104,6 +106,7 @@ export class SponsorsService {
         { sponsorId, status: MilestoneStatus.FUNDED },
         { sponsorId, status: MilestoneStatus.IN_PROGRESS },
       ],
+      order: { createdAt: 'DESC', id: 'DESC' },
       take: options.limit ?? 20,
       skip: options.offset ?? 0,
     });
@@ -116,6 +119,7 @@ export class SponsorsService {
   ): Promise<Array<{ milestoneId: string; title: string; progress: number }>> {
     const milestones = await this.milestoneRepo.find({
       where: { sponsorId },
+      order: { createdAt: 'DESC', id: 'DESC' },
       take: options.limit ?? 20,
       skip: options.offset ?? 0,
     });
