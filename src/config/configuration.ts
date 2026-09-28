@@ -21,6 +21,12 @@ export interface AppConfig {
     oauthCallbackUrl: string;
     apiToken: string;
     webhookSecret: string;
+    /**
+     * Comma-separated `owner/repo` entries that a MAINTAINER may introduce as
+     * a first-time sync (#312). A repository already tracked in the database is
+     * governed by its `maintainerId` instead, so this only gates new repos.
+     */
+    syncAllowedRepos: string;
   };
   analytics: {
     /**
@@ -86,6 +92,7 @@ export default (): AppConfig => ({
       'http://localhost:3000/api/auth/github/callback',
     apiToken: process.env.GITHUB_API_TOKEN ?? '',
     webhookSecret: process.env.GITHUB_WEBHOOK_SECRET ?? '',
+    syncAllowedRepos: process.env.GITHUB_SYNC_ALLOWED_REPOS ?? '',
   },
 
   analytics: {

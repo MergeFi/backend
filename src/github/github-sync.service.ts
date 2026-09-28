@@ -8,7 +8,10 @@ import {
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Octokit } from '@octokit/rest';
-import { Repository as TypeOrmRepository } from 'typeorm';
+import {
+  FindOptionsRelations,
+  Repository as TypeOrmRepository,
+} from 'typeorm';
 import { ANALYTICS_PLATFORM_INVALIDATE_EVENT } from '../analytics/analytics.events';
 import { Issue, Repository } from '../common/entities';
 import { IssueState } from '../common/enums';
@@ -88,11 +91,42 @@ export class GithubSyncService {
     @Optional() private readonly eventEmitter?: EventEmitter2,
   ) {}
 
+  /**
+   * Syncs one page of a repository's issues.
+   *
+   * Since the pagination cap (#129) each call handles exactly one page, so a
+   * caller walking a 1,000-issue repo makes 10 sequential calls. Page 1 (and
+   * any call for a repository we have no row for yet) fetches the repository
+   * metadata from GitHub and upserts it; continuation pages reuse the
+   * already-persisted `Repository` row instead, because the metadata
+   * (stargazers, description, default branch) does not meaningfully change
+   * between two calls made seconds apart (#314). Re-fetching it on every
+   * continuation page doubled GitHub API usage — precisely in the large-repo
+   * case the pagination cap exists to keep affordable.
+   */
   async syncRepository(
     owner: string,
     repo: string,
     page = 1,
   ): Promise<{ repository: Repository; synced: number; nextPage?: number }> {
+    if (page > 1) {
+      const existing = await this.repositoryRepo.findOne({
+        where: { owner, name: repo },
+      });
+      if (existing) {
+        this.logger.log(
+          `Continuing sync of ${owner}/${repo} at page ${page} from the ` +
+            `persisted repository record (skipping the repos.get() refresh)`,
+        );
+        const result = await this.syncIssues(existing, owner, repo, page);
+        return {
+          repository: existing,
+          synced: result.saved.length,
+          nextPage: result.nextPage,
+        };
+      }
+    }
+
     const repoResponse = await this.octokit.repos.get({ owner, repo });
     this.logRateLimitFromHeaders(
       `before ${owner}/${repo}`,
@@ -136,11 +170,27 @@ export class GithubSyncService {
   }
 
   /**
-   * Pages through every issue for a repo, persisting each page as soon as
-   * it's fetched (rather than collecting the whole paginated result first)
-   * so a rate-limit/network failure on a later page doesn't discard the
-   * issues already fetched — those stay durably saved, and re-running the
-   * sync resumes via the idempotent upsert below rather than starting over.
+   * Pages through a repo's issues, persisting each page as soon as it's
+   * fetched (rather than collecting the whole paginated result first) so a
+   * rate-limit/network failure on a later page doesn't discard the issues
+   * already fetched — those stay durably saved, and re-running the sync
+   * resumes via the idempotent upsert below rather than starting over.
+   *
+   * When the repository has been synced before, only issues updated since
+   * `lastSyncedAt` are requested, using GitHub's own `since` filter (#315).
+   * Without it every periodic re-sync re-downloaded the repository's entire
+   * issue history — thousands of already-current issues — purely to discover
+   * none of them had changed, paying full pagination and rate-limit cost each
+   * time.
+   *
+   * `since` is only applied to page 1, since the filter shifts the result set
+   * and paginating past the first page would re-introduce the same full
+   * history walk it is meant to avoid.
+   *
+   * To force a full re-read of everything (for example after `MAINTENANCE_LABELS`
+   * changes, which alter `isMaintenanceType` on already-stored issues and so
+   * cannot be picked up by an incremental window), clear the repository's
+   * `lastSyncedAt` first — the next sync then runs unfiltered.
    */
   async syncIssues(
     repository: Repository,
@@ -150,6 +200,19 @@ export class GithubSyncService {
   ): Promise<{ saved: Issue[]; nextPage?: number }> {
     const saved: Issue[] = [];
 
+    // An unparseable/absent timestamp must not silently disable the incremental
+    // filter, so only a real Date narrows the request.
+    const since =
+      page === 1 && repository.lastSyncedAt instanceof Date
+        ? repository.lastSyncedAt.toISOString()
+        : undefined;
+
+    if (since) {
+      this.logger.log(
+        `Incremental issue sync for ${owner}/${repo}: only issues updated since ${since}`,
+      );
+    }
+
     try {
       const response = await this.octokit.issues.listForRepo({
         owner,
@@ -157,6 +220,7 @@ export class GithubSyncService {
         state: 'all',
         per_page: 100,
         page,
+        ...(since ? { since } : {}),
       });
 
       for (const raw of response.data as RawGithubIssue[]) {
@@ -207,9 +271,7 @@ export class GithubSyncService {
     const githubIssueId = String(raw.id);
     const incomingUpdatedAt = new Date(raw.updated_at);
 
-    const existing = await this.issueRepo.findOne({
-      where: { githubIssueId },
-    });
+    const existing = await this.findIssueByGithubIdOrNull(githubIssueId);
 
     if (
       existing?.githubUpdatedAt &&
@@ -265,18 +327,44 @@ export class GithubSyncService {
     return data;
   }
 
+  /**
+   * Looks up a tracked issue by its GitHub issue id, or null when it isn't
+   * tracked yet. This is the read path shared by {@link findIssueByGithubId}
+   * and the sync's own upsert, so an issue is never resolved by two different
+   * queries (#311).
+   */
+  async findIssueByGithubIdOrNull(
+    githubIssueId: string,
+  ): Promise<Issue | null> {
+    return this.issueRepo.findOne({ where: { githubIssueId } });
+  }
+
+  /**
+   * Same lookup for callers that treat an untracked issue as an error rather
+   * than as "not seen yet" (#311).
+   */
   async findIssueByGithubId(githubIssueId: string): Promise<Issue> {
-    const issue = await this.issueRepo.findOne({ where: { githubIssueId } });
+    const issue = await this.findIssueByGithubIdOrNull(githubIssueId);
     if (!issue)
       throw new NotFoundException(`Issue ${githubIssueId} not tracked`);
     return issue;
   }
 
+  /**
+   * Resolves an issue by the repository it belongs to and its in-repo number —
+   * the lookup a linked issue in a pull_request body needs, where only the
+   * number and the owning repository are known (#311). `relations` lets a
+   * caller pull in what it needs alongside (the webhook path loads `bounty`).
+   */
   async findIssueByRepoAndNumber(
     repositoryId: string,
     number: number,
+    relations?: FindOptionsRelations<Issue>,
   ): Promise<Issue | null> {
-    return this.issueRepo.findOne({ where: { repositoryId, number } });
+    return this.issueRepo.findOne({
+      where: { repositoryId, number },
+      ...(relations ? { relations } : {}),
+    });
   }
 
   /**
