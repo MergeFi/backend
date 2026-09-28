@@ -1,6 +1,8 @@
 import { ApiProperty } from '@nestjs/swagger';
+import { Transform } from 'class-transformer';
 import {
   IsISO8601,
+  IsNotEmpty,
   IsOptional,
   IsString,
   IsUUID,
@@ -24,7 +26,11 @@ export class CreateMilestoneDto {
   sponsorId?: string;
 
   @ApiProperty({ maxLength: 200 })
+  @Transform(({ value }: { value: unknown }) =>
+    typeof value === 'string' ? value.trim() : value,
+  )
   @IsString()
+  @IsNotEmpty()
   @MaxLength(200)
   title: string;
 

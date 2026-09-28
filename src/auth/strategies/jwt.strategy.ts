@@ -21,7 +21,13 @@ function cookieExtractor(req: Request): string | null {
   if (!header) return null;
   for (const part of header.split(';')) {
     const [rawKey, ...rest] = part.trim().split('=');
-    if (rawKey === 'access_token') return decodeURIComponent(rest.join('='));
+    if (rawKey === 'access_token') {
+      try {
+        return decodeURIComponent(rest.join('='));
+      } catch {
+        return null;
+      }
+    }
   }
   return null;
 }

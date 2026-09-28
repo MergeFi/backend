@@ -13,6 +13,8 @@ import { GithubSyncService } from './github-sync.service';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
 import { Roles } from '../auth/decorators/roles.decorator';
+import { RepoScopedSync } from '../auth/decorators/repo-scoped-sync.decorator';
+import { RepoScopeGuard } from '../auth/guards/repo-scope.guard';
 import { UserRole } from '../common/enums';
 import { ApiInternalErrorResponse } from '../common/swagger/api-common-responses.decorator';
 
@@ -30,8 +32,13 @@ export class GithubController {
   @Post('sync/:owner/:repo')
   @ApiBearerAuth()
   @ApiQuery({ name: 'page', required: false, type: Number })
-  @UseGuards(JwtAuthGuard, RolesGuard)
+  @UseGuards(JwtAuthGuard, RolesGuard, RepoScopeGuard)
   @Roles(UserRole.MAINTAINER)
+  // #312 — MAINTAINER is platform-wide; RepoScopeGuard additionally requires
+  // that the caller is this repository's recorded maintainer, or is allowlisted
+  // to introduce it, so the shared Octokit token can't be spent syncing
+  // unrelated public repositories.
+  @RepoScopedSync()
   sync(
     @Param('owner') owner: string,
     @Param('repo') repo: string,

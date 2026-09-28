@@ -10,7 +10,12 @@ import {
   Req,
   UseGuards,
 } from '@nestjs/common';
-import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
+import {
+  ApiBearerAuth,
+  ApiOperation,
+  ApiProperty,
+  ApiTags,
+} from '@nestjs/swagger';
 import { Throttle } from '@nestjs/throttler'; // Import the Throttle decorator
 import { BountiesService } from './bounties.service';
 import { CreateBountyDto } from './dto/create-bounty.dto';
@@ -28,7 +33,8 @@ import {
   ApiStandardErrorResponses,
 } from '../common/swagger/api-common-responses.decorator';
 
-class FundBountyDto {
+export class FundBountyDto {
+  @ApiProperty({ description: 'Stellar public key of the funder' })
   @IsStellarAddress()
   funderAddress: string;
 }
@@ -68,10 +74,7 @@ export class BountiesController {
     difficulty?: BountyDifficulty,
     @Query('asset', new ParseEnumPipe(AssetType, { optional: true }))
     asset?: AssetType,
-    @Query(
-      'repositoryId',
-      new ParseUUIDPipe({ version: '4', optional: true }),
-    )
+    @Query('repositoryId', new ParseUUIDPipe({ version: '4', optional: true }))
     repositoryId?: string,
     @Query('primaryLanguage') primaryLanguage?: string,
   ) {
@@ -124,10 +127,7 @@ export class BountiesController {
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles(UserRole.CONTRIBUTOR)
   @Post(':id/claim')
-  claim(
-    @Param('id', new ParseUUIDPipe()) id: string,
-    @Req() req: Request,
-  ) {
+  claim(@Param('id', new ParseUUIDPipe()) id: string, @Req() req: Request) {
     const userId = (req.user as any).userId;
     return this.bountiesService.claim(id, userId);
   }

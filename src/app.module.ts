@@ -26,7 +26,16 @@ import { IdempotencyModule } from './common/idempotency/idempotency.module';
   imports: [
     ConfigModule.forRoot({ isGlobal: true, load: [configuration] }),
     EventEmitterModule.forRoot(),
-    ThrottlerModule.forRoot([{ ttl: 60_000, limit: 120 }]),
+    // Named throttlers: @Throttle({ short | medium | long: ... }) only takes
+    // effect when a throttler of that name is registered here — with a single
+    // unnamed entry those overrides were silently no-ops (#287). The limits
+    // below are lenient app-wide defaults; per-route @Throttle tightens them.
+    ThrottlerModule.forRoot([
+      { name: 'default', ttl: 60_000, limit: 120 },
+      { name: 'short', ttl: 1_000, limit: 20 },
+      { name: 'medium', ttl: 60_000, limit: 120 },
+      { name: 'long', ttl: 3_600_000, limit: 5_000 },
+    ]),
     ScheduleModule.forRoot(),
     TypeOrmModule.forRootAsync({
       inject: [ConfigService],

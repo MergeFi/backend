@@ -4,13 +4,18 @@ import { ConfigService } from '@nestjs/config';
 import { GithubWebhooksService } from './github-webhooks.service';
 import { GithubSyncService } from './github-sync.service';
 import { BountiesService } from '../bounties/bounties.service';
-import { Bounty, Issue, WebhookEvent } from '../common/entities';
+import { Bounty, WebhookEvent } from '../common/entities';
 import { WebhookEventStatus } from '../common/enums';
 import * as sigUtil from './webhook-signature.util';
 
 describe('GithubWebhooksService', () => {
   let service: GithubWebhooksService;
   let webhookEventRepo: { create: jest.Mock; save: jest.Mock };
+  let webhookEventRepo: {
+    create: jest.Mock;
+    save: jest.Mock;
+    findOne: jest.Mock;
+  };
   let issueRepo: { findOne: jest.Mock };
   let bountyRepo: { findOne: jest.Mock };
   let bountiesService: {
@@ -20,6 +25,7 @@ describe('GithubWebhooksService', () => {
   };
   let syncService: {
     findRepositoryByGithubId: jest.Mock;
+    findIssueByRepoAndNumber: jest.Mock;
     upsertIssueRecord: jest.Mock;
   };
 
@@ -30,8 +36,9 @@ describe('GithubWebhooksService', () => {
         ...data,
       })),
       save: jest.fn((data: Partial<WebhookEvent>) => Promise.resolve(data)),
+      // No delivery recorded yet unless a test says otherwise (#308).
+      findOne: jest.fn().mockResolvedValue(null),
     };
-    issueRepo = { findOne: jest.fn() };
     bountyRepo = { findOne: jest.fn() };
     bountiesService = {
       markInReview: jest.fn().mockResolvedValue(undefined),
@@ -39,7 +46,10 @@ describe('GithubWebhooksService', () => {
       markPrClosedWithoutMerge: jest.fn().mockResolvedValue(undefined),
     };
     syncService = {
-      findRepositoryByGithubId: jest.fn(),
+      findRepositoryByGithubId: jest.fn().mockResolvedValue({
+        id: 'repo-uuid-1',
+      }),
+      findIssueByRepoAndNumber: jest.fn(),
       upsertIssueRecord: jest.fn(),
     };
 
@@ -54,7 +64,6 @@ describe('GithubWebhooksService', () => {
           provide: getRepositoryToken(WebhookEvent),
           useValue: webhookEventRepo,
         },
-        { provide: getRepositoryToken(Issue), useValue: issueRepo },
         { provide: getRepositoryToken(Bounty), useValue: bountyRepo },
         { provide: BountiesService, useValue: bountiesService },
         { provide: GithubSyncService, useValue: syncService },
@@ -86,7 +95,7 @@ describe('GithubWebhooksService', () => {
   });
 
   it('processes a merged pull_request event and releases the linked bounty', async () => {
-    issueRepo.findOne.mockResolvedValue({
+    syncService.findIssueByRepoAndNumber.mockResolvedValue({
       id: 'issue-1',
       bounty: { id: 'bounty-1' },
     });
@@ -123,7 +132,7 @@ describe('GithubWebhooksService', () => {
   });
 
   it('handles a closed-but-not-merged PR by moving linked bounties back to CLAIMED', async () => {
-    issueRepo.findOne.mockResolvedValue({
+    syncService.findIssueByRepoAndNumber.mockResolvedValue({
       id: 'issue-1',
       bounty: { id: 'bounty-1' },
     });
@@ -157,7 +166,7 @@ describe('GithubWebhooksService', () => {
   });
 
   it('skips bounty reset for closed-but-not-merged PR when bounty is not IN_REVIEW', async () => {
-    issueRepo.findOne.mockResolvedValue({
+    syncService.findIssueByRepoAndNumber.mockResolvedValue({
       id: 'issue-1',
       bounty: { id: 'bounty-1' },
     });
@@ -180,7 +189,7 @@ describe('GithubWebhooksService', () => {
 
   describe('PR opened / reopened (#168)', () => {
     it('moves a linked CLAIMED bounty to IN_REVIEW when its PR is opened', async () => {
-      issueRepo.findOne.mockResolvedValue({
+      syncService.findIssueByRepoAndNumber.mockResolvedValue({
         id: 'issue-1',
         bounty: { id: 'bounty-1' },
       });
@@ -218,7 +227,7 @@ describe('GithubWebhooksService', () => {
     });
 
     it('leaves a bounty that is not CLAIMED untouched on a reopened PR', async () => {
-      issueRepo.findOne.mockResolvedValue({
+      syncService.findIssueByRepoAndNumber.mockResolvedValue({
         id: 'issue-1',
         bounty: { id: 'bounty-1' },
       });
@@ -254,7 +263,7 @@ describe('GithubWebhooksService', () => {
     function mockIssueAndBounty(
       byNumber: Record<number, { bountyId: string; status: string }>,
     ) {
-      issueRepo.findOne.mockImplementation(
+      syncService.findIssueByRepoAndNumber.mockImplementation(
         ({ where }: { where: { number: number } }) => {
           const entry = byNumber[where.number];
           return Promise.resolve(
@@ -361,7 +370,7 @@ describe('GithubWebhooksService', () => {
 
   describe('owner/repo-qualified closing keywords', () => {
     it("resolves a closing keyword qualified with the webhook's own owner/repo", async () => {
-      issueRepo.findOne.mockResolvedValue({
+      syncService.findIssueByRepoAndNumber.mockResolvedValue({
         id: 'issue-1',
         bounty: { id: 'bounty-1' },
       });
@@ -415,7 +424,7 @@ describe('GithubWebhooksService', () => {
         true,
       );
 
-      expect(issueRepo.findOne).not.toHaveBeenCalled();
+      expect(syncService.findIssueByRepoAndNumber).not.toHaveBeenCalled();
       expect(bountiesService.markMergedAndRelease).not.toHaveBeenCalled();
       expect(event.status).toBe(WebhookEventStatus.PROCESSED);
     });
@@ -504,7 +513,7 @@ describe('GithubWebhooksService', () => {
 
       expect(event.status).toBe(WebhookEventStatus.INVALID_PAYLOAD);
       expect(event.error).toContain('pull_request');
-      expect(issueRepo.findOne).not.toHaveBeenCalled();
+      expect(syncService.findIssueByRepoAndNumber).not.toHaveBeenCalled();
     });
 
     it('rejects a pull_request payload whose merged flag has the wrong type', async () => {
@@ -589,7 +598,7 @@ describe('GithubWebhooksService', () => {
     });
 
     it('still distinguishes a genuine processing failure as FAILED, not INVALID_PAYLOAD', async () => {
-      issueRepo.findOne.mockResolvedValue({
+      syncService.findIssueByRepoAndNumber.mockResolvedValue({
         id: 'issue-1',
         bounty: { id: 'bounty-1' },
       });
@@ -622,6 +631,340 @@ describe('GithubWebhooksService', () => {
 
       expect(event.status).toBe(WebhookEventStatus.FAILED);
       expect(event.error).toContain('escrow release failed');
+    });
+  });
+
+  describe('comma-separated closing references (#309)', () => {
+    /** Collects every issue number the merged-PR path ends up releasing. */
+    function releasedNumbers(): number[] {
+      return issueRepo.findOne.mock.calls.map(
+        (call: unknown[]) =>
+          (call[0] as { where: { number: number } }).where.number,
+      );
+    }
+
+    it('links every issue in a comma-separated list after one keyword', async () => {
+      issueRepo.findOne.mockResolvedValue(null);
+      await service.handleEvent(
+        'pull_request',
+        'delivery-comma-list',
+        {
+          action: 'closed',
+          number: 11,
+          pull_request: {
+            html_url: 'https://github.com/acme/repo/pull/11',
+            number: 11,
+            merged: true,
+            body: 'Closes #10, #22, #33',
+          },
+          repository: { id: 999, full_name: 'acme/repo' },
+        },
+        true,
+      );
+
+      expect(releasedNumbers()).toEqual([10, 22, 33]);
+    });
+
+    it('keeps parsing subsequent keyword lists after a comma run', async () => {
+      issueRepo.findOne.mockResolvedValue(null);
+      await service.handleEvent(
+        'pull_request',
+        'delivery-comma-then-keyword',
+        {
+          action: 'closed',
+          number: 12,
+          pull_request: {
+            html_url: 'https://github.com/acme/repo/pull/12',
+            number: 12,
+            merged: true,
+            body: 'This PR closes #10, #22, #33 and also fixes #99.',
+          },
+          repository: { id: 999, full_name: 'acme/repo' },
+        },
+        true,
+      );
+
+      expect(releasedNumbers()).toEqual([10, 22, 33, 99]);
+    });
+
+    it('stops the comma run at the first token that is not a reference', async () => {
+      issueRepo.findOne.mockResolvedValue(null);
+      await service.handleEvent(
+        'pull_request',
+        'delivery-comma-stops',
+        {
+          action: 'closed',
+          number: 13,
+          pull_request: {
+            html_url: 'https://github.com/acme/repo/pull/13',
+            number: 13,
+            merged: true,
+            body: 'Closes #1, and #2',
+          },
+          repository: { id: 999, full_name: 'acme/repo' },
+        },
+        true,
+      );
+
+      expect(releasedNumbers()).toEqual([1]);
+    });
+
+    it('skips a foreign-repo qualifier inside a comma run but keeps the rest', async () => {
+      issueRepo.findOne.mockResolvedValue(null);
+      await service.handleEvent(
+        'pull_request',
+        'delivery-comma-foreign',
+        {
+          action: 'closed',
+          number: 14,
+          pull_request: {
+            html_url: 'https://github.com/acme/repo/pull/14',
+            number: 14,
+            merged: true,
+            body: 'Fixes #7, some-other-org/other-repo#8, #9',
+          },
+          repository: { id: 999, full_name: 'acme/repo' },
+        },
+        true,
+      );
+
+      expect(releasedNumbers()).toEqual([7, 9]);
+    });
+
+    it('marks a comma-separated bounty in review when the PR is opened', async () => {
+      issueRepo.findOne.mockImplementation(
+        ({ where }: { where: { number: number } }) =>
+          Promise.resolve({
+            id: `issue-${where.number}`,
+            bounty: { id: `bounty-${where.number}` },
+          }),
+      );
+      bountyRepo.findOne.mockImplementation(
+        ({ where }: { where: { id: string } }) =>
+          Promise.resolve({ id: where.id, status: 'claimed' }),
+      );
+
+      await service.handleEvent(
+        'pull_request',
+        'delivery-comma-opened',
+        {
+          action: 'opened',
+          number: 15,
+          pull_request: {
+            html_url: 'https://github.com/acme/repo/pull/15',
+            number: 15,
+            merged: false,
+            body: 'Closes #10, #22, #33',
+          },
+          repository: { id: 999, full_name: 'acme/repo' },
+        },
+        true,
+      );
+
+      expect(bountiesService.markInReview).toHaveBeenCalledTimes(3);
+      expect(bountiesService.markInReview).toHaveBeenCalledWith(
+        'bounty-10',
+        'https://github.com/acme/repo/pull/15',
+        15,
+      );
+      expect(bountiesService.markInReview).toHaveBeenCalledWith(
+        'bounty-22',
+        'https://github.com/acme/repo/pull/15',
+        15,
+      );
+      expect(bountiesService.markInReview).toHaveBeenCalledWith(
+        'bounty-33',
+        'https://github.com/acme/repo/pull/15',
+        15,
+      );
+    });
+  });
+
+  describe('pull_request edited events (#310)', () => {
+    it('moves a bounty to in_review when a closing keyword is added after opening', async () => {
+      issueRepo.findOne.mockImplementation(
+        ({ where }: { where: { number: number } }) =>
+          Promise.resolve({
+            id: `issue-${where.number}`,
+            bounty: { id: 'bounty-42' },
+          }),
+      );
+      bountyRepo.findOne.mockImplementation(
+        ({ where }: { where: { id: string } }) =>
+          Promise.resolve({ id: where.id, status: 'claimed' }),
+      );
+
+      const event = await service.handleEvent(
+        'pull_request',
+        'delivery-edited',
+        {
+          action: 'edited',
+          number: 42,
+          pull_request: {
+            html_url: 'https://github.com/acme/repo/pull/42',
+            number: 42,
+            merged: false,
+            body: 'Added the description: Fixes #42',
+          },
+          repository: { id: 999, full_name: 'acme/repo' },
+        },
+        true,
+      );
+
+      expect(bountiesService.markInReview).toHaveBeenCalledWith(
+        'bounty-42',
+        'https://github.com/acme/repo/pull/42',
+        42,
+      );
+      expect(event.status).toBe(WebhookEventStatus.PROCESSED);
+    });
+
+    it('leaves a bounty already in_review untouched on a later body edit', async () => {
+      issueRepo.findOne.mockResolvedValue({
+        id: 'issue-42',
+        bounty: { id: 'bounty-42' },
+      });
+      bountyRepo.findOne.mockResolvedValue({
+        id: 'bounty-42',
+        status: 'in_review',
+      });
+
+      await service.handleEvent(
+        'pull_request',
+        'delivery-edited-idem',
+        {
+          action: 'edited',
+          number: 42,
+          pull_request: {
+            html_url: 'https://github.com/acme/repo/pull/42',
+            number: 42,
+            merged: false,
+            body: 'Fixes #42 (typo fixes)',
+          },
+          repository: { id: 999, full_name: 'acme/repo' },
+        },
+        true,
+      );
+
+      expect(bountiesService.markInReview).not.toHaveBeenCalled();
+    });
+
+    it('still ignores unrelated actions without touching bounties', async () => {
+      await service.handleEvent(
+        'pull_request',
+        'delivery-synchronize',
+        {
+          action: 'synchronize',
+          number: 42,
+          pull_request: {
+            html_url: 'https://github.com/acme/repo/pull/42',
+            number: 42,
+            merged: false,
+            body: 'Fixes #42',
+          },
+          repository: { id: 999, full_name: 'acme/repo' },
+        },
+        true,
+      );
+
+      expect(bountiesService.markInReview).not.toHaveBeenCalled();
+      expect(bountiesService.markMergedAndRelease).not.toHaveBeenCalled();
+  // #308: a redelivered X-GitHub-Delivery used to hit the unique constraint
+  // on webhook_events.deliveryId and escape handleEvent as a 500, so every
+  // redelivery of that event failed forever.
+  describe('duplicate deliveries (#308)', () => {
+    const payload = {
+      action: 'closed',
+      number: 1,
+      pull_request: {
+        html_url: 'x',
+        number: 1,
+        merged: true,
+        body: 'Fixes #1',
+      },
+      repository: { id: 1, full_name: 'a/b' },
+    };
+
+    it('returns the stored event without re-running business logic', async () => {
+      webhookEventRepo.findOne.mockResolvedValueOnce({
+        id: 'event-existing',
+        deliveryId: 'delivery-dup-1',
+        status: WebhookEventStatus.PROCESSED,
+      });
+
+      const event = await service.handleEvent(
+        'pull_request',
+        'delivery-dup-1',
+        payload,
+        true,
+      );
+
+      expect(event.id).toBe('event-existing');
+      expect(event.status).toBe(WebhookEventStatus.PROCESSED);
+      expect(webhookEventRepo.save).not.toHaveBeenCalled();
+      expect(bountiesService.markMergedAndRelease).not.toHaveBeenCalled();
+    });
+
+    it('treats a unique-constraint violation from a racing delivery as benign', async () => {
+      const uniqueViolation = Object.assign(new Error('duplicate key value'), {
+        code: '23505',
+      });
+      webhookEventRepo.save.mockRejectedValueOnce(uniqueViolation);
+      webhookEventRepo.findOne
+        .mockResolvedValueOnce(null) // first lookup: not recorded yet
+        .mockResolvedValueOnce({
+          id: 'event-winner',
+          deliveryId: 'delivery-race-1',
+          status: WebhookEventStatus.PROCESSED,
+        });
+
+      const event = await service.handleEvent(
+        'pull_request',
+        'delivery-race-1',
+        payload,
+        true,
+      );
+
+      expect(event.id).toBe('event-winner');
+      expect(bountiesService.markMergedAndRelease).not.toHaveBeenCalled();
+    });
+
+    it('rethrows a non-unique insert failure', async () => {
+      const dbError = Object.assign(new Error('connection terminated'), {
+        code: '08006',
+      });
+      webhookEventRepo.save.mockRejectedValueOnce(dbError);
+
+      await expect(
+        service.handleEvent('pull_request', 'delivery-fail-1', payload, true),
+      ).rejects.toThrow('connection terminated');
+    });
+
+    it('processes a first-time delivery normally', async () => {
+      const event = await service.handleEvent(
+        'pull_request',
+        'delivery-fresh-1',
+        payload,
+        true,
+      );
+
+      expect(webhookEventRepo.findOne).toHaveBeenCalledWith({
+        where: { deliveryId: 'delivery-fresh-1' },
+      });
+      expect(webhookEventRepo.save).toHaveBeenCalled();
+      expect(event.status).toBe(WebhookEventStatus.PROCESSED);
+    });
+
+    it('skips the dedupe lookup for a delivery without an id', async () => {
+      const event = await service.handleEvent(
+        'pull_request',
+        undefined,
+        payload,
+        true,
+      );
+
+      expect(webhookEventRepo.findOne).not.toHaveBeenCalled();
+      expect(event.deliveryId).toBeNull();
     });
   });
 });

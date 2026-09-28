@@ -355,4 +355,93 @@ describe('GithubSyncService', () => {
       ).resolves.toBeDefined();
     });
   });
+
+  describe('syncRepository — paginated continuation avoids a redundant repos.get() (#314)', () => {
+    const PERSISTED_REPO = {
+      id: 'repo-1',
+      githubRepoId: '42',
+      owner: 'acme',
+      name: 'widgets',
+      fullName: 'acme/widgets',
+    } as unknown as Repository;
+
+    it('reuses the persisted repository row and skips repos.get() on page > 1', async () => {
+      repositoryRepo.findOne.mockResolvedValue(PERSISTED_REPO);
+      octokit.issues.listForRepo.mockResolvedValue(issuePage([]));
+
+      const result = await service.syncRepository('acme', 'widgets', 2);
+
+      expect(octokit.repos.get).not.toHaveBeenCalled();
+      expect(repositoryRepo.save).not.toHaveBeenCalled();
+      expect(octokit.issues.listForRepo).toHaveBeenCalledWith(
+        expect.objectContaining({ owner: 'acme', repo: 'widgets', page: 2 }),
+      );
+      expect(result.repository).toBe(PERSISTED_REPO);
+    });
+
+    it('still syncs and reports synced/nextPage on a continuation page', async () => {
+      repositoryRepo.findOne.mockResolvedValue(PERSISTED_REPO);
+      octokit.issues.listForRepo.mockResolvedValue(
+        issuePage([{ id: 2, number: 2, title: 'Issue two' }]),
+      );
+
+      const result = await service.syncRepository('acme', 'widgets', 3);
+
+      expect(result.synced).toBe(1);
+      expect(issueRepo.save).toHaveBeenCalledTimes(1);
+    });
+
+    it('falls back to repos.get() on a continuation page for an untracked repository', async () => {
+      repositoryRepo.findOne.mockResolvedValue(null);
+      octokit.repos.get.mockResolvedValue({
+        data: {
+          id: 42,
+          owner: { login: 'acme' },
+          name: 'widgets',
+          full_name: 'acme/widgets',
+          default_branch: 'main',
+          private: false,
+        },
+        headers: RATE_LIMIT_HEADERS,
+      });
+      octokit.issues.listForRepo.mockResolvedValue(issuePage([]));
+
+      await service.syncRepository('acme', 'widgets', 2);
+
+      expect(octokit.repos.get).toHaveBeenCalledWith({
+        owner: 'acme',
+        repo: 'widgets',
+      });
+      expect(repositoryRepo.create).toHaveBeenCalled();
+    });
+
+    it('still refreshes repository metadata on page 1 even when the row exists', async () => {
+      repositoryRepo.findOne.mockResolvedValue(PERSISTED_REPO);
+      octokit.repos.get.mockResolvedValue({
+        data: {
+          id: 42,
+          owner: { login: 'acme' },
+          name: 'widgets',
+          full_name: 'acme/widgets',
+          description: 'Widgets',
+          default_branch: 'main',
+          private: false,
+          stargazers_count: 12,
+        },
+        headers: RATE_LIMIT_HEADERS,
+      });
+      octokit.issues.listForRepo.mockResolvedValue(issuePage([]));
+
+      await service.syncRepository('acme', 'widgets', 1);
+
+      expect(octokit.repos.get).toHaveBeenCalledWith({
+        owner: 'acme',
+        repo: 'widgets',
+      });
+      expect(repositoryRepo.merge).toHaveBeenCalledWith(
+        PERSISTED_REPO,
+        expect.objectContaining({ stargazersCount: 12, description: 'Widgets' }),
+      );
+    });
+  });
 });
