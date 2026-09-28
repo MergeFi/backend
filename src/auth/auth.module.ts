@@ -10,13 +10,17 @@ import { JwtStrategy } from './strategies/jwt.strategy';
 import { GithubStrategy } from './strategies/github.strategy';
 import { AppConfig } from '../config/configuration';
 import { RolesGuard } from './guards/roles.guard';
+import { RepoScopeGuard } from './guards/repo-scope.guard';
 import { User } from '../common/entities/user.entity';
+import { Repository } from '../common/entities';
 import { UsersModule } from '../users/users.module';
 
 @Module({
   imports: [
     UsersModule,
-    TypeOrmModule.forFeature([User]),
+    // Repository is needed by RepoScopeGuard to read each repository's
+    // maintainerId (#312).
+    TypeOrmModule.forFeature([User, Repository]),
     PassportModule.register({ defaultStrategy: 'jwt' }),
     JwtModule.registerAsync({
       inject: [ConfigService],
@@ -39,7 +43,7 @@ import { UsersModule } from '../users/users.module';
     }),
   ],
   controllers: [AuthController],
-  providers: [AuthService, JwtStrategy, GithubStrategy, RolesGuard],
-  exports: [AuthService, RolesGuard],
+  providers: [AuthService, JwtStrategy, GithubStrategy, RolesGuard, RepoScopeGuard],
+  exports: [AuthService, RolesGuard, RepoScopeGuard],
 })
 export class AuthModule {}
