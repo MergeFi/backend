@@ -4,8 +4,8 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
-import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { InjectDataSource, InjectRepository } from '@nestjs/typeorm';
+import { DataSource, Repository } from 'typeorm';
 import { Bounty, Team, TeamMemberSplit, User } from '../common/entities';
 import { BountyStatus, UserRole } from '../common/enums';
 import { CreateTeamDto, TeamMemberSplitDto } from './dto/create-team.dto';
@@ -80,22 +80,22 @@ export class TeamsService {
         throw new NotFoundException(`User ${member.userId} not found`);
       }
     }
-
-    // Remove existing splits
-    await this.splitRepo.delete({ teamId: team.id });
-
-    // Create new splits — one batched save, same rationale as create() (#150).
-    team.splits = await this.splitRepo.save(
-      members.map((m) =>
-        this.splitRepo.create({
-          teamId: team.id,
-          userId: m.userId,
-          role: m.role ?? null,
-          percentage: m.percentage.toFixed(2),
-        }),
-      ),
-    );
-
+    // Delete existing splits and insert new splits within a single database transaction (#375).
+    // If saving the new splits fails, the rollback preserves the existing valid split configuration.
+    team.splits = await this.dataSource.transaction(async (mgr) => {
+      await mgr.delete(TeamMemberSplit, { teamId: team.id });
+      return mgr.save(
+        TeamMemberSplit,
+        members.map((m) =>
+          mgr.create(TeamMemberSplit, {
+            teamId: team.id,
+            userId: m.userId,
+            role: m.role ?? null,
+            percentage: m.percentage.toFixed(2),
+          }),
+        ),
+      );
+    });
     return team;
   }
 
