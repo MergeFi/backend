@@ -123,7 +123,7 @@ describe('EscrowService', () => {
       expect(args[0]).toEqual(u64(4242n));
       expect(args[1]).toBe('GABC...FUNDER');
       expect(args[3]).toBe(1_000_000_000n);
-      expect(typeof args[4]).toBe('bigint');
+      expect(args[4]).toEqual(expect.objectContaining({ __sorobanU64: expect.any(BigInt) }));
       expect(escrow.status).toBe(EscrowStatus.LOCKED);
       expect(escrow.fundTxHash).toBe('tx-hash-123');
     });

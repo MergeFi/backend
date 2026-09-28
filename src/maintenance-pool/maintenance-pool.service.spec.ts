@@ -289,7 +289,6 @@ describe('MaintenancePoolService', () => {
 
   describe('assignReward', () => {
     beforeEach(() => {
-      // Default mock for paymentRepo.createQueryBuilder - returns null (no existing payment)
       const mockPaymentQueryBuilder = {
         innerJoin: jest.fn().mockReturnThis(),
         where: jest.fn().mockReturnThis(),
@@ -297,11 +296,26 @@ describe('MaintenancePoolService', () => {
         getOne: jest.fn().mockResolvedValue(null),
       };
       paymentRepo.createQueryBuilder.mockReturnValue(mockPaymentQueryBuilder);
+
+      poolRepo.findOne.mockResolvedValue({
+        id: 'pool-1',
+        status: MaintenancePoolStatus.ACTIVE,
+        balance: '100',
+        escrowId: 'escrow-1',
+        repositoryId: 'repository-1',
+      });
+
+      issueRepo.findOne.mockResolvedValue({
+        id: 'issue-1',
+        isMaintenanceType: true,
+        repositoryId: 'repository-1',
+      });
     });
 
     it('rejects when the pool has no funded escrow yet', async () => {
       poolRepo.findOne.mockResolvedValue({
         id: 'pool-1',
+        status: MaintenancePoolStatus.ACTIVE,
         balance: '100',
         escrowId: null,
       });
@@ -315,10 +329,10 @@ describe('MaintenancePoolService', () => {
     it('rejects when the requested amount exceeds the pool balance', async () => {
       poolRepo.findOne.mockResolvedValue({
         id: 'pool-1',
+        status: MaintenancePoolStatus.ACTIVE,
         balance: '50',
         escrowId: 'escrow-1',
       });
-      // Mock the atomic balance check to return 0 affected rows (balance too low)
       const mockQueryBuilder = {
         update: jest.fn().mockReturnThis(),
         set: jest.fn().mockReturnThis(),
@@ -337,10 +351,10 @@ describe('MaintenancePoolService', () => {
     it('releases the reward and atomically decrements the balance', async () => {
       poolRepo.findOne.mockResolvedValue({
         id: 'pool-1',
+        status: MaintenancePoolStatus.ACTIVE,
         balance: '100',
         escrowId: 'escrow-1',
       });
-      // Mock the atomic balance check to succeed
       const mockQueryBuilder = {
         update: jest.fn().mockReturnThis(),
         set: jest.fn().mockReturnThis(),
@@ -364,18 +378,13 @@ describe('MaintenancePoolService', () => {
         '30',
         'GRECIPIENT',
         'user-1',
+        'issue-1',
       );
       expect(payment).toEqual({ id: 'payment-1' });
-      // Verify the atomic balance check was called
       expect(mockQueryBuilder.execute).toHaveBeenCalled();
     });
 
     it('rejects a reward for a non-maintenance issue before releasing funds', async () => {
-      poolRepo.findOne.mockResolvedValue({
-        id: 'pool-1',
-        balance: '100',
-        escrowId: 'escrow-1',
-      });
       issueRepo.findOne.mockResolvedValue({
         id: 'issue-1',
         isMaintenanceType: false,
@@ -389,12 +398,6 @@ describe('MaintenancePoolService', () => {
     });
 
     it('rejects an issue outside the pool repository', async () => {
-      poolRepo.findOne.mockResolvedValue({
-        id: 'pool-1',
-        repositoryId: 'repository-1',
-        balance: '100',
-        escrowId: 'escrow-1',
-      });
       issueRepo.findOne.mockResolvedValue({
         id: 'issue-1',
         isMaintenanceType: true,
@@ -407,13 +410,13 @@ describe('MaintenancePoolService', () => {
       expect(escrowService.poolWithdraw).not.toHaveBeenCalled();
     });
 
-    it('rejects when the issue has already received a reward from this pool (#273)', async () => {
+    it('rejects when the issue has already received a reward from this pool (#273, #458)', async () => {
       poolRepo.findOne.mockResolvedValue({
         id: 'pool-1',
+        status: MaintenancePoolStatus.ACTIVE,
         balance: '100',
         escrowId: 'escrow-1',
       });
-      // Mock the payment query to return an existing payment
       const mockPaymentQueryBuilder = {
         innerJoin: jest.fn().mockReturnThis(),
         where: jest.fn().mockReturnThis(),
@@ -425,26 +428,133 @@ describe('MaintenancePoolService', () => {
       await expect(
         service.assignReward('pool-1', 'issue-1', '10', 'GRECIPIENT', 'user-1'),
       ).rejects.toThrow(ConflictException);
+      expect(mockPaymentQueryBuilder.andWhere).toHaveBeenCalledWith(
+        'payment.maintenanceIssueId = :issueId',
+        { issueId: 'issue-1' },
+      );
       expect(escrowService.poolWithdraw).not.toHaveBeenCalled();
     });
 
-    // Regression test for #51 (MaintenancePool.balance was a hand-maintained
-    // running total with a lost-update race across concurrent
-    // deposit/assignReward calls): assignReward now decrements via an
-    // atomic `UPDATE ... SET balance = balance - $1 WHERE balance >= $1`
-    // instead of a read-modify-write save(), so each concurrent call's
-    // decrement applies relative to the row's *current* value at write
-    // time — not a value cached from an earlier read — and neither
-    // decrement is lost.
-    it('two concurrent assignReward calls both apply — no lost decrement (#51)', async () => {
-      const sharedPoolRow: { balance: string; escrowId: string } = {
+    it('rejects duplicate reward for the same issue to a different recipient (#458)', async () => {
+      poolRepo.findOne.mockResolvedValue({
+        id: 'pool-1',
+        status: MaintenancePoolStatus.ACTIVE,
+        balance: '100',
+        escrowId: 'escrow-1',
+      });
+      const mockPaymentQueryBuilder = {
+        innerJoin: jest.fn().mockReturnThis(),
+        where: jest.fn().mockReturnThis(),
+        andWhere: jest.fn().mockReturnThis(),
+        getOne: jest.fn().mockResolvedValue({ id: 'existing-payment' }),
+      };
+      paymentRepo.createQueryBuilder.mockReturnValue(mockPaymentQueryBuilder);
+
+      await expect(
+        service.assignReward('pool-1', 'issue-1', '10', 'GRECIPIENT_B', 'user-2'),
+      ).rejects.toThrow(ConflictException);
+      expect(mockPaymentQueryBuilder.andWhere).toHaveBeenCalledWith(
+        'payment.maintenanceIssueId = :issueId',
+        { issueId: 'issue-1' },
+      );
+      expect(escrowService.poolWithdraw).not.toHaveBeenCalled();
+    });
+
+    it('allows rewards for two different issues to the same recipient (#458)', async () => {
+      poolRepo.findOne.mockResolvedValue({
+        id: 'pool-1',
+        status: MaintenancePoolStatus.ACTIVE,
+        balance: '100',
+        escrowId: 'escrow-1',
+      });
+      const mockQueryBuilder = {
+        update: jest.fn().mockReturnThis(),
+        set: jest.fn().mockReturnThis(),
+        where: jest.fn().mockReturnThis(),
+        setParameter: jest.fn().mockReturnThis(),
+        execute: jest.fn().mockResolvedValue({ affected: 1 }),
+      };
+      poolRepo.createQueryBuilder.mockReturnValue(mockQueryBuilder);
+      escrowService.poolWithdraw.mockResolvedValue({ id: 'payment-1' });
+
+      await service.assignReward('pool-1', 'issue-1', '10', 'GRECIPIENT', 'user-1');
+      await service.assignReward('pool-1', 'issue-2', '10', 'GRECIPIENT', 'user-1');
+
+      expect(escrowService.poolWithdraw).toHaveBeenCalledTimes(2);
+      expect(escrowService.poolWithdraw).toHaveBeenLastCalledWith(
+        'escrow-1',
+        '10',
+        'GRECIPIENT',
+        'user-1',
+        'issue-2',
+      );
+    });
+
+    it('rejects duplicate anonymous reward for the same issue (#458)', async () => {
+      poolRepo.findOne.mockResolvedValue({
+        id: 'pool-1',
+        status: MaintenancePoolStatus.ACTIVE,
+        balance: '100',
+        escrowId: 'escrow-1',
+      });
+      const mockPaymentQueryBuilder = {
+        innerJoin: jest.fn().mockReturnThis(),
+        where: jest.fn().mockReturnThis(),
+        andWhere: jest.fn().mockReturnThis(),
+        getOne: jest.fn().mockResolvedValue({ id: 'existing-payment' }),
+      };
+      paymentRepo.createQueryBuilder.mockReturnValue(mockPaymentQueryBuilder);
+
+      await expect(
+        service.assignReward('pool-1', 'issue-1', '10', 'GRECIPIENT'),
+      ).rejects.toThrow(ConflictException);
+      expect(mockPaymentQueryBuilder.andWhere).toHaveBeenCalledWith(
+        'payment.maintenanceIssueId = :issueId',
+        { issueId: 'issue-1' },
+      );
+      expect(escrowService.poolWithdraw).not.toHaveBeenCalled();
+    });
+
+    it('converts unique constraint violation race into ConflictException and restores balance (#458)', async () => {
+      poolRepo.findOne.mockResolvedValue({
+        id: 'pool-1',
+        status: MaintenancePoolStatus.ACTIVE,
+        balance: '100',
+        escrowId: 'escrow-1',
+      });
+      const mockQueryBuilder = {
+        update: jest.fn().mockReturnThis(),
+        set: jest.fn().mockReturnThis(),
+        where: jest.fn().mockReturnThis(),
+        setParameter: jest.fn().mockReturnThis(),
+        execute: jest.fn().mockResolvedValue({ affected: 1 }),
+      };
+      poolRepo.createQueryBuilder.mockReturnValue(mockQueryBuilder);
+
+      const dbError = new Error("duplicate key value violates unique constraint");
+      dbError.code = "23505";
+      escrowService.poolWithdraw.mockRejectedValue(dbError);
+
+      await expect(
+        service.assignReward('pool-1', 'issue-1', '10', 'GRECIPIENT', 'user-1'),
+      ).rejects.toThrow(ConflictException);
+
+      expect(poolRepo.increment).toHaveBeenCalledWith(
+        { id: 'pool-1' },
+        'balance',
+        10,
+      );
+    });
+
+    it('two concurrent assignReward calls for different issues both apply — no lost decrement (#51)', async () => {
+      const sharedPoolRow = {
+        id: 'pool-1',
+        status: MaintenancePoolStatus.ACTIVE,
         balance: '1000.0000000',
         escrowId: 'escrow-1',
       };
-      poolRepo.findOne.mockImplementation(() =>
-        Promise.resolve({ id: 'pool-1', ...sharedPoolRow }),
-      );
-      // Mock the atomic balance check to succeed for both calls
+      poolRepo.findOne.mockResolvedValue(sharedPoolRow);
+
       const mockQueryBuilder = {
         update: jest.fn().mockReturnThis(),
         set: jest.fn().mockReturnThis(),
@@ -457,10 +567,9 @@ describe('MaintenancePoolService', () => {
 
       await Promise.all([
         service.assignReward('pool-1', 'issue-1', '100', 'GRECIPIENT_A'),
-        service.assignReward('pool-1', 'issue-1', '200', 'GRECIPIENT_B'),
+        service.assignReward('pool-1', 'issue-2', '200', 'GRECIPIENT_B'),
       ]);
 
-      // Both calls should have succeeded (atomic check passed)
       expect(mockQueryBuilder.execute).toHaveBeenCalledTimes(2);
     });
   });
