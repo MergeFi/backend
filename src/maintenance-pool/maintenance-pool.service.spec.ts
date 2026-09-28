@@ -110,21 +110,20 @@ describe('MaintenancePoolService', () => {
     });
   });
 
-  describe('deposit', () => {
+  describe("deposit", () => {
     beforeEach(() => {
-      // Default mock for deposit's createQueryBuilder (SELECT ... FOR UPDATE)
-      const mockDepositQueryBuilder = {
-        setLock: jest.fn().mockReturnThis(),
-        where: jest.fn().mockReturnThis(),
-        getOne: jest.fn(),
-      };
-      poolRepo.createQueryBuilder.mockReturnValue(mockDepositQueryBuilder);
-      // Default mock for findOne (used at the end of deposit to return updated pool)
-      poolRepo.findOne.mockResolvedValue(null);
+      poolRepo.findOne.mockResolvedValue({
+        id: "pool-1",
+        status: MaintenancePoolStatus.ACTIVE,
+        balance: "100",
+        monthlyDeposit: "500",
+        asset: AssetType.USDC,
+        escrowId: "escrow-1",
+      });
     });
 
     it('rejects when the pool is not ACTIVE', async () => {
-      poolRepo.createQueryBuilder().getOne.mockResolvedValue({
+      poolRepo.findOne.mockResolvedValue({
         id: 'pool-1',
         status: MaintenancePoolStatus.PAUSED,
         balance: '0',
@@ -148,7 +147,7 @@ describe('MaintenancePoolService', () => {
         asset: AssetType.USDC,
         escrowId: null as string | null,
       };
-      poolRepo.createQueryBuilder().getOne.mockResolvedValue(row);
+      poolRepo.findOne.mockResolvedValue(row);
       poolRepo.update.mockImplementation(
         (_id: string, partial: Partial<typeof row>) => {
           Object.assign(row, partial);
@@ -186,7 +185,7 @@ describe('MaintenancePoolService', () => {
     // commitment (set at pool creation), so an ad-hoc deposit must never
     // overwrite it with the latest single deposit amount.
     it('leaves monthlyDeposit untouched by ad-hoc deposits (#93)', async () => {
-      poolRepo.createQueryBuilder().getOne.mockResolvedValue({
+      poolRepo.findOne.mockResolvedValue({
         id: 'pool-1',
         status: MaintenancePoolStatus.ACTIVE,
         balance: '100',
@@ -221,7 +220,7 @@ describe('MaintenancePoolService', () => {
         asset: AssetType.USDC,
         escrowId: 'escrow-1',
       };
-      poolRepo.createQueryBuilder().getOne.mockResolvedValue(row);
+      poolRepo.findOne.mockResolvedValue(row);
       poolRepo.increment.mockImplementation(
         (_where: { id: string }, column: 'balance', value: number) => {
           row[column] = (Number(row[column]) + value).toFixed(7);
@@ -252,7 +251,7 @@ describe('MaintenancePoolService', () => {
     // minting a new one, or updating escrowId), this assertion on escrowId
     // staying pinned to the *first* escrow is expected to change.
     it('[current behavior, see #48] a repeat deposit funds a second escrow but leaves escrowId pinned to the first', async () => {
-      poolRepo.createQueryBuilder().getOne.mockResolvedValue({
+      poolRepo.findOne.mockResolvedValue({
         id: 'pool-1',
         status: MaintenancePoolStatus.ACTIVE,
         balance: '100',
@@ -285,6 +284,18 @@ describe('MaintenancePoolService', () => {
       // unreachable through this service.
       expect(pool.escrowId).toBe('escrow-1');
     });
+    it("does not acquire a pessimistic lock outside a transaction (#457)", async () => {
+      poolRepo.findOne.mockResolvedValue({
+        id: "pool-1",
+        status: MaintenancePoolStatus.ACTIVE,
+        balance: "100",
+        asset: AssetType.USDC,
+        escrowId: "escrow-1",
+      });
+      await service.deposit("pool-1", "50", "GFUNDER");
+      expect(poolRepo.createQueryBuilder).not.toHaveBeenCalled();
+    });
+
   });
 
   describe('assignReward', () => {
@@ -336,9 +347,10 @@ describe('MaintenancePoolService', () => {
 
     it('releases the reward and atomically decrements the balance', async () => {
       poolRepo.findOne.mockResolvedValue({
-        id: 'pool-1',
-        balance: '100',
-        escrowId: 'escrow-1',
+        id: "pool-1",
+        status: MaintenancePoolStatus.ACTIVE,
+        balance: "100",
+        escrowId: "escrow-1",
       });
       // Mock the atomic balance check to succeed
       const mockQueryBuilder = {
@@ -372,9 +384,10 @@ describe('MaintenancePoolService', () => {
 
     it('rejects a reward for a non-maintenance issue before releasing funds', async () => {
       poolRepo.findOne.mockResolvedValue({
-        id: 'pool-1',
-        balance: '100',
-        escrowId: 'escrow-1',
+        id: "pool-1",
+        status: MaintenancePoolStatus.ACTIVE,
+        balance: "100",
+        escrowId: "escrow-1",
       });
       issueRepo.findOne.mockResolvedValue({
         id: 'issue-1',
@@ -409,9 +422,10 @@ describe('MaintenancePoolService', () => {
 
     it('rejects when the issue has already received a reward from this pool (#273)', async () => {
       poolRepo.findOne.mockResolvedValue({
-        id: 'pool-1',
-        balance: '100',
-        escrowId: 'escrow-1',
+        id: "pool-1",
+        status: MaintenancePoolStatus.ACTIVE,
+        balance: "100",
+        escrowId: "escrow-1",
       });
       // Mock the payment query to return an existing payment
       const mockPaymentQueryBuilder = {
