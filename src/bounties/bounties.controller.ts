@@ -33,8 +33,13 @@ import {
   ApiStandardErrorResponses,
 } from '../common/swagger/api-common-responses.decorator';
 
+<<<<<<< HEAD
+class FundBountyDto {
+  @ApiProperty()
+=======
 export class FundBountyDto {
   @ApiProperty({ description: 'Stellar public key of the funder' })
+>>>>>>> origin/main
   @IsStellarAddress()
   funderAddress: string;
 }
