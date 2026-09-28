@@ -69,11 +69,10 @@ describe('MaintenancePoolService', () => {
 
   describe('create', () => {
     it('saves a new pool with ACTIVE status', async () => {
-      const pool = await service.create({
-        name: 'Docs pool',
-        asset: AssetType.USDC,
-        createdById: 'creator-1',
-      });
+      const pool = await service.create(
+        { name: 'Docs pool', asset: AssetType.USDC, createdById: 'creator-1' },
+        'caller-99',
+      );
 
       expect(poolRepo.save).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -86,11 +85,11 @@ describe('MaintenancePoolService', () => {
       expect(pool.status).toBe(MaintenancePoolStatus.ACTIVE);
     });
 
-    it('defaults repositoryId/createdById to null when not provided', async () => {
-      await service.create({ name: 'Pool', asset: AssetType.USDC });
+    it('falls back to callerUserId for createdById when client omits it', async () => {
+      await service.create({ name: 'Pool', asset: AssetType.USDC }, 'caller-99');
 
       expect(poolRepo.save).toHaveBeenCalledWith(
-        expect.objectContaining({ repositoryId: null, createdById: null }),
+        expect.objectContaining({ repositoryId: null, createdById: 'caller-99' }),
       );
     });
   });

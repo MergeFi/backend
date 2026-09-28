@@ -54,10 +54,10 @@ describe('TeamsService', () => {
   describe('create', () => {
     it('rejects via validateSplitPercentages when splits do not sum to 100', async () => {
       await expect(
-        service.create({
-          name: 'Team A',
-          members: [{ userId: 'u1', percentage: 60 }],
-        }),
+        service.create(
+          { name: 'Team A', members: [{ userId: 'u1', percentage: 60 }] },
+          'caller-99',
+        ),
       ).rejects.toThrow(
         'team member split percentages must sum to 100, got 60.00',
       );
@@ -66,14 +66,17 @@ describe('TeamsService', () => {
     });
 
     it('saves the team and one split per member when percentages sum to 100', async () => {
-      const team = await service.create({
-        name: 'Team A',
-        createdById: 'creator-1',
-        members: [
-          { userId: 'u1', role: 'frontend', percentage: 60 },
-          { userId: 'u2', percentage: 40 },
-        ],
-      });
+      const team = await service.create(
+        {
+          name: 'Team A',
+          createdById: 'creator-1',
+          members: [
+            { userId: 'u1', role: 'frontend', percentage: 60 },
+            { userId: 'u2', percentage: 40 },
+          ],
+        },
+        'caller-99',
+      );
 
       expect(teamRepo.save).toHaveBeenCalledWith(
         expect.objectContaining({ name: 'Team A', createdById: 'creator-1' }),
@@ -99,14 +102,14 @@ describe('TeamsService', () => {
       expect(team.splits).toHaveLength(2);
     });
 
-    it('defaults createdById to null when not provided', async () => {
-      await service.create({
-        name: 'Team B',
-        members: [{ userId: 'u1', percentage: 100 }],
-      });
+    it('falls back to callerUserId for createdById when client omits it', async () => {
+      await service.create(
+        { name: 'Team B', members: [{ userId: 'u1', percentage: 100 }] },
+        'caller-99',
+      );
 
       expect(teamRepo.save).toHaveBeenCalledWith(
-        expect.objectContaining({ createdById: null }),
+        expect.objectContaining({ createdById: 'caller-99' }),
       );
     });
   });

@@ -5,9 +5,16 @@ import {
   Param,
   ParseUUIDPipe,
   Post,
+  Req,
   UseGuards,
 } from '@nestjs/common';
-import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
+import { Request } from 'express';
+import {
+  ApiBearerAuth,
+  ApiOperation,
+  ApiProperty,
+  ApiTags,
+} from '@nestjs/swagger';
 import { Throttle } from '@nestjs/throttler';
 import { IsOptional, IsUUID } from 'class-validator';
 import { MaintenancePoolService } from './maintenance-pool.service';
@@ -24,24 +31,33 @@ import {
   ApiStandardErrorResponses,
 } from '../common/swagger/api-common-responses.decorator';
 
-class DepositDto {
+export class DepositDto {
+  @ApiProperty({ description: 'Amount to deposit into the maintenance pool' })
   @IsMoneyAmount()
   amount: string;
 
+  @ApiProperty({ description: 'Stellar public key of the funder' })
   @IsStellarAddress()
   funderAddress: string;
 }
 
-class AssignRewardDto {
+export class AssignRewardDto {
+  @ApiProperty({ description: 'UUID of the issue being rewarded' })
   @IsUUID()
   issueId: string;
 
+  @ApiProperty({ description: 'Amount to reward from the pool' })
   @IsMoneyAmount()
   amount: string;
 
+  @ApiProperty({ description: 'Stellar public key of the recipient' })
   @IsStellarAddress()
   recipientAddress: string;
 
+  @ApiProperty({
+    required: false,
+    description: 'Optional user UUID of the recipient',
+  })
   @IsOptional()
   @IsUUID()
   recipientId?: string;
@@ -59,8 +75,9 @@ export class MaintenancePoolController {
   @Post()
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles(UserRole.SPONSOR, UserRole.MAINTAINER)
-  create(@Body() dto: CreatePoolDto) {
-    return this.poolService.create(dto);
+  create(@Body() dto: CreatePoolDto, @Req() req: Request) {
+    const callerUserId = (req.user as any).userId as string;
+    return this.poolService.create(dto, callerUserId);
   }
 
   @ApiOperation({ summary: 'List maintenance pools' })

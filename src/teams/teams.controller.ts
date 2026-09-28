@@ -42,8 +42,8 @@ export class TeamsController {
   @Post()
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles(UserRole.MAINTAINER, UserRole.SPONSOR)
-  create(@Body() dto: CreateTeamDto) {
-    return this.teamsService.create(dto);
+  create(@Body() dto: CreateTeamDto, @CurrentUser() user: AuthenticatedUser) {
+    return this.teamsService.create(dto, user.userId);
   }
 
   @ApiOperation({ summary: 'Get a team and its current member splits' })

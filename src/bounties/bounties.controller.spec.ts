@@ -1,3 +1,4 @@
+import { ArgumentMetadata, ParseUUIDPipe } from '@nestjs/common';
 import { Test, TestingModule } from '@nestjs/testing';
 import { plainToInstance } from 'class-transformer';
 import { validate } from 'class-validator';
@@ -24,13 +25,23 @@ describe('BountiesController', () => {
 
   beforeEach(async () => {
     bountiesService = {
-      create: jest.fn().mockResolvedValue({ id: 'b1', status: BountyStatus.OPEN }),
-      findOne: jest.fn().mockResolvedValue({ id: 'b1', status: BountyStatus.OPEN }),
-      fund: jest.fn().mockResolvedValue({ id: 'b1', status: BountyStatus.FUNDED }),
-      claim: jest.fn().mockResolvedValue({ id: 'b1', status: BountyStatus.CLAIMED }),
+      create: jest
+        .fn()
+        .mockResolvedValue({ id: 'b1', status: BountyStatus.OPEN }),
+      findOne: jest
+        .fn()
+        .mockResolvedValue({ id: 'b1', status: BountyStatus.OPEN }),
+      fund: jest
+        .fn()
+        .mockResolvedValue({ id: 'b1', status: BountyStatus.FUNDED }),
+      claim: jest
+        .fn()
+        .mockResolvedValue({ id: 'b1', status: BountyStatus.CLAIMED }),
       approve: jest.fn().mockResolvedValue({ id: 'b1', status: 'approved' }),
       reject: jest.fn().mockResolvedValue({ id: 'b1', status: 'rejected' }),
-      refund: jest.fn().mockResolvedValue({ id: 'b1', status: BountyStatus.REFUNDED }),
+      refund: jest
+        .fn()
+        .mockResolvedValue({ id: 'b1', status: BountyStatus.REFUNDED }),
       list: jest.fn().mockResolvedValue([]),
     };
 
@@ -113,7 +124,13 @@ describe('BountiesController', () => {
 
   describe('list', () => {
     it('calls bountiesService.list with query params', async () => {
-      await controller.list(BountyStatus.OPEN, BountyDifficulty.BEGINNER, AssetType.USDC, 'repo-1', 'TypeScript');
+      await controller.list(
+        BountyStatus.OPEN,
+        BountyDifficulty.BEGINNER,
+        AssetType.USDC,
+        'repo-1',
+        'TypeScript',
+      );
 
       expect(bountiesService.list).toHaveBeenCalledWith({
         status: BountyStatus.OPEN,
@@ -122,6 +139,34 @@ describe('BountiesController', () => {
         repositoryId: 'repo-1',
         primaryLanguage: 'TypeScript',
       });
+    });
+  });
+
+  describe('repositoryId query pipe behavior', () => {
+    const repositoryIdMetadata: ArgumentMetadata = {
+      type: 'query',
+      metatype: String,
+      data: 'repositoryId',
+    };
+    const pipe = new ParseUUIDPipe({ version: '4', optional: true });
+
+    it('accepts undefined when the query param is absent', async () => {
+      await expect(
+        pipe.transform(undefined, repositoryIdMetadata),
+      ).resolves.toBeUndefined();
+    });
+
+    it('accepts a valid v4 UUID', async () => {
+      const validUuid = 'c73bcdcc-2669-4bf6-81d3-e4ae73fb11fd';
+      await expect(
+        pipe.transform(validUuid, repositoryIdMetadata),
+      ).resolves.toBe(validUuid);
+    });
+
+    it('rejects a non-UUID string with BadRequestException', async () => {
+      await expect(
+        pipe.transform('not-a-uuid', repositoryIdMetadata),
+      ).rejects.toThrow();
     });
   });
 
