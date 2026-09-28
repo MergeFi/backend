@@ -20,11 +20,14 @@ export class GithubWebhooksController {
     @Headers('x-github-delivery') deliveryId: string,
     @Headers('x-hub-signature-256') signature: string,
   ) {
-    const rawBody = req.rawBody ?? Buffer.from(JSON.stringify(req.body ?? {}));
-    const signatureValid = this.webhooksService.verifySignature(
-      rawBody,
-      signature,
-    );
+    // The signature is an HMAC over the exact bytes GitHub sent. A body
+    // re-serialized from the already-parsed `req.body` can essentially never
+    // byte-match those, so if the raw capture didn't happen (e.g. a
+    // form-encoded delivery, or a proxy re-encoding the body) the delivery is
+    // unverifiable: fail closed rather than HMAC a reconstructed buffer (#338).
+    const signatureValid = req.rawBody
+      ? this.webhooksService.verifySignature(req.rawBody, signature)
+      : false;
 
     const event = await this.webhooksService.handleEvent(
       eventType,

@@ -13,6 +13,7 @@ import { User } from './user.entity';
 import { Issue } from './issue.entity';
 
 @Entity('repositories')
+@Index('IDX_repositories_primaryLanguage', ['primaryLanguage'])
 @Index(['owner', 'name'], { unique: true })
 export class Repository {
   @PrimaryGeneratedColumn('uuid')

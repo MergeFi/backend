@@ -2,7 +2,7 @@ import { ConfigService } from '@nestjs/config';
 import { nativeToScVal, rpc } from '@stellar/stellar-sdk';
 import { AssetType } from '../common/enums';
 import { AppConfig } from '../config/configuration';
-import { SorobanClientService } from './soroban-client.service';
+import { SorobanClientService, u64 } from './soroban-client.service';
 
 jest.mock('@stellar/stellar-sdk', () => ({
   ...jest.requireActual('@stellar/stellar-sdk'),
@@ -312,6 +312,35 @@ describe('SorobanClientService', () => {
         type: 'i128',
       });
       expect(encoded).toBe(1_000_000n);
+    });
+
+    it('encodes a u64-marked value as ScVal::U64 instead of i128 (#301)', () => {
+      const encoded = (
+        service as unknown as { toScVal(v: unknown): unknown }
+      ).toScVal(u64(4242n));
+
+      expect(nativeToScValMock).toHaveBeenCalledWith(4242n, { type: 'u64' });
+      expect(encoded).toBe(4242n);
+    });
+
+    it('normalizes string/number u64 inputs through BigInt', () => {
+      (service as unknown as { toScVal(v: unknown): unknown }).toScVal(
+        u64('7007'),
+      );
+      expect(nativeToScValMock).toHaveBeenCalledWith(7007n, { type: 'u64' });
+
+      nativeToScValMock.mockClear();
+      (service as unknown as { toScVal(v: unknown): unknown }).toScVal(u64(42));
+      expect(nativeToScValMock).toHaveBeenCalledWith(42n, { type: 'u64' });
+    });
+
+    it('still encodes a bare bigint amount as i128 (#301 — only u64 params are marked)', () => {
+      (service as unknown as { toScVal(v: unknown): unknown }).toScVal(
+        1_000_000n,
+      );
+      expect(nativeToScValMock).toHaveBeenCalledWith(1_000_000n, {
+        type: 'i128',
+      });
     });
 
     it('encodes short/plain strings with generic native encoding', () => {

@@ -8,14 +8,17 @@ import {
   UseGuards,
 } from '@nestjs/common';
 import { ApiBearerAuth, ApiProperty, ApiTags } from '@nestjs/swagger';
-import { IsString } from 'class-validator';
 import { UsersService } from './users.service';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
+import { IsStellarAddress } from '../common/validators/stellar-address.validator';
 import { ApiInternalErrorResponse } from '../common/swagger/api-common-responses.decorator';
 
-class SetStellarAddressDto {
-  @ApiProperty()
-  @IsString()
+// Checksum-validated (StrKey), like every other Stellar-address-accepting DTO.
+// This value later becomes the on-chain recipient of escrow releases, so a
+// malformed address must be rejected here rather than at the Soroban call (#292).
+export class SetStellarAddressDto {
+  @ApiProperty({ description: 'Stellar public address of the user' })
+  @IsStellarAddress()
   stellarAddress: string;
 }
 
