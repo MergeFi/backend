@@ -185,14 +185,20 @@ export class MaintenancePoolService {
     // not a milestone-style fixed lock that gets partially released and then
     // closed out — so pay the reward via the pool contract's `withdraw`,
     // leaving the escrow LOCKED for the next reward (#163).
-    const payment = await this.escrowService.poolWithdraw(
-      pool.escrowId,
-      amount,
-      recipientAddress,
-      recipientId,
-    );
-
-    return payment;
+    let payment;
+    try {
+      payment = await this.escrowService.poolWithdraw(
+        pool.escrowId,
+        amount,
+        recipientAddress,
+        recipientId,
+      );
+      return payment;
+    } catch (error) {
+      // Compensate pool balance if on-chain withdrawal or payment persistence fails (#459)
+      await this.poolRepo.increment({ id: pool.id }, "balance", Number(amount));
+      throw error;
+    }
   }
 
   async list(): Promise<MaintenancePool[]> {

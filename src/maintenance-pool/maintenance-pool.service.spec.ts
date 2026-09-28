@@ -336,9 +336,10 @@ describe('MaintenancePoolService', () => {
 
     it('releases the reward and atomically decrements the balance', async () => {
       poolRepo.findOne.mockResolvedValue({
-        id: 'pool-1',
-        balance: '100',
-        escrowId: 'escrow-1',
+        id: "pool-1",
+        status: MaintenancePoolStatus.ACTIVE,
+        balance: "100",
+        escrowId: "escrow-1",
       });
       // Mock the atomic balance check to succeed
       const mockQueryBuilder = {
@@ -372,9 +373,10 @@ describe('MaintenancePoolService', () => {
 
     it('rejects a reward for a non-maintenance issue before releasing funds', async () => {
       poolRepo.findOne.mockResolvedValue({
-        id: 'pool-1',
-        balance: '100',
-        escrowId: 'escrow-1',
+        id: "pool-1",
+        status: MaintenancePoolStatus.ACTIVE,
+        balance: "100",
+        escrowId: "escrow-1",
       });
       issueRepo.findOne.mockResolvedValue({
         id: 'issue-1',
@@ -409,9 +411,10 @@ describe('MaintenancePoolService', () => {
 
     it('rejects when the issue has already received a reward from this pool (#273)', async () => {
       poolRepo.findOne.mockResolvedValue({
-        id: 'pool-1',
-        balance: '100',
-        escrowId: 'escrow-1',
+        id: "pool-1",
+        status: MaintenancePoolStatus.ACTIVE,
+        balance: "100",
+        escrowId: "escrow-1",
       });
       // Mock the payment query to return an existing payment
       const mockPaymentQueryBuilder = {
@@ -437,9 +440,10 @@ describe('MaintenancePoolService', () => {
     // time — not a value cached from an earlier read — and neither
     // decrement is lost.
     it('two concurrent assignReward calls both apply — no lost decrement (#51)', async () => {
-      const sharedPoolRow: { balance: string; escrowId: string } = {
-        balance: '1000.0000000',
-        escrowId: 'escrow-1',
+      const sharedPoolRow = {
+        status: MaintenancePoolStatus.ACTIVE,
+        balance: "1000.0000000",
+        escrowId: "escrow-1",
       };
       poolRepo.findOne.mockImplementation(() =>
         Promise.resolve({ id: 'pool-1', ...sharedPoolRow }),
@@ -463,5 +467,35 @@ describe('MaintenancePoolService', () => {
       // Both calls should have succeeded (atomic check passed)
       expect(mockQueryBuilder.execute).toHaveBeenCalledTimes(2);
     });
+    it("restores the pool balance when escrow withdrawal fails (#459)", async () => {
+      poolRepo.findOne.mockResolvedValue({
+        id: "pool-1",
+        status: MaintenancePoolStatus.ACTIVE,
+        balance: "100",
+        escrowId: "escrow-1",
+      });
+      const mockQueryBuilder = {
+        update: jest.fn().mockReturnThis(),
+        set: jest.fn().mockReturnThis(),
+        where: jest.fn().mockReturnThis(),
+        setParameter: jest.fn().mockReturnThis(),
+        execute: jest.fn().mockResolvedValue({ affected: 1 }),
+      };
+      poolRepo.createQueryBuilder.mockReturnValue(mockQueryBuilder);
+      escrowService.poolWithdraw.mockRejectedValueOnce(
+        new Error("Soroban contract error: simulation failed"),
+      );
+
+      await expect(
+        service.assignReward("pool-1", "issue-1", "30", "GRECIPIENT", "user-1"),
+      ).rejects.toThrow("Soroban contract error: simulation failed");
+
+      expect(poolRepo.increment).toHaveBeenCalledWith(
+        { id: "pool-1" },
+        "balance",
+        30,
+      );
+    });
+
   });
 });
