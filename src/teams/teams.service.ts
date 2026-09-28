@@ -21,12 +21,14 @@ export class TeamsService {
     @InjectRepository(User) private readonly userRepo: Repository<User>,
   ) {}
 
-  async create(dto: CreateTeamDto): Promise<Team> {
+  async create(dto: CreateTeamDto, callerUserId: string): Promise<Team> {
     validateSplitPercentages(dto.members);
 
     // Verify all member userIds exist
     for (const member of dto.members) {
-      const userExists = await this.userRepo.findOne({ where: { id: member.userId } });
+      const userExists = await this.userRepo.findOne({
+        where: { id: member.userId },
+      });
       if (!userExists) {
         throw new NotFoundException(`User ${member.userId} not found`);
       }
@@ -34,8 +36,9 @@ export class TeamsService {
 
     const team = await this.teamRepo.save(
       this.teamRepo.create({
-        name: dto.name,
-        createdById: dto.createdById ?? null,
+        name: dto.name?.trim() ?? dto.name,
+        // Fall back to the authenticated caller's id when the client omits createdById.
+        createdById: dto.createdById ?? callerUserId,
       }),
     );
 
@@ -75,7 +78,9 @@ export class TeamsService {
 
     // Verify all member userIds exist
     for (const member of members) {
-      const userExists = await this.userRepo.findOne({ where: { id: member.userId } });
+      const userExists = await this.userRepo.findOne({
+        where: { id: member.userId },
+      });
       if (!userExists) {
         throw new NotFoundException(`User ${member.userId} not found`);
       }

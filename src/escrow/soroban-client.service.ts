@@ -23,6 +23,25 @@ export interface ContractInvocationResult {
 }
 
 /**
+ * A `bigint` that the escrow ABI types as `u64` rather than `i128` (#301).
+ *
+ * Soroban argument binding is strongly typed against the WASM export's
+ * parameter types: passing `ScVal::I128` where the contract declares `u64`
+ * fails host-side (conversion / `UnexpectedType` during simulation) instead
+ * of degrading gracefully. Wrapping the value in this marker before handing
+ * it to {@link SorobanClientService.invoke} makes the intended XDR type
+ * explicit at the call site.
+ */
+export interface U64Arg {
+  readonly __sorobanU64: bigint;
+}
+
+/** Wraps a value so {@link SorobanClientService} encodes it as `ScVal::U64`. */
+export function u64(value: bigint | number | string): U64Arg {
+  return { __sorobanU64: BigInt(value) };
+}
+
+/**
  * Thin wrapper around the Stellar/Soroban RPC client used to invoke the
  * escrow smart contract deployed by the sibling `mergefi-contracts` repo.
  *
@@ -220,6 +239,12 @@ export class SorobanClientService {
   }
 
   private toScVal(value: unknown): xdr.ScVal {
+    if (isU64Arg(value)) {
+      // #301 — `issue_id` / `deadline` are declared u64 in the escrow ABI;
+      // a bare bigint would encode as ScVal::I128 and fail host-side
+      // argument binding during simulation.
+      return nativeToScVal(value.__sorobanU64, { type: 'u64' });
+    }
     if (Buffer.isBuffer(value) || value instanceof Uint8Array) {
       // BytesN<32> arguments (metadata hashes, description hashes, etc.)
       // arrive as raw bytes, not strings — without this branch they fell
@@ -266,4 +291,13 @@ export class SorobanClientService {
       typeof value[1] === 'number'
     );
   }
+}
+
+/** Type guard for the {@link u64} marker (#301). */
+function isU64Arg(value: unknown): value is U64Arg {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    typeof (value as U64Arg).__sorobanU64 === 'bigint'
+  );
 }

@@ -48,23 +48,33 @@ export class AuthController {
   @UseGuards(GithubAuthGuard)
   @ApiExcludeEndpoint()
   async githubCallback(@Req() req: Request, @Res() res: Response) {
-    const profile = req.user as UpsertFromGithubInput;
-    const { accessToken } = await this.authService.loginWithGithub(profile);
-    const code = this.authService.createHandoffCode(accessToken);
-    // Defense-in-depth: also set the JWT as an httpOnly cookie so a frontend
-    // that prefers cookie-based auth never needs to handle a bearer token in
-    // the URL at all. The handoff code remains the primary exchange mechanism.
-    const isProd =
-      this.configService.get('env', { infer: true }) === 'production';
-    res.cookie('access_token', accessToken, {
-      httpOnly: true,
-      secure: isProd,
-      sameSite: 'lax',
-      maxAge: 7 * 24 * 60 * 60 * 1000,
-      path: '/',
-    });
     const frontendUrl = this.configService.get('frontendUrl', { infer: true });
-    res.redirect(`${frontendUrl}/auth/callback?code=${code}`);
+    try {
+      const profile = req.user as UpsertFromGithubInput;
+      const { accessToken } = await this.authService.loginWithGithub(profile);
+      const code = this.authService.createHandoffCode(accessToken);
+      // Defense-in-depth: also set the JWT as an httpOnly cookie so a frontend
+      // that prefers cookie-based auth never needs to handle a bearer token in
+      // the URL at all. The handoff code remains the primary exchange mechanism.
+      const isProd =
+        this.configService.get('env', { infer: true }) === 'production';
+      res.cookie('access_token', accessToken, {
+        httpOnly: true,
+        secure: isProd,
+        sameSite: 'lax',
+        maxAge: 7 * 24 * 60 * 60 * 1000,
+        path: '/',
+      });
+      res.redirect(`${frontendUrl}/auth/callback?code=${code}`);
+    } catch (err) {
+      // A failure between the GitHub profile and the JWT (DB upsert, signing)
+      // would otherwise leave the user on a raw 500 page mid-OAuth (#298).
+      this.logger.error(
+        `GitHub OAuth callback failed: ${err instanceof Error ? err.message : String(err)}`,
+        err instanceof Error ? err.stack : undefined,
+      );
+      res.redirect(`${frontendUrl}/auth/callback?error=oauth_failed`);
+    }
   }
 
   @Post('handoff')
