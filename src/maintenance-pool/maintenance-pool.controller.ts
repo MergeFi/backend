@@ -7,7 +7,7 @@ import {
   Post,
   UseGuards,
 } from '@nestjs/common';
-import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
+import { ApiProperty,  ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { Throttle } from '@nestjs/throttler';
 import { IsOptional, IsUUID } from 'class-validator';
 import { MaintenancePoolService } from './maintenance-pool.service';
@@ -25,23 +25,29 @@ import {
 } from '../common/swagger/api-common-responses.decorator';
 
 class DepositDto {
+  @ApiProperty({ description: 'Amount to deposit into the maintenance pool' })
   @IsMoneyAmount()
   amount: string;
 
+  @ApiProperty({ description: 'Stellar public key of the funder depositing into the pool' })
   @IsStellarAddress()
   funderAddress: string;
 }
 
 class AssignRewardDto {
+  @ApiProperty({ description: 'ID of the issue being rewarded' })
   @IsUUID()
   issueId: string;
 
+  @ApiProperty({ description: 'Reward amount allocated from the maintenance pool' })
   @IsMoneyAmount()
   amount: string;
 
+  @ApiProperty({ description: 'Stellar public key of the reward recipient' })
   @IsStellarAddress()
   recipientAddress: string;
 
+  @ApiProperty({ required: false, description: 'Optional internal user ID of the recipient' })
   @IsOptional()
   @IsUUID()
   recipientId?: string;
