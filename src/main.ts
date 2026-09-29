@@ -47,9 +47,9 @@ async function bootstrap() {
   );
   app.useGlobalFilters(new GlobalExceptionFilter());
 
-  // The generated OpenAPI document hands anyone a complete, browsable map of
-  // the API (routes, DTO shapes, validation constraints), so it is never
-  // exposed in production — same spirit as the JWT-secret guard above.
+  // The generated OpenAPI document hands anyone a complete, browsable map of the
+  // API (routes, DTO shapes, validation constraints), so it is never exposed in
+  // production — same spirit as the JWT-secret guard above.
   if (env !== 'production') {
     const swaggerConfig = new DocumentBuilder()
       .setTitle('MergeFi API')
