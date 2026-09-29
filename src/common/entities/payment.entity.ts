@@ -10,6 +10,7 @@ import {
 } from 'typeorm';
 import { Escrow } from './escrow.entity';
 import { User } from './user.entity';
+import { Issue } from './issue.entity';
 import { AssetType, PaymentStatus } from '../enums';
 
 /**
@@ -25,6 +26,7 @@ import { AssetType, PaymentStatus } from '../enums';
  */
 @Entity('payments')
 @Index('IDX_payment_escrow', ['escrowId'])
+@Index('IDX_escrow_maintenance_issue', ['escrowId', 'maintenanceIssueId'], { unique: true, where: '"maintenanceIssueId" IS NOT NULL' })
 export class Payment {
   @PrimaryGeneratedColumn('uuid')
   id: string;
@@ -50,6 +52,13 @@ export class Payment {
 
   @Column({ type: 'varchar', nullable: true })
   recipientAddress: string | null;
+
+  @ManyToOne(() => Issue, { onDelete: 'SET NULL', nullable: true })
+  @JoinColumn()
+  maintenanceIssue: Issue | null;
+
+  @Column({ type: 'uuid', nullable: true })
+  maintenanceIssueId: string | null;
 
   @Column({ type: 'decimal', precision: 20, scale: 7 })
   amount: string;

@@ -407,13 +407,13 @@ describe('MaintenancePoolService', () => {
       expect(escrowService.poolWithdraw).not.toHaveBeenCalled();
     });
 
-    it('rejects when the issue has already received a reward from this pool (#273)', async () => {
+    it('rejects when the same issue receives a reward twice (even for different recipients) (#273, #458)', async () => {
       poolRepo.findOne.mockResolvedValue({
         id: 'pool-1',
         balance: '100',
         escrowId: 'escrow-1',
       });
-      // Mock the payment query to return an existing payment
+      // Mock the payment query to return an existing payment for this issue
       const mockPaymentQueryBuilder = {
         innerJoin: jest.fn().mockReturnThis(),
         where: jest.fn().mockReturnThis(),
@@ -423,9 +423,63 @@ describe('MaintenancePoolService', () => {
       paymentRepo.createQueryBuilder.mockReturnValue(mockPaymentQueryBuilder);
 
       await expect(
-        service.assignReward('pool-1', 'issue-1', '10', 'GRECIPIENT', 'user-1'),
+        service.assignReward('pool-1', 'issue-1', '10', 'GRECIPIENT_B', 'user-2'),
       ).rejects.toThrow(ConflictException);
+      
+      expect(mockPaymentQueryBuilder.andWhere).toHaveBeenCalledWith(
+        'payment.maintenanceIssueId = :issueId',
+        { issueId: 'issue-1' },
+      );
       expect(escrowService.poolWithdraw).not.toHaveBeenCalled();
+    });
+
+    it('allows the same recipient to be rewarded for two different issues', async () => {
+      poolRepo.findOne.mockResolvedValue({
+        id: 'pool-1',
+        balance: '100',
+        escrowId: 'escrow-1',
+      });
+      const mockQueryBuilder = {
+        update: jest.fn().mockReturnThis(),
+        set: jest.fn().mockReturnThis(),
+        where: jest.fn().mockReturnThis(),
+        setParameter: jest.fn().mockReturnThis(),
+        execute: jest.fn().mockResolvedValue({ affected: 1 }),
+      };
+      poolRepo.createQueryBuilder.mockReturnValue(mockQueryBuilder);
+      escrowService.poolWithdraw.mockResolvedValue({ id: 'payment-1' });
+
+      // Return null, meaning no payment for this issue exists yet
+      const mockPaymentQueryBuilder = {
+        innerJoin: jest.fn().mockReturnThis(),
+        where: jest.fn().mockReturnThis(),
+        andWhere: jest.fn().mockReturnThis(),
+        getOne: jest.fn().mockResolvedValue(null),
+      };
+      paymentRepo.createQueryBuilder.mockReturnValue(mockPaymentQueryBuilder);
+
+      issueRepo.findOne.mockResolvedValue({
+        id: 'issue-2',
+        isMaintenanceType: true,
+        repositoryId: 'repository-1',
+      });
+
+      const payment = await service.assignReward(
+        'pool-1',
+        'issue-2',
+        '10',
+        'GRECIPIENT',
+        'user-1',
+      );
+
+      expect(payment).toEqual({ id: 'payment-1' });
+      expect(escrowService.poolWithdraw).toHaveBeenCalledWith(
+        'escrow-1',
+        '10',
+        'GRECIPIENT',
+        'user-1',
+        'issue-2',
+      );
     });
 
     // Regression test for #51 (MaintenancePool.balance was a hand-maintained
