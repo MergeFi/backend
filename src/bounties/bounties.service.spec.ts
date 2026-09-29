@@ -228,23 +228,20 @@ describe('BountiesService', () => {
   });
 
   it('expireOverdue flips overdue bounties to EXPIRED and returns count', async () => {
-    const overdueBounties = [
-      { id: 'b1', status: BountyStatus.OPEN },
-      { id: 'b2', status: BountyStatus.FUNDED },
-    ];
     const mockQueryBuilder = {
+      update: jest.fn().mockReturnThis(),
+      set: jest.fn().mockReturnThis(),
       where: jest.fn().mockReturnThis(),
       andWhere: jest.fn().mockReturnThis(),
-      getMany: jest.fn().mockResolvedValue(overdueBounties),
+      execute: jest.fn().mockResolvedValue({ affected: 2 }),
     };
     bountyRepo.createQueryBuilder.mockReturnValue(mockQueryBuilder);
 
     const count = await service.expireOverdue();
 
     expect(count).toBe(2);
-    expect(bountyRepo.save).toHaveBeenCalledTimes(2);
-    expect(overdueBounties[0].status).toBe(BountyStatus.EXPIRED);
-    expect(overdueBounties[1].status).toBe(BountyStatus.EXPIRED);
+    expect(mockQueryBuilder.update).toHaveBeenCalledWith(Bounty);
+    expect(mockQueryBuilder.set).toHaveBeenCalledWith({ status: BountyStatus.EXPIRED });
   });
 
   it('markPrClosedWithoutMerge transitions IN_REVIEW back to CLAIMED', async () => {

@@ -144,19 +144,11 @@ export class MaintenancePoolService {
     }
 
     // Guard against double/triple payout for the same issue (#273).
-    const existingPayment = await this.paymentRepo.findOne({
-      where: {
-        recipientId: recipientId ?? null,
-      },
-    });
-    // Check if there's already a payment for this issue from this pool's escrow.
     const existingPoolPayment = await this.paymentRepo
       .createQueryBuilder('payment')
       .innerJoin('payment.escrow', 'escrow')
       .where('escrow.maintenancePoolId = :poolId', { poolId: id })
-      .andWhere('payment.recipientId = :recipientId', {
-        recipientId: recipientId ?? null,
-      })
+      .andWhere('payment.maintenanceIssueId = :issueId', { issueId })
       .getOne();
     if (existingPoolPayment) {
       throw new ConflictException(
@@ -190,6 +182,7 @@ export class MaintenancePoolService {
       amount,
       recipientAddress,
       recipientId,
+      issueId,
     );
 
     return payment;
