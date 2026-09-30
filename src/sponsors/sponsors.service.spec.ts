@@ -21,6 +21,7 @@ function createMockQueryBuilder(result: { raw?: unknown; many?: unknown[] }) {
     andWhere: jest.fn().mockReturnThis(),
     innerJoin: jest.fn().mockReturnThis(),
     orderBy: jest.fn().mockReturnThis(),
+    addOrderBy: jest.fn().mockReturnThis(),
     take: jest.fn().mockReturnThis(),
     skip: jest.fn().mockReturnThis(),
     getRawOne: jest.fn().mockResolvedValue(result.raw),
@@ -187,6 +188,8 @@ describe('SponsorsService', () => {
       await service.activeBounties('sponsor-1');
 
       expect(bountyRepo.createQueryBuilder).toHaveBeenCalledWith('bounty');
+      expect(qb.orderBy).toHaveBeenCalledWith('bounty.createdAt', 'DESC');
+      expect(qb.addOrderBy).toHaveBeenCalledWith('bounty.id', 'DESC');
       expect(qb.where).toHaveBeenCalledWith('bounty.sponsorId = :sponsorId', {
         sponsorId: 'sponsor-1',
       });
@@ -215,6 +218,9 @@ describe('SponsorsService', () => {
           { sponsorId: 'sponsor-1', status: MilestoneStatus.FUNDED },
           { sponsorId: 'sponsor-1', status: MilestoneStatus.IN_PROGRESS },
         ],
+        order: { createdAt: 'DESC', id: 'DESC' },
+        take: 20,
+        skip: 0,
       });
       expect(result).toBe(milestones);
     });
