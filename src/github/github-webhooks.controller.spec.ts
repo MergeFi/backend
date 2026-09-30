@@ -1,3 +1,4 @@
+import { InternalServerErrorException } from '@nestjs/common';
 import { GithubWebhooksController } from './github-webhooks.controller';
 import { GithubWebhooksService } from './github-webhooks.service';
 import { WebhookEventStatus } from '../common/enums';
@@ -122,12 +123,7 @@ describe('GithubWebhooksController — header extraction and response shape (#31
       'sha256=bad',
     );
 
-    expect(handleEvent).toHaveBeenCalledWith(
-      'push',
-      'delivery-11',
-      {},
-      false,
-    );
+    expect(handleEvent).toHaveBeenCalledWith('push', 'delivery-11', {}, false);
     expect(result).toEqual({
       received: true,
       eventId: 'event-11',
@@ -135,12 +131,29 @@ describe('GithubWebhooksController — header extraction and response shape (#31
     });
   });
 
+  it('throws InternalServerErrorException when event processing fails (#317)', async () => {
+    handleEvent.mockResolvedValue({
+      id: 'event-failed-1',
+      status: WebhookEventStatus.FAILED,
+      error: 'escrow release failed',
+    });
+
+    await expect(
+      controller.handle(
+        { rawBody: Buffer.from('{}'), body: {} } as never,
+        'pull_request',
+        'delivery-fail-1',
+        'sha256=abc',
+      ),
+    ).rejects.toThrow(InternalServerErrorException);
+  });
+
   it('is declared with a 202 HTTP status for the accepted delivery', () => {
     // @HttpCode(202) tells Nest to answer 202 instead of POST's default 201.
-    const httpCode = Reflect.getMetadata(
-      '__httpCode__',
-      GithubWebhooksController.prototype.handle,
-    );
+    const handler = (
+      GithubWebhooksController.prototype as unknown as Record<string, unknown>
+    )['handle'] as object;
+    const httpCode = Reflect.getMetadata('__httpCode__', handler);
     expect(httpCode).toBe(202);
   });
 });

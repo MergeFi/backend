@@ -1,6 +1,14 @@
-import { Controller, Headers, HttpCode, Post, Req } from '@nestjs/common';
+import {
+  Controller,
+  Headers,
+  HttpCode,
+  InternalServerErrorException,
+  Post,
+  Req,
+} from '@nestjs/common';
 import { ApiExcludeController } from '@nestjs/swagger';
 import type { Request } from 'express';
+import { WebhookEventStatus } from '../common/enums';
 import { GithubWebhooksService } from './github-webhooks.service';
 
 interface RawBodyRequest extends Request {
@@ -35,6 +43,12 @@ export class GithubWebhooksController {
       req.body as Record<string, unknown>,
       signatureValid,
     );
+
+    if (event.status === WebhookEventStatus.FAILED) {
+      throw new InternalServerErrorException(
+        event.error ?? 'Webhook event processing failed',
+      );
+    }
 
     return { received: true, eventId: event.id, status: event.status };
   }
