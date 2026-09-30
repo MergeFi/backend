@@ -373,6 +373,32 @@ export class EscrowService {
   }
 
   /**
+   * Validates the preconditions for a pool withdrawal without touching the
+   * DB balance — called by {@link MaintenancePoolService.assignReward} *before*
+   * the atomic balance decrement so that cheap, infallible-to-reverse errors
+   * (bad amount format, recipient/user mismatch, escrow not LOCKED) never
+   * cause the pool's DB balance to drift below the real on-chain balance.
+   *
+   * Deliberately mirrors the first three checks inside {@link poolWithdraw}
+   * exactly, so a caller that passes these will not encounter the same
+   * failures a second time inside poolWithdraw itself (barring a race on the
+   * escrow status between the two calls, which is an acceptable residual risk
+   * given that the pool already guards against concurrent payouts at the
+   * balance level).
+   */
+  async assertPoolWithdrawPreconditions(
+    escrowId: string,
+    amount: string,
+    recipientAddress: string,
+    recipientId?: string,
+  ): Promise<void> {
+    const escrow = await this.getOrThrow(escrowId);
+    this.assertLocked(escrow);
+    this.assertValidAmount(amount);
+    await this.assertRecipientsMatchUsers([{ recipientAddress, recipientId }]);
+  }
+
+  /**
    * Pays a reward out of a maintenance pool's running balance.
    *
    * The real `mergefi-maintenance-pool` contract has no
@@ -584,20 +610,14 @@ export class EscrowService {
     recipients: Array<[string, number]>,
     manager?: EntityManager,
   ): Promise<ContractInvocationResult> {
-    return this.invokeOnLockedEscrow(escrow, operation, () =>
-      this.soroban.invoke(
-        'release',
-        // `release(issue_id: u64, recipients)` — u64-typed on-chain (#301).
-        [u64(this.onChainKeyFor(escrow)), recipients],
-        this.contractOpts(escrow),
-      ),
     return this.invokeOnLockedEscrow(
       escrow,
       operation,
       () =>
         this.soroban.invoke(
           'release',
-          [this.onChainKeyFor(escrow), recipients],
+          // `release(issue_id: u64, recipients)` — u64-typed on-chain (#301).
+          [u64(this.onChainKeyFor(escrow)), recipients],
           this.contractOpts(escrow),
         ),
       manager,
