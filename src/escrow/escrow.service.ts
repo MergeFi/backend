@@ -396,6 +396,7 @@ export class EscrowService {
     amount: string,
     recipientAddress: string,
     recipientId?: string,
+    maintenanceIssueId?: string,
   ): Promise<Payment> {
     const escrow = await this.getOrThrow(escrowId);
     this.assertLocked(escrow);
@@ -419,6 +420,7 @@ export class EscrowService {
         asset: escrow.asset,
         status: PaymentStatus.CONFIRMED,
         txHash: result.txHash,
+        maintenanceIssueId: maintenanceIssueId ?? null,
       }),
     );
   }
@@ -584,20 +586,14 @@ export class EscrowService {
     recipients: Array<[string, number]>,
     manager?: EntityManager,
   ): Promise<ContractInvocationResult> {
-    return this.invokeOnLockedEscrow(escrow, operation, () =>
-      this.soroban.invoke(
-        'release',
-        // `release(issue_id: u64, recipients)` — u64-typed on-chain (#301).
-        [u64(this.onChainKeyFor(escrow)), recipients],
-        this.contractOpts(escrow),
-      ),
     return this.invokeOnLockedEscrow(
       escrow,
       operation,
       () =>
         this.soroban.invoke(
           'release',
-          [this.onChainKeyFor(escrow), recipients],
+          // `release(issue_id: u64, recipients)` — u64-typed on-chain (#301).
+          [u64(this.onChainKeyFor(escrow)), recipients],
           this.contractOpts(escrow),
         ),
       manager,

@@ -143,20 +143,12 @@ export class MaintenancePoolService {
       throw new BadRequestException(`Pool ${id} has no funded escrow yet`);
     }
 
-    // Guard against double/triple payout for the same issue (#273).
-    const existingPayment = await this.paymentRepo.findOne({
-      where: {
-        recipientId: recipientId ?? null,
-      },
-    });
-    // Check if there's already a payment for this issue from this pool's escrow.
+    // Guard against double payout for the same issue (#273, #458).
     const existingPoolPayment = await this.paymentRepo
       .createQueryBuilder('payment')
       .innerJoin('payment.escrow', 'escrow')
       .where('escrow.maintenancePoolId = :poolId', { poolId: id })
-      .andWhere('payment.recipientId = :recipientId', {
-        recipientId: recipientId ?? null,
-      })
+      .andWhere('payment.maintenanceIssueId = :issueId', { issueId })
       .getOne();
     if (existingPoolPayment) {
       throw new ConflictException(
@@ -181,18 +173,24 @@ export class MaintenancePoolService {
       );
     }
 
-    // A maintenance pool is a running on-chain balance (deposit/withdraw),
-    // not a milestone-style fixed lock that gets partially released and then
-    // closed out — so pay the reward via the pool contract's `withdraw`,
-    // leaving the escrow LOCKED for the next reward (#163).
-    const payment = await this.escrowService.poolWithdraw(
-      pool.escrowId,
-      amount,
-      recipientAddress,
-      recipientId,
-    );
-
-    return payment;
+    try {
+      const payment = await this.escrowService.poolWithdraw(
+        pool.escrowId,
+        amount,
+        recipientAddress,
+        recipientId,
+        issueId,
+      );
+      return payment;
+    } catch (err: any) {
+      await this.poolRepo.increment({ id: pool.id }, 'balance', Number(amount));
+      if (err?.code === '23505' || err?.message?.includes('UQ_payment_escrow_maintenance_issue')) {
+        throw new ConflictException(
+          `Issue ${issueId} has already received a reward from pool ${id}`,
+        );
+      }
+      throw err;
+    }
   }
 
   async list(): Promise<MaintenancePool[]> {

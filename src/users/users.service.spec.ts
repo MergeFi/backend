@@ -322,7 +322,7 @@ describe('UsersService', () => {
 
   describe('list', () => {
     it('returns every user mapped to its public shape', async () => {
-      userRepo.find = jest.fn().mockResolvedValue([
+      (userRepo as any).find = jest.fn().mockResolvedValue([
         {
           id: 'u1',
           username: 'a',

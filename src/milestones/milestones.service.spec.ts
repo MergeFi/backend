@@ -75,7 +75,7 @@ describe('MilestonesService', () => {
         sponsorId: 'sponsor-1',
       });
 
-      const milestone = await service.fund('m1', 'GFUNDER');
+      const milestone = await service.fund('m1', 'GFUNDER', 'caller-1');
 
       expect(milestone.status).toBe(MilestoneStatus.FUNDED);
       expect(milestone.escrowId).toBe('escrow-1');
@@ -90,7 +90,7 @@ describe('MilestonesService', () => {
         sponsorId: 'sponsor-1',
       });
 
-      await service.fund('m1', 'GFUNDER');
+      await service.fund('m1', 'GFUNDER', 'caller-1');
 
       expect(escrowService.fund).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -110,7 +110,7 @@ describe('MilestonesService', () => {
         sponsorId: null,
       });
 
-      await service.fund('m2', 'GFUNDER');
+      await service.fund('m2', 'GFUNDER', 'caller-1');
 
       expect(escrowService.fund).toHaveBeenCalledWith(
         expect.objectContaining({ sponsorId: null }),
@@ -123,7 +123,7 @@ describe('MilestonesService', () => {
         status: MilestoneStatus.FUNDED,
       });
 
-      await expect(service.fund('m1', 'GFUNDER')).rejects.toThrow(
+      await expect(service.fund('m1', 'GFUNDER', 'caller-1')).rejects.toThrow(
         'Milestone m1 is not OPEN (current: funded)',
       );
     });
