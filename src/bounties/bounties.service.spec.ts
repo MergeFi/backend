@@ -153,6 +153,7 @@ describe('BountiesService', () => {
       id: 'b1',
       status: BountyStatus.IN_REVIEW,
       escrowId: 'escrow-1',
+      sponsorId: 'caller-1',
       claimedById: 'contributor-1',
       teamId: null,
     });
@@ -176,6 +177,7 @@ describe('BountiesService', () => {
       id: 'b1',
       status: BountyStatus.IN_REVIEW,
       escrowId: 'escrow-1',
+      sponsorId: 'caller-1',
       claimedById: null,
       teamId: 'team-1',
     });
@@ -210,6 +212,7 @@ describe('BountiesService', () => {
       id: 'b1',
       status: BountyStatus.FUNDED,
       escrowId: 'escrow-1',
+      sponsorId: 'caller-1',
     });
 
     const bounty = await service.refund('b1', 'caller-1');
@@ -223,6 +226,7 @@ describe('BountiesService', () => {
       id: 'b1',
       status: BountyStatus.OPEN,
       escrowId: null,
+      sponsorId: 'caller-1',
     });
 
     const bounty = await service.refund('b1', 'caller-1');

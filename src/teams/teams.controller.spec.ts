@@ -48,7 +48,7 @@ describe('TeamsController', () => {
         members: [{ userId: 'u1', percentage: 100 }],
       };
 
-      await controller.create(dto, { userId: "u1" } as any);
+      await controller.create(dto);
 
       expect(teamsService.create).toHaveBeenCalledWith(dto);
     });

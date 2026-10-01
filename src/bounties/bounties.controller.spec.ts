@@ -1,3 +1,7 @@
+import { getRepositoryToken } from '@nestjs/typeorm';
+import { Reflector } from '@nestjs/core';
+import { IdempotencyKey } from '../common/entities/idempotency-key.entity';
+import { ArgumentMetadata, ParseUUIDPipe } from "@nestjs/common";
 import { Test, TestingModule } from '@nestjs/testing';
 import { plainToInstance } from 'class-transformer';
 import { validate } from 'class-validator';
@@ -36,7 +40,19 @@ describe('BountiesController', () => {
 
     const module: TestingModule = await Test.createTestingModule({
       controllers: [BountiesController],
-      providers: [{ provide: BountiesService, useValue: bountiesService }],
+      providers: [
+        { provide: BountiesService, useValue: bountiesService },
+        Reflector,
+        {
+          provide: getRepositoryToken(IdempotencyKey),
+          useValue: {
+            findOneBy: jest.fn(),
+            insert: jest.fn(),
+            update: jest.fn(),
+            delete: jest.fn(),
+          },
+        },
+      ],
     })
       .overrideGuard(JwtAuthGuard)
       .useValue({ canActivate: () => true })
@@ -59,7 +75,7 @@ describe('BountiesController', () => {
 
       await controller.create(dto, { user: { userId: "u1" } } as any);
 
-      expect(bountiesService.create).toHaveBeenCalledWith(dto);
+      expect(bountiesService.create).toHaveBeenCalledWith(dto, "u1");
     });
   });
 
@@ -75,7 +91,7 @@ describe('BountiesController', () => {
     it('calls bountiesService.fund with id and funderAddress', async () => {
       await controller.fund('b1', { funderAddress: 'GFUNDER' }, { user: { userId: 'u1' } } as any);
 
-      expect(bountiesService.fund).toHaveBeenCalledWith('b1', 'GFUNDER');
+      expect(bountiesService.fund).toHaveBeenCalledWith('b1', 'GFUNDER', 'u1');
     });
   });
 
@@ -107,7 +123,7 @@ describe('BountiesController', () => {
     it('calls bountiesService.refund with the route param', async () => {
       await controller.refund('b1', { user: { userId: 'u1' } } as any);
 
-      expect(bountiesService.refund).toHaveBeenCalledWith('b1');
+      expect(bountiesService.refund).toHaveBeenCalledWith('b1', 'u1');
     });
   });
 
@@ -135,7 +151,7 @@ describe('BountiesController', () => {
 
     it('accepts undefined when the query param is absent', async () => {
       await expect(
-        pipe.transform("" as any, repositoryIdMetadata),
+        pipe.transform(undefined as any, repositoryIdMetadata),
       ).resolves.toBeUndefined();
     });
 

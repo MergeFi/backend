@@ -77,7 +77,7 @@ export class MaintenancePoolController {
   @Roles(UserRole.SPONSOR, UserRole.MAINTAINER)
   create(@Body() dto: CreatePoolDto, @Req() req: Request) {
     const callerUserId = (req.user as any).userId as string;
-    return this.poolService.create(dto, callerUserId);
+    return this.poolService.create(dto);
   }
 
   @ApiOperation({ summary: 'List maintenance pools' })
