@@ -532,7 +532,7 @@ describe('MaintenancePoolService', () => {
       poolRepo.createQueryBuilder.mockReturnValue(mockQueryBuilder);
 
       const dbError = new Error("duplicate key value violates unique constraint");
-      dbError.code = "23505";
+      (dbError as any).code = "23505";
       escrowService.poolWithdraw.mockRejectedValue(dbError);
 
       await expect(
