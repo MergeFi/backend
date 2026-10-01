@@ -57,7 +57,7 @@ describe('BountiesController', () => {
         difficulty: BountyDifficulty.INTERMEDIATE,
       };
 
-      await controller.create(dto);
+      await controller.create(dto, { user: { userId: "u1" } } as any);
 
       expect(bountiesService.create).toHaveBeenCalledWith(dto);
     });
@@ -73,7 +73,7 @@ describe('BountiesController', () => {
 
   describe('fund', () => {
     it('calls bountiesService.fund with id and funderAddress', async () => {
-      await controller.fund('b1', { funderAddress: 'GFUNDER' });
+      await controller.fund('b1', { funderAddress: 'GFUNDER' }, { user: { userId: 'u1' } } as any);
 
       expect(bountiesService.fund).toHaveBeenCalledWith('b1', 'GFUNDER');
     });
@@ -81,7 +81,7 @@ describe('BountiesController', () => {
 
   describe('claim', () => {
     it('calls bountiesService.claim with id and contributorId', async () => {
-      await controller.claim('b1', { contributorId: 'contributor-1' });
+      await controller.claim('b1', { user: { userId: 'contributor-1' } } as any);
 
       expect(bountiesService.claim).toHaveBeenCalledWith('b1', 'contributor-1');
     });
@@ -105,7 +105,7 @@ describe('BountiesController', () => {
 
   describe('refund', () => {
     it('calls bountiesService.refund with the route param', async () => {
-      await controller.refund('b1');
+      await controller.refund('b1', { user: { userId: 'u1' } } as any);
 
       expect(bountiesService.refund).toHaveBeenCalledWith('b1');
     });
@@ -122,6 +122,34 @@ describe('BountiesController', () => {
         repositoryId: 'repo-1',
         primaryLanguage: 'TypeScript',
       });
+    });
+  });
+
+  describe('repositoryId query pipe behavior', () => {
+    const repositoryIdMetadata: ArgumentMetadata = {
+      type: 'query',
+      metatype: String,
+      data: 'repositoryId',
+    };
+    const pipe = new ParseUUIDPipe({ version: '4', optional: true });
+
+    it('accepts undefined when the query param is absent', async () => {
+      await expect(
+        pipe.transform("" as any, repositoryIdMetadata),
+      ).resolves.toBeUndefined();
+    });
+
+    it('accepts a valid v4 UUID', async () => {
+      const validUuid = 'c73bcdcc-2669-4bf6-81d3-e4ae73fb11fd';
+      await expect(
+        pipe.transform(validUuid, repositoryIdMetadata),
+      ).resolves.toBe(validUuid);
+    });
+
+    it('rejects a non-UUID string with BadRequestException', async () => {
+      await expect(
+        pipe.transform('not-a-uuid', repositoryIdMetadata),
+      ).rejects.toThrow();
     });
   });
 

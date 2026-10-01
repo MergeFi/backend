@@ -5,7 +5,6 @@ import {
   NotFoundException,
   Optional,
 } from '@nestjs/common';
-import { BadRequestException, Injectable, NotFoundException, Optional } from '@nestjs/common';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { InjectRepository } from '@nestjs/typeorm';
 import { In, Repository } from 'typeorm';
@@ -185,9 +184,9 @@ export class BountiesService {
           });
           const userMap = new Map(users.map((u) => [u.id, u]));
           const recipients = team.splits.map((split) => {
-            const user = userMap.get(split.userId);
+            const user = split.userId ? userMap.get(split.userId) : undefined;
             return {
-              recipientId: split.userId,
+              recipientId: split.userId ?? undefined,
               recipientAddress: user?.stellarAddress ?? '',
               percentage: Number(split.percentage),
             };

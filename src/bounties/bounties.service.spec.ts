@@ -70,7 +70,7 @@ describe('BountiesService', () => {
       amount: '100',
       asset: AssetType.USDC,
       difficulty: BountyDifficulty.INTERMEDIATE,
-    });
+    }, 'caller-1');
     expect(bounty.status).toBe(BountyStatus.OPEN);
   });
 
@@ -212,7 +212,7 @@ describe('BountiesService', () => {
       escrowId: 'escrow-1',
     });
 
-    const bounty = await service.refund('b1');
+    const bounty = await service.refund('b1', 'caller-1');
 
     expect(escrowService.refund).toHaveBeenCalledWith('escrow-1');
     expect(bounty.status).toBe(BountyStatus.REFUNDED);
@@ -225,7 +225,7 @@ describe('BountiesService', () => {
       escrowId: null,
     });
 
-    const bounty = await service.refund('b1');
+    const bounty = await service.refund('b1', 'caller-1');
 
     expect(escrowService.refund).not.toHaveBeenCalled();
     expect(bounty.status).toBe(BountyStatus.REFUNDED);
