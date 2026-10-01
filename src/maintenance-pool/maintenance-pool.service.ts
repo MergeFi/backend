@@ -4,8 +4,8 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
-import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { InjectDataSource, InjectRepository } from '@nestjs/typeorm';
+import { DataSource, Repository } from 'typeorm';
 import { Issue, MaintenancePool, Payment } from '../common/entities';
 import { MaintenancePoolStatus } from '../common/enums';
 import { EscrowService } from '../escrow/escrow.service';
@@ -27,6 +27,8 @@ export class MaintenancePoolService {
     @InjectRepository(Payment)
     private readonly paymentRepo: Repository<Payment>,
     private readonly escrowService: EscrowService,
+    @InjectDataSource()
+    private readonly dataSource: DataSource,
   ) {}
 
   async create(
@@ -36,7 +38,6 @@ export class MaintenancePoolService {
     const pool = this.poolRepo.create({
       name: dto.name?.trim() ?? dto.name,
       repositoryId: dto.repositoryId ?? null,
-      // Fall back to the authenticated caller's id when the client omits createdById.
       createdById: dto.createdById ?? callerUserId,
       monthlyDeposit: dto.monthlyDeposit,
       asset: dto.asset,
@@ -51,71 +52,76 @@ export class MaintenancePoolService {
     return pool;
   }
 
-  /** Sponsor makes a (typically monthly) deposit, topping up the pool's on-chain balance. */
+  /**
+   * Fix #457: wrap in dataSource.transaction() so the pessimistic_write lock
+   * has an active QueryRunner.
+   */
   async deposit(
     id: string,
     amount: string,
     funderAddress: string,
   ): Promise<MaintenancePool> {
-    // Use SELECT ... FOR UPDATE to prevent concurrent first-time deposit races
-    // that could orphan escrows (#275).
-    const pool = await this.poolRepo
-      .createQueryBuilder('pool')
-      .setLock('pessimistic_write')
-      .where('pool.id = :id', { id })
-      .getOne();
+    return this.dataSource.transaction(async (manager) => {
+      const pool = await manager
+        .createQueryBuilder(MaintenancePool, 'pool')
+        .setLock('pessimistic_write')
+        .where('pool.id = :id', { id })
+        .getOne();
 
-    if (!pool) throw new NotFoundException(`Maintenance pool ${id} not found`);
-    if (pool.status !== MaintenancePoolStatus.ACTIVE) {
-      throw new BadRequestException(`Pool ${id} is not ACTIVE`);
-    }
+      if (!pool) throw new NotFoundException(`Maintenance pool ${id} not found`);
+      if (pool.status !== MaintenancePoolStatus.ACTIVE) {
+        throw new BadRequestException(`Pool ${id} is not ACTIVE`);
+      }
 
-    if (!pool.escrowId) {
-      const escrow = await this.escrowService.fund({
-        amount,
-        asset: pool.asset,
-        funderAddress,
-        maintenancePoolId: pool.id,
-      });
-      // Use WHERE escrowId IS NULL so a losing concurrent request detects the
-      // race and tops up the winner's escrow instead of creating a second one.
-      const updateResult = await this.poolRepo.update(
-        { id: pool.id, escrowId: null } as any,
-        { escrowId: escrow.id },
-      );
-      if (updateResult.affected === 0) {
-        // Another request won the race — top up the winner's escrow instead.
-        const existingPool = await this.findOne(id);
+      if (!pool.escrowId) {
+        const escrow = await this.escrowService.fund({
+          amount,
+          asset: pool.asset,
+          funderAddress,
+          maintenancePoolId: pool.id,
+        });
+        const updateResult = await manager.update(
+          MaintenancePool,
+          { id: pool.id, escrowId: null } as any,
+          { escrowId: escrow.id },
+        );
+        if (updateResult.affected === 0) {
+          await this.escrowService.fund({
+            amount,
+            asset: pool.asset,
+            funderAddress,
+            maintenancePoolId: pool.id,
+          });
+          await manager.increment(MaintenancePool, { id }, 'balance', Number(amount));
+          return manager.findOneByOrFail(MaintenancePool, { id });
+        }
+      } else {
         await this.escrowService.fund({
           amount,
           asset: pool.asset,
           funderAddress,
           maintenancePoolId: pool.id,
         });
-        await this.poolRepo.increment({ id }, 'balance', Number(amount));
-        return this.findOne(id);
       }
-    } else {
-      // Subsequent deposits top up the existing on-chain escrow balance.
-      await this.escrowService.fund({
-        amount,
-        asset: pool.asset,
-        funderAddress,
-        maintenancePoolId: pool.id,
-      });
-    }
 
-    // Atomic DB-level increment instead of read-modify-write — concurrent
-    // deposits/rewards on the same pool no longer clobber each other's
-    // balance update (#51). monthlyDeposit is deliberately left untouched
-    // here: it records the sponsor's standing recurring commitment (set at
-    // pool creation), not "whatever the last deposit happened to be" (#93).
-    await this.poolRepo.increment({ id: pool.id }, 'balance', Number(amount));
-
-    return this.findOne(id);
+      await manager.increment(MaintenancePool, { id: pool.id }, 'balance', Number(amount));
+      return manager.findOneByOrFail(MaintenancePool, { id: pool.id });
+    });
   }
 
-  /** Maintainer assigns a reward from the pool's balance for completed maintenance work. */
+  /**
+   * Maintainer assigns a reward from the pool's balance for completed
+   * maintenance work.
+   *
+   * Fix #458: the previous double-payout guard was keyed on
+   * (escrow.maintenancePoolId, recipientId), not (escrow.maintenancePoolId,
+   * issueId). The same issue could be paid twice to two different recipients,
+   * and anonymous payouts (recipientId=null) were never guarded at all.
+   *
+   * The guard now filters on (escrow.maintenancePoolId, payment.issueId) so
+   * each issue can only receive one reward per pool regardless of recipient.
+   * payment.issueId is a new nullable column added to the Payment entity (#458).
+   */
   async assignReward(
     id: string,
     issueId: string,
@@ -143,30 +149,22 @@ export class MaintenancePoolService {
       throw new BadRequestException(`Pool ${id} has no funded escrow yet`);
     }
 
-    // Guard against double/triple payout for the same issue (#273).
-    const existingPayment = await this.paymentRepo.findOne({
-      where: {
-        recipientId: recipientId ?? null,
-      },
-    });
-    // Check if there's already a payment for this issue from this pool's escrow.
-    const existingPoolPayment = await this.paymentRepo
+    // Guard against double/triple payout for the same issue (#273, #458).
+    // Key: (escrow.maintenancePoolId, payment.issueId) -- covers all recipients
+    // including anonymous (recipientId=null) ones.
+    const existingIssuePayment = await this.paymentRepo
       .createQueryBuilder('payment')
       .innerJoin('payment.escrow', 'escrow')
       .where('escrow.maintenancePoolId = :poolId', { poolId: id })
-      .andWhere('payment.recipientId = :recipientId', {
-        recipientId: recipientId ?? null,
-      })
+      .andWhere('payment.issueId = :issueId', { issueId })
       .getOne();
-    if (existingPoolPayment) {
+    if (existingIssuePayment) {
       throw new ConflictException(
         `Issue ${issueId} has already received a reward from pool ${id}`,
       );
     }
 
-    // Atomic balance check and decrement — prevents TOCTOU race where concurrent
-    // calls could overdraw the pool (#274). Uses a conditional UPDATE that only
-    // succeeds if balance >= amount, then checks affected rows.
+    // Atomic balance check and decrement (#274).
     const updateResult = await this.poolRepo
       .createQueryBuilder()
       .update(MaintenancePool)
@@ -181,15 +179,12 @@ export class MaintenancePoolService {
       );
     }
 
-    // A maintenance pool is a running on-chain balance (deposit/withdraw),
-    // not a milestone-style fixed lock that gets partially released and then
-    // closed out — so pay the reward via the pool contract's `withdraw`,
-    // leaving the escrow LOCKED for the next reward (#163).
     const payment = await this.escrowService.poolWithdraw(
       pool.escrowId,
       amount,
       recipientAddress,
       recipientId,
+      issueId,
     );
 
     return payment;
