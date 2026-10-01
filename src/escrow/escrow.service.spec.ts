@@ -645,7 +645,7 @@ describe('EscrowService', () => {
         '10.0000000',
         'GRECIPIENT',
         undefined,
-        dataSource.manager,
+        dataSource.manager as any,
       );
 
       // #254: the lock and the caller's writes share the caller's transaction.

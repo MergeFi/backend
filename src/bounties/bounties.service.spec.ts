@@ -67,7 +67,7 @@ describe('BountiesService', () => {
       amount: '100',
       asset: AssetType.USDC,
       difficulty: BountyDifficulty.INTERMEDIATE,
-    });
+    }, 'caller-1');
     expect(bounty.status).toBe(BountyStatus.OPEN);
   });
 
@@ -80,7 +80,7 @@ describe('BountiesService', () => {
       sponsorId: 'sponsor-1',
     });
 
-    const bounty = await service.fund('b1', 'GFUNDER');
+    const bounty = await service.fund('b1', 'GFUNDER', 'caller-1');
 
     expect(escrowService.fund).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -104,7 +104,7 @@ describe('BountiesService', () => {
       issue: { githubIssueId: '2891234567' },
     });
 
-    await service.fund('b1', 'GFUNDER');
+    await service.fund('b1', 'GFUNDER', 'caller-1');
 
     expect(escrowService.fund).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -119,7 +119,7 @@ describe('BountiesService', () => {
       id: 'b1',
       status: BountyStatus.FUNDED,
     });
-    await expect(service.fund('b1', 'GFUNDER')).rejects.toThrow(
+    await expect(service.fund('b1', 'GFUNDER', 'caller-1')).rejects.toThrow(
       InvalidBountyTransitionError,
     );
   });
@@ -208,7 +208,7 @@ describe('BountiesService', () => {
       escrowId: 'escrow-1',
     });
 
-    const bounty = await service.refund('b1');
+    const bounty = await service.refund('b1', 'caller-1');
 
     expect(escrowService.refund).toHaveBeenCalledWith('escrow-1');
     expect(bounty.status).toBe(BountyStatus.REFUNDED);
@@ -221,7 +221,7 @@ describe('BountiesService', () => {
       escrowId: null,
     });
 
-    const bounty = await service.refund('b1');
+    const bounty = await service.refund('b1', 'caller-1');
 
     expect(escrowService.refund).not.toHaveBeenCalled();
     expect(bounty.status).toBe(BountyStatus.REFUNDED);
