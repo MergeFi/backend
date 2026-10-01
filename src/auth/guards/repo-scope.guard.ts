@@ -19,7 +19,7 @@ import { AppConfig } from '../../config/configuration';
 
 interface AuthenticatedRequest extends Request {
   user?: { userId: string };
-  params?: { owner?: string; repo?: string };
+  params: Request['params'] & { owner?: string; repo?: string };
 }
 
 /**

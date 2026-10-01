@@ -68,7 +68,7 @@ describe('BountiesController', () => {
         difficulty: BountyDifficulty.INTERMEDIATE,
       };
 
-      await controller.create(dto);
+      await controller.create(dto, { user: { userId: "u1" } } as any);
 
       expect(bountiesService.create).toHaveBeenCalledWith(dto);
     });
@@ -84,7 +84,7 @@ describe('BountiesController', () => {
 
   describe('fund', () => {
     it('calls bountiesService.fund with id and funderAddress', async () => {
-      await controller.fund('b1', { funderAddress: 'GFUNDER' });
+      await controller.fund('b1', { funderAddress: 'GFUNDER' }, { user: { userId: 'u1' } } as any);
 
       expect(bountiesService.fund).toHaveBeenCalledWith('b1', 'GFUNDER');
     });
@@ -92,7 +92,7 @@ describe('BountiesController', () => {
 
   describe('claim', () => {
     it('calls bountiesService.claim with id and contributorId', async () => {
-      await controller.claim('b1', { contributorId: 'contributor-1' });
+      await controller.claim('b1', { user: { userId: 'contributor-1' } } as any);
 
       expect(bountiesService.claim).toHaveBeenCalledWith('b1', 'contributor-1');
     });
@@ -116,7 +116,7 @@ describe('BountiesController', () => {
 
   describe('refund', () => {
     it('calls bountiesService.refund with the route param', async () => {
-      await controller.refund('b1');
+      await controller.refund('b1', { user: { userId: 'u1' } } as any);
 
       expect(bountiesService.refund).toHaveBeenCalledWith('b1');
     });
@@ -152,7 +152,7 @@ describe('BountiesController', () => {
 
     it('accepts undefined when the query param is absent', async () => {
       await expect(
-        pipe.transform(undefined, repositoryIdMetadata),
+        pipe.transform("" as any, repositoryIdMetadata),
       ).resolves.toBeUndefined();
     });
 

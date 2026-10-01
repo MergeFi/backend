@@ -1,3 +1,4 @@
+import type { AuthenticatedUser } from '../common/decorators/current-user.decorator';
 import {
   Body,
   Controller,
@@ -21,7 +22,7 @@ import {
   ApiStandardErrorResponses,
 } from '../common/swagger/api-common-responses.decorator';
 import {
-  AuthenticatedUser,
+  
   CurrentUser,
 } from '../common/decorators/current-user.decorator';
 
@@ -79,7 +80,7 @@ export class TeamsController {
   assign(
     @Param('id', new ParseUUIDPipe()) id: string,
     @Param('bountyId', new ParseUUIDPipe()) bountyId: string,
-    @CurrentUser() user: AuthenticatedUser,
+        @CurrentUser() user: AuthenticatedUser,
   ) {
     return this.teamsService.assignToBounty(id, bountyId, user.userId);
   }

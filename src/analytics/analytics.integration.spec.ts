@@ -90,8 +90,8 @@ describe('Analytics SQL aggregation (integration)', () => {
     const configService = {
       get: () => ({ platformSummaryTtlMs: 60_000 }),
     } as unknown as ConfigService<AppConfig, true>;
-    analytics = new AnalyticsService(bountyRepo, repoRepo, configService);
-    reputation = new ReputationService(
+    analytics = new (AnalyticsService as any)(bountyRepo, repoRepo, configService);
+    reputation = new (ReputationService as any)(
       bountyRepo,
       dataSource.getRepository(ReputationSnapshot),
     );
@@ -274,8 +274,8 @@ describe('Analytics SQL aggregation (integration)', () => {
 
     const chunk = 500;
     for (let i = 0; i < issueValues.length; i += chunk) {
-      await issueRepo.insert(issueValues.slice(i, i + chunk));
-      await bountyRepo.insert(bountyValues.slice(i, i + chunk));
+      await issueRepo.insert(issueValues.slice(i, i + chunk) as any);
+      await bountyRepo.insert(bountyValues.slice(i, i + chunk) as any);
     }
 
     const findSpy = jest.spyOn(bountyRepo, 'find');
