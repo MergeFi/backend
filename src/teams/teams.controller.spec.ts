@@ -1,3 +1,6 @@
+import { getRepositoryToken } from '@nestjs/typeorm';
+import { Reflector } from '@nestjs/core';
+import { IdempotencyKey } from '../common/entities/idempotency-key.entity';
 import { Test, TestingModule } from '@nestjs/testing';
 import { plainToInstance } from 'class-transformer';
 import { validate } from 'class-validator';
@@ -30,7 +33,17 @@ describe('TeamsController', () => {
 
     const module: TestingModule = await Test.createTestingModule({
       controllers: [TeamsController],
-      providers: [{ provide: TeamsService, useValue: teamsService }],
+      providers: [
+        { provide: TeamsService, useValue: teamsService },
+        {
+          provide: getRepositoryToken(IdempotencyKey),
+          useValue: {
+            findOne: jest.fn().mockResolvedValue(null),
+            save: jest.fn().mockImplementation((x) => Promise.resolve(x)),
+          },
+        },
+        Reflector,
+      ],
     })
       .overrideGuard(JwtAuthGuard)
       .useValue({ canActivate: () => true })
@@ -48,9 +61,11 @@ describe('TeamsController', () => {
         members: [{ userId: 'u1', percentage: 100 }],
       };
 
-      await controller.create(dto);
+      const mockUser = { userId: 'u1' } as any;
 
-      expect(teamsService.create).toHaveBeenCalledWith(dto);
+      await controller.create(dto, mockUser);
+
+      expect(teamsService.create).toHaveBeenCalledWith(dto, mockUser.userId);
     });
   });
 
@@ -65,7 +80,7 @@ describe('TeamsController', () => {
   describe('updateSplits', () => {
     it('calls teamsService.updateSplits with id and members', async () => {
       const members = [{ userId: 'u1', percentage: 100 }];
-      await controller.updateSplits('t1', members);
+      await controller.updateSplits('t1', { splits: members } as any);
 
       expect(teamsService.updateSplits).toHaveBeenCalledWith('t1', members);
     });

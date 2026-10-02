@@ -5,7 +5,6 @@ import {
   NotFoundException,
   Optional,
 } from '@nestjs/common';
-import { BadRequestException, Injectable, NotFoundException, Optional } from '@nestjs/common';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { InjectRepository } from '@nestjs/typeorm';
 import { In, Repository } from 'typeorm';
@@ -108,20 +107,20 @@ export class BountiesService {
     // Verify caller is claiming for themselves
     bounty.claimedById = callerUserId;
     const contributor = await this.userRepo.findOne({
-      where: { id: contributorId },
+      where: { id: callerUserId },
     });
     if (!contributor) {
       throw new BadRequestException(
-        `Contributor ${contributorId} does not correspond to a known user`,
+        `Contributor ${callerUserId} does not correspond to a known user`,
       );
     }
     if (!contributor.stellarAddress) {
       throw new BadRequestException(
-        `Contributor ${contributorId} has no linked Stellar address`,
+        `Contributor ${callerUserId} has no linked Stellar address`,
       );
     }
 
-    bounty.claimedById = contributorId;
+    bounty.claimedById = callerUserId;
     bounty.status = BountyStatus.CLAIMED;
     bounty.claimedAt = new Date();
     return this.bountyRepo.save(bounty);
@@ -185,9 +184,9 @@ export class BountiesService {
           });
           const userMap = new Map(users.map((u) => [u.id, u]));
           const recipients = team.splits.map((split) => {
-            const user = userMap.get(split.userId);
+            const user = split.userId ? userMap.get(split.userId) : undefined;
             return {
-              recipientId: split.userId,
+              recipientId: split.userId ?? undefined,
               recipientAddress: user?.stellarAddress ?? '',
               percentage: Number(split.percentage),
             };
@@ -243,25 +242,22 @@ export class BountiesService {
 
   /** Marks bounties whose deadline has passed and that were never merged as expired. */
   async expireOverdue(): Promise<number> {
-    const overdue = await this.bountyRepo
-      .createQueryBuilder('bounty')
-      .where('bounty.deadline IS NOT NULL AND bounty.deadline < :now', {
-        now: new Date(),
-      })
-      .andWhere('bounty.status IN (:...statuses)', {
+    const now = new Date();
+    const result = await this.bountyRepo
+      .createQueryBuilder()
+      .update(Bounty)
+      .set({ status: BountyStatus.EXPIRED })
+      .where('deadline IS NOT NULL AND deadline < :now', { now })
+      .andWhere('status IN (:...statuses)', {
         statuses: [
           BountyStatus.OPEN,
           BountyStatus.FUNDED,
           BountyStatus.CLAIMED,
         ],
       })
-      .getMany();
+      .execute();
 
-    for (const bounty of overdue) {
-      bounty.status = BountyStatus.EXPIRED;
-      await this.bountyRepo.save(bounty);
-    }
-    return overdue.length;
+    return result.affected ?? 0;
   }
 
   async list(options: ListBountiesOptions = {}): Promise<Bounty[]> {

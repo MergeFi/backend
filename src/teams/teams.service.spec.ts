@@ -35,7 +35,9 @@ describe('TeamsService', () => {
       save: jest.fn((b: Partial<Bounty>) => Promise.resolve(b)),
     };
     userRepo = {
-      findOne: jest.fn(),
+      findOne: jest.fn().mockImplementation(({ where }) =>
+        Promise.resolve({ id: where?.id ?? 'u1', username: 'testuser' }),
+      ),
     };
 
     const module: TestingModule = await Test.createTestingModule({

@@ -10,7 +10,7 @@ describe('BountiesController repositoryId query pipe', () => {
 
   it('accepts undefined when repositoryId is omitted', async () => {
     await expect(
-      pipe.transform(undefined, repositoryIdMetadata),
+      pipe.transform(undefined as any, repositoryIdMetadata),
     ).resolves.toBeUndefined();
   });
 

@@ -1,3 +1,6 @@
+import { getRepositoryToken } from '@nestjs/typeorm';
+import { Reflector } from '@nestjs/core';
+import { IdempotencyKey } from '../common/entities/idempotency-key.entity';
 import { ArgumentMetadata, ParseUUIDPipe } from '@nestjs/common';
 import { Test, TestingModule } from '@nestjs/testing';
 import { plainToInstance } from 'class-transformer';
@@ -47,7 +50,19 @@ describe('BountiesController', () => {
 
     const module: TestingModule = await Test.createTestingModule({
       controllers: [BountiesController],
-      providers: [{ provide: BountiesService, useValue: bountiesService }],
+      providers: [
+        { provide: BountiesService, useValue: bountiesService },
+        Reflector,
+        {
+          provide: getRepositoryToken(IdempotencyKey),
+          useValue: {
+            findOneBy: jest.fn(),
+            insert: jest.fn(),
+            update: jest.fn(),
+            delete: jest.fn(),
+          },
+        },
+      ],
     })
       .overrideGuard(JwtAuthGuard)
       .useValue({ canActivate: () => true })
@@ -68,9 +83,9 @@ describe('BountiesController', () => {
         difficulty: BountyDifficulty.INTERMEDIATE,
       };
 
-      await controller.create(dto);
+      await controller.create(dto, { user: { userId: "u1" } } as any);
 
-      expect(bountiesService.create).toHaveBeenCalledWith(dto);
+      expect(bountiesService.create).toHaveBeenCalledWith(dto, "u1");
     });
   });
 
@@ -84,15 +99,15 @@ describe('BountiesController', () => {
 
   describe('fund', () => {
     it('calls bountiesService.fund with id and funderAddress', async () => {
-      await controller.fund('b1', { funderAddress: 'GFUNDER' });
+      await controller.fund('b1', { funderAddress: 'GFUNDER' }, { user: { userId: 'u1' } } as any);
 
-      expect(bountiesService.fund).toHaveBeenCalledWith('b1', 'GFUNDER');
+      expect(bountiesService.fund).toHaveBeenCalledWith('b1', 'GFUNDER', 'u1');
     });
   });
 
   describe('claim', () => {
     it('calls bountiesService.claim with id and contributorId', async () => {
-      await controller.claim('b1', { contributorId: 'contributor-1' });
+      await controller.claim('b1', { user: { userId: 'contributor-1' } } as any);
 
       expect(bountiesService.claim).toHaveBeenCalledWith('b1', 'contributor-1');
     });
@@ -116,9 +131,9 @@ describe('BountiesController', () => {
 
   describe('refund', () => {
     it('calls bountiesService.refund with the route param', async () => {
-      await controller.refund('b1');
+      await controller.refund('b1', { user: { userId: 'u1' } } as any);
 
-      expect(bountiesService.refund).toHaveBeenCalledWith('b1');
+      expect(bountiesService.refund).toHaveBeenCalledWith('b1', 'u1');
     });
   });
 
@@ -152,7 +167,7 @@ describe('BountiesController', () => {
 
     it('accepts undefined when the query param is absent', async () => {
       await expect(
-        pipe.transform(undefined, repositoryIdMetadata),
+        pipe.transform(undefined as any, repositoryIdMetadata),
       ).resolves.toBeUndefined();
     });
 
