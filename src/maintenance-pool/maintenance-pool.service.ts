@@ -29,11 +29,15 @@ export class MaintenancePoolService {
     private readonly escrowService: EscrowService,
   ) {}
 
-  async create(dto: CreatePoolDto): Promise<MaintenancePool> {
+  async create(
+    dto: CreatePoolDto,
+    callerUserId: string,
+  ): Promise<MaintenancePool> {
     const pool = this.poolRepo.create({
-      name: dto.name,
+      name: dto.name?.trim() ?? dto.name,
       repositoryId: dto.repositoryId ?? null,
-      createdById: dto.createdById ?? null,
+      // Fall back to the authenticated caller's id when the client omits createdById.
+      createdById: dto.createdById ?? callerUserId,
       monthlyDeposit: dto.monthlyDeposit,
       asset: dto.asset,
       status: MaintenancePoolStatus.ACTIVE,

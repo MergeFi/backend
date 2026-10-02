@@ -22,7 +22,10 @@ export class MilestonesService {
     private readonly escrowService: EscrowService,
   ) {}
 
-  async create(dto: CreateMilestoneDto, callerUserId: string): Promise<Milestone> {
+  async create(
+    dto: CreateMilestoneDto,
+    callerUserId: string,
+  ): Promise<Milestone> {
     // Verify repositoryId exists
     const repoExists = await this.dataSource.query(
       'SELECT 1 FROM repositories WHERE id = $1',
@@ -32,10 +35,13 @@ export class MilestonesService {
       throw new NotFoundException(`Repository ${dto.repositoryId} not found`);
     }
 
+    // Fall back to the authenticated caller's id when the client omits sponsorId.
+    // This prevents milestones with sponsorId = null that become permanently
+    // invisible to every sponsor dashboard filter.
     const milestone = this.milestoneRepo.create({
       repositoryId: dto.repositoryId,
-      sponsorId: dto.sponsorId ?? null,
-      title: dto.title,
+      sponsorId: dto.sponsorId ?? callerUserId,
+      title: dto.title?.trim() ?? dto.title,
       description: dto.description ?? null,
       budget: dto.budget,
       asset: dto.asset,
@@ -55,12 +61,18 @@ export class MilestonesService {
   }
 
   /** Sponsor funds the full milestone budget up front; distributed incrementally per issue. */
-  async fund(id: string, funderAddress: string, callerUserId: string): Promise<Milestone> {
+  async fund(
+    id: string,
+    funderAddress: string,
+    callerUserId: string,
+  ): Promise<Milestone> {
     const milestone = await this.findOne(id);
 
     // Verify caller is the sponsor
     if (milestone.sponsorId && milestone.sponsorId !== callerUserId) {
-      throw new ForbiddenException('Only the milestone sponsor can fund this milestone');
+      throw new ForbiddenException(
+        'Only the milestone sponsor can fund this milestone',
+      );
     }
 
     if (milestone.status !== MilestoneStatus.OPEN) {

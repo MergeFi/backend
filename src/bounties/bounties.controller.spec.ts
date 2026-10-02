@@ -1,7 +1,7 @@
 import { getRepositoryToken } from '@nestjs/typeorm';
 import { Reflector } from '@nestjs/core';
 import { IdempotencyKey } from '../common/entities/idempotency-key.entity';
-import { ArgumentMetadata, ParseUUIDPipe } from "@nestjs/common";
+import { ArgumentMetadata, ParseUUIDPipe } from '@nestjs/common';
 import { Test, TestingModule } from '@nestjs/testing';
 import { plainToInstance } from 'class-transformer';
 import { validate } from 'class-validator';
@@ -28,13 +28,23 @@ describe('BountiesController', () => {
 
   beforeEach(async () => {
     bountiesService = {
-      create: jest.fn().mockResolvedValue({ id: 'b1', status: BountyStatus.OPEN }),
-      findOne: jest.fn().mockResolvedValue({ id: 'b1', status: BountyStatus.OPEN }),
-      fund: jest.fn().mockResolvedValue({ id: 'b1', status: BountyStatus.FUNDED }),
-      claim: jest.fn().mockResolvedValue({ id: 'b1', status: BountyStatus.CLAIMED }),
+      create: jest
+        .fn()
+        .mockResolvedValue({ id: 'b1', status: BountyStatus.OPEN }),
+      findOne: jest
+        .fn()
+        .mockResolvedValue({ id: 'b1', status: BountyStatus.OPEN }),
+      fund: jest
+        .fn()
+        .mockResolvedValue({ id: 'b1', status: BountyStatus.FUNDED }),
+      claim: jest
+        .fn()
+        .mockResolvedValue({ id: 'b1', status: BountyStatus.CLAIMED }),
       approve: jest.fn().mockResolvedValue({ id: 'b1', status: 'approved' }),
       reject: jest.fn().mockResolvedValue({ id: 'b1', status: 'rejected' }),
-      refund: jest.fn().mockResolvedValue({ id: 'b1', status: BountyStatus.REFUNDED }),
+      refund: jest
+        .fn()
+        .mockResolvedValue({ id: 'b1', status: BountyStatus.REFUNDED }),
       list: jest.fn().mockResolvedValue([]),
     };
 
@@ -129,7 +139,13 @@ describe('BountiesController', () => {
 
   describe('list', () => {
     it('calls bountiesService.list with query params', async () => {
-      await controller.list(BountyStatus.OPEN, BountyDifficulty.BEGINNER, AssetType.USDC, 'repo-1', 'TypeScript');
+      await controller.list(
+        BountyStatus.OPEN,
+        BountyDifficulty.BEGINNER,
+        AssetType.USDC,
+        'repo-1',
+        'TypeScript',
+      );
 
       expect(bountiesService.list).toHaveBeenCalledWith({
         status: BountyStatus.OPEN,
