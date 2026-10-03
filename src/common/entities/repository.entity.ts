@@ -41,6 +41,7 @@ export class Repository {
   private: boolean;
 
   @Column({ type: 'varchar', nullable: true })
+  @Index('IDX_repositories_primaryLanguage')
   primaryLanguage: string | null;
 
   @Column({ default: 0 })
