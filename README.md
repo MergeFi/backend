@@ -285,14 +285,19 @@ docker build --target runner -t mergefi-backend:latest .
 
 ### 4. Running Tests
 
-Unit tests and end-to-end tests are fully supported:
+Unit, integration, and end-to-end tests are cleanly separated across distinct script targets:
 
 ```bash
-# Run unit tests natively
+# Run unit tests natively (fast, mock-based, requires no database)
 npm test
+# or explicitly:
+npm run test:unit
 
 # Run unit tests with code coverage
 npm run test:cov
+
+# Run Integration tests (requires PostgreSQL to be running on DATABASE_URL)
+npm run test:integration
 
 # Run End-to-End (E2E) tests (requires PostgreSQL to be running on DATABASE_URL)
 npm run test:e2e
