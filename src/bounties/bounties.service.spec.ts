@@ -3,7 +3,7 @@ import { getRepositoryToken } from '@nestjs/typeorm';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { BountiesService } from './bounties.service';
 import { EscrowService } from '../escrow/escrow.service';
-import { Bounty, Team, User } from '../common/entities';
+import { Bounty, Issue, Team, User } from '../common/entities';
 import { AssetType, BountyDifficulty, BountyStatus } from '../common/enums';
 import { InvalidBountyTransitionError } from './bounty-state-machine';
 
@@ -14,10 +14,12 @@ describe('BountiesService', () => {
     save: jest.Mock;
     create: jest.Mock;
     find: jest.Mock;
+    update: jest.Mock;
     createQueryBuilder: jest.Mock;
   };
   let userRepo: { findOne: jest.Mock; find: jest.Mock };
   let teamRepo: { findOne: jest.Mock };
+  let issueRepo: { findOne: jest.Mock };
   let escrowService: {
     fund: jest.Mock;
     release: jest.Mock;
@@ -35,10 +37,12 @@ describe('BountiesService', () => {
         ...data,
       })),
       find: jest.fn(),
+      update: jest.fn().mockResolvedValue({ affected: 1 }),
       createQueryBuilder: jest.fn(),
     };
-    userRepo = { findOne: jest.fn(), find: jest.fn() };
+    userRepo = { findOne: jest.fn().mockResolvedValue({ id: 'sponsor-1' }), find: jest.fn() };
     teamRepo = { findOne: jest.fn() };
+    issueRepo = { findOne: jest.fn().mockResolvedValue({ id: 'issue-1' }) };
     escrowService = {
       fund: jest.fn().mockResolvedValue({ id: 'escrow-1', status: 'locked' }),
       release: jest.fn().mockResolvedValue(undefined),
@@ -52,6 +56,7 @@ describe('BountiesService', () => {
         { provide: getRepositoryToken(Bounty), useValue: bountyRepo },
         { provide: getRepositoryToken(User), useValue: userRepo },
         { provide: getRepositoryToken(Team), useValue: teamRepo },
+        { provide: getRepositoryToken(Issue), useValue: issueRepo },
         { provide: EscrowService, useValue: escrowService },
         { provide: EventEmitter2, useValue: { emit: jest.fn() } },
       ],
@@ -80,7 +85,7 @@ describe('BountiesService', () => {
       sponsorId: 'sponsor-1',
     });
 
-    const bounty = await service.fund('b1', 'GFUNDER');
+    const bounty = await service.fund('b1', 'GFUNDER', 'sponsor-1');
 
     expect(escrowService.fund).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -104,7 +109,7 @@ describe('BountiesService', () => {
       issue: { githubIssueId: '2891234567' },
     });
 
-    await service.fund('b1', 'GFUNDER');
+    await service.fund('b1', 'GFUNDER', 'sponsor-1');
 
     expect(escrowService.fund).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -118,8 +123,9 @@ describe('BountiesService', () => {
     bountyRepo.findOne.mockResolvedValue({
       id: 'b1',
       status: BountyStatus.FUNDED,
+      sponsorId: 'sponsor-1',
     });
-    await expect(service.fund('b1', 'GFUNDER')).rejects.toThrow(
+    await expect(service.fund('b1', 'GFUNDER', 'sponsor-1')).rejects.toThrow(
       InvalidBountyTransitionError,
     );
   });
@@ -138,6 +144,10 @@ describe('BountiesService', () => {
     bountyRepo.findOne.mockResolvedValue({
       id: 'b1',
       status: BountyStatus.FUNDED,
+    });
+    userRepo.findOne.mockResolvedValue({
+      id: 'contributor-1',
+      stellarAddress: 'GCONTRIBUTOR',
     });
     const bounty = await service.claim('b1', 'contributor-1');
     expect(bounty.status).toBe(BountyStatus.CLAIMED);
@@ -227,7 +237,7 @@ describe('BountiesService', () => {
     expect(bounty.status).toBe(BountyStatus.REFUNDED);
   });
 
-  it('expireOverdue flips overdue bounties to EXPIRED and returns count', async () => {
+  it('expireOverdue flips overdue bounties to EXPIRED via atomic update guard (#460)', async () => {
     const overdueBounties = [
       { id: 'b1', status: BountyStatus.OPEN },
       { id: 'b2', status: BountyStatus.FUNDED },
@@ -242,9 +252,7 @@ describe('BountiesService', () => {
     const count = await service.expireOverdue();
 
     expect(count).toBe(2);
-    expect(bountyRepo.save).toHaveBeenCalledTimes(2);
-    expect(overdueBounties[0].status).toBe(BountyStatus.EXPIRED);
-    expect(overdueBounties[1].status).toBe(BountyStatus.EXPIRED);
+    expect(bountyRepo.update).toHaveBeenCalledTimes(2);
   });
 
   it('markPrClosedWithoutMerge transitions IN_REVIEW back to CLAIMED', async () => {

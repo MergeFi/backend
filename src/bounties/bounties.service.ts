@@ -108,20 +108,19 @@ export class BountiesService {
     // Verify caller is claiming for themselves
     bounty.claimedById = callerUserId;
     const contributor = await this.userRepo.findOne({
-      where: { id: contributorId },
+      where: { id: callerUserId },
     });
     if (!contributor) {
       throw new BadRequestException(
-        `Contributor ${contributorId} does not correspond to a known user`,
+        `Contributor ${callerUserId} does not correspond to a known user`,
       );
     }
     if (!contributor.stellarAddress) {
       throw new BadRequestException(
-        `Contributor ${contributorId} has no linked Stellar address`,
+        `Contributor ${callerUserId} has no linked Stellar address`,
       );
     }
 
-    bounty.claimedById = contributorId;
     bounty.status = BountyStatus.CLAIMED;
     bounty.claimedAt = new Date();
     return this.bountyRepo.save(bounty);
@@ -257,11 +256,24 @@ export class BountiesService {
       })
       .getMany();
 
+    let count = 0;
     for (const bounty of overdue) {
-      bounty.status = BountyStatus.EXPIRED;
-      await this.bountyRepo.save(bounty);
+      const res = await this.bountyRepo.update(
+        {
+          id: bounty.id,
+          status: In([
+            BountyStatus.OPEN,
+            BountyStatus.FUNDED,
+            BountyStatus.CLAIMED,
+          ]),
+        },
+        { status: BountyStatus.EXPIRED },
+      );
+      if (res.affected && res.affected > 0) {
+        count++;
+      }
     }
-    return overdue.length;
+    return count;
   }
 
   async list(options: ListBountiesOptions = {}): Promise<Bounty[]> {
