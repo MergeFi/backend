@@ -14,7 +14,7 @@ import { IdempotencyInterceptor } from '../common/idempotency/idempotency.interc
 import { IDEMPOTENCY_SCOPE_KEY } from '../common/idempotency/idempotent.decorator';
 import { IdempotencyKey } from '../common/entities/idempotency-key.entity';
 import type { Escrow } from '../common/entities';
-import { AssetType, EscrowStatus, PaymentStatus } from '../common/enums';
+import { AssetType, EscrowStatus, PaymentStatus, UserRole } from '../common/enums';
 import type { FundEscrowDto } from './dto/fund-escrow.dto';
 import type { SplitRecipientDto } from './dto/split-release.dto';
 
@@ -115,12 +115,14 @@ describe('EscrowController', () => {
     });
 
     it('release() returns the service escrow without metadata', async () => {
-      const result = await controller.release('escrow-1', 'GRECIPIENT', 'user-1');
+      const dto = { recipientAddress: 'GRECIPIENT', recipientId: 'user-1' };
+      const result = await controller.release('escrow-1', dto);
 
       expect(mockEscrowService.release).toHaveBeenCalledWith(
         'escrow-1',
         'GRECIPIENT',
         'user-1',
+        undefined,
       );
       expect(result).not.toHaveProperty('metadata');
       expect(JSON.stringify(result)).not.toContain('internalRpcDetail');
@@ -129,7 +131,7 @@ describe('EscrowController', () => {
     it('refund() returns the service escrow without metadata', async () => {
       const result = await controller.refund('escrow-1');
 
-      expect(mockEscrowService.refund).toHaveBeenCalledWith('escrow-1');
+      expect(mockEscrowService.refund).toHaveBeenCalledWith('escrow-1', undefined);
       expect(result).not.toHaveProperty('metadata');
       expect(JSON.stringify(result)).not.toContain('internalRpcDetail');
     });
@@ -142,11 +144,12 @@ describe('EscrowController', () => {
         { recipientAddress: 'GB', percentage: 50 },
       ];
 
-      const result = await controller.splitRelease('escrow-1', recipients);
+      const result = await controller.splitRelease('escrow-1', { recipients });
 
       expect(mockEscrowService.splitRelease).toHaveBeenCalledWith(
         'escrow-1',
         recipients,
+        undefined,
       );
       expect(result).toHaveLength(1);
     });
@@ -210,11 +213,11 @@ describe('EscrowController', () => {
 
     it('release() is restricted to MAINTAINER and refund() to MAINTAINER/SPONSOR', () => {
       expect(Reflect.getMetadata(ROLES_KEY, handlerFor('release'))).toEqual([
-        'MAINTAINER',
+        UserRole.MAINTAINER,
       ]);
       expect(Reflect.getMetadata(ROLES_KEY, handlerFor('refund'))).toEqual([
-        'MAINTAINER',
-        'SPONSOR',
+        UserRole.MAINTAINER,
+        UserRole.SPONSOR,
       ]);
     });
 
@@ -236,14 +239,14 @@ describe('EscrowController', () => {
       amount: '100.0000000',
       asset: AssetType.USDC,
       funderAddress: 'GABCDEFGHIJKLMNOPQRSTUVWXYZ234567abcdefghijklmn',
-      bountyId: '00000000-0000-0000-0000-000000000001',
+      bountyId: '00000000-0000-4000-8000-000000000001',
     };
 
     it('accepts onChainIssueId, sponsorId and deadline', async () => {
       const dto = plainToInstance(FundEscrowDto, {
         ...base,
         onChainIssueId: '4242',
-        sponsorId: '00000000-0000-0000-0000-000000000002',
+        sponsorId: '00000000-0000-4000-8000-000000000002',
         deadline: '2026-12-31T00:00:00.000Z',
       });
       const errors = await validate(dto);
@@ -299,7 +302,7 @@ describe('EscrowController', () => {
       const dto = plainToInstance(FundEscrowDto, {
         ...base,
         onChainIssueId: '4242',
-        sponsorId: '00000000-0000-0000-0000-000000000002',
+        sponsorId: '00000000-0000-4000-8000-000000000002',
         deadline: '2026-12-31T00:00:00.000Z',
       });
       mockEscrowService.fund.mockResolvedValueOnce({ id: 'escrow-1' });
@@ -307,7 +310,7 @@ describe('EscrowController', () => {
       expect(mockEscrowService.fund).toHaveBeenCalledWith(
         expect.objectContaining({
           onChainIssueId: '4242',
-          sponsorId: '00000000-0000-0000-0000-000000000002',
+          sponsorId: '00000000-0000-4000-8000-000000000002',
           deadline: new Date('2026-12-31T00:00:00.000Z'),
         }),
       );

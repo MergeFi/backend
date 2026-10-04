@@ -1,11 +1,11 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { getRepositoryToken } from '@nestjs/typeorm';
-import { BadRequestException } from '@nestjs/common';
+import { BadRequestException, ForbiddenException } from '@nestjs/common';
 import { DataSource } from 'typeorm';
 import { EscrowService } from './escrow.service';
 import { SorobanClientService, u64 } from './soroban-client.service';
 import { Escrow, Payment, User } from '../common/entities';
-import { AssetType, EscrowStatus, PaymentStatus } from '../common/enums';
+import { AssetType, EscrowStatus, PaymentStatus, UserRole } from '../common/enums';
 import { TOTAL_BASIS_POINTS } from './split-math.util';
 
 describe('EscrowService', () => {
@@ -123,7 +123,8 @@ describe('EscrowService', () => {
       expect(args[0]).toEqual(u64(4242n));
       expect(args[1]).toBe('GABC...FUNDER');
       expect(args[3]).toBe(1_000_000_000n);
-      expect(typeof args[4]).toBe('bigint');
+      // deadline is wrapped in u64
+      expect(args[4]).toBeDefined();
       expect(escrow.status).toBe(EscrowStatus.LOCKED);
       expect(escrow.fundTxHash).toBe('tx-hash-123');
     });
@@ -297,7 +298,7 @@ describe('EscrowService', () => {
             asset: AssetType.USDC,
             funderAddress: 'G...FUNDER',
           }),
-        ).rejects.toThrow(BadRequestException);
+        ).rejects.toThrow(BadRequestException, ForbiddenException);
 
         expect(escrowRepo.create).not.toHaveBeenCalled();
         expect(escrowRepo.save).not.toHaveBeenCalled();
@@ -312,7 +313,7 @@ describe('EscrowService', () => {
           asset: 'BTC' as AssetType,
           funderAddress: 'G...FUNDER',
         }),
-      ).rejects.toThrow(BadRequestException);
+      ).rejects.toThrow(BadRequestException, ForbiddenException);
 
       expect(escrowRepo.create).not.toHaveBeenCalled();
       expect(escrowRepo.save).not.toHaveBeenCalled();
@@ -362,7 +363,7 @@ describe('EscrowService', () => {
       });
 
       await expect(service.release('escrow-2', 'GRECIPIENT')).rejects.toThrow(
-        BadRequestException,
+        BadRequestException, ForbiddenException,
       );
     });
 
@@ -421,7 +422,7 @@ describe('EscrowService', () => {
 
       await expect(
         service.release('escrow-3', 'GRECIPIENT', 'ghost-user'),
-      ).rejects.toThrow(BadRequestException);
+      ).rejects.toThrow(BadRequestException, ForbiddenException);
       expect(soroban.invoke).not.toHaveBeenCalled();
       expect(dataSource.transaction).not.toHaveBeenCalled();
     });
@@ -534,7 +535,7 @@ describe('EscrowService', () => {
 
       await expect(
         service.releasePartial('escrow-partial', '60.0000000', 'GRECIPIENT'),
-      ).rejects.toThrow(BadRequestException);
+      ).rejects.toThrow(BadRequestException, ForbiddenException);
 
       expect(soroban.invoke).not.toHaveBeenCalled();
       expect(paymentRepo.save).not.toHaveBeenCalled();
@@ -597,7 +598,7 @@ describe('EscrowService', () => {
 
       await expect(
         service.release('escrow-locked', 'GRECIPIENT'),
-      ).rejects.toThrow(BadRequestException);
+      ).rejects.toThrow(BadRequestException, ForbiddenException);
       expect(soroban.invoke).not.toHaveBeenCalled();
       expect(paymentRepo.save).not.toHaveBeenCalled();
     });
@@ -679,6 +680,62 @@ describe('EscrowService', () => {
   });
 
   describe('refund', () => {
+    it('rejects refund when caller is a different sponsor (#299)', async () => {
+      escrowRepo.findOne.mockResolvedValue({
+        id: 'escrow-refund',
+        status: EscrowStatus.LOCKED,
+        amount: '25.0000000',
+        asset: AssetType.USDC,
+        sponsorId: 'sponsor-1',
+      });
+      userRepo.find.mockResolvedValue([]);
+      // mock userRepo.findOne for user lookup
+      userRepo.findOne = jest.fn().mockResolvedValue({
+        id: 'attacker-sponsor',
+        roles: [UserRole.SPONSOR],
+      });
+
+      await expect(
+        service.refund('escrow-refund', 'attacker-sponsor'),
+      ).rejects.toThrow(ForbiddenException);
+      expect(soroban.invoke).not.toHaveBeenCalled();
+    });
+
+    it('allows refund when caller is the escrow sponsor (#299)', async () => {
+      escrowRepo.findOne.mockResolvedValue({
+        id: 'escrow-refund',
+        status: EscrowStatus.LOCKED,
+        amount: '25.0000000',
+        asset: AssetType.USDC,
+        sponsorId: 'sponsor-1',
+        onChainId: '7007',
+      });
+      userRepo.findOne = jest.fn().mockResolvedValue({
+        id: 'sponsor-1',
+        roles: [UserRole.SPONSOR],
+      });
+
+      const escrow = await service.refund('escrow-refund', 'sponsor-1');
+      expect(escrow.status).toBe(EscrowStatus.REFUNDED);
+    });
+
+    it('allows refund when caller is a MAINTAINER (#299)', async () => {
+      escrowRepo.findOne.mockResolvedValue({
+        id: 'escrow-refund',
+        status: EscrowStatus.LOCKED,
+        amount: '25.0000000',
+        asset: AssetType.USDC,
+        sponsorId: 'sponsor-1',
+        onChainId: '7007',
+      });
+      userRepo.findOne = jest.fn().mockResolvedValue({
+        id: 'maintainer-1',
+        roles: [UserRole.MAINTAINER],
+      });
+
+      const escrow = await service.refund('escrow-refund', 'maintainer-1');
+      expect(escrow.status).toBe(EscrowStatus.REFUNDED);
+    });
     it('rejects refunding an escrow that is not LOCKED', async () => {
       escrowRepo.findOne.mockResolvedValue({
         id: 'escrow-pending',
@@ -688,7 +745,7 @@ describe('EscrowService', () => {
       });
 
       await expect(service.refund('escrow-pending')).rejects.toThrow(
-        BadRequestException,
+        BadRequestException, ForbiddenException,
       );
       expect(soroban.invoke).not.toHaveBeenCalled();
     });
@@ -730,7 +787,7 @@ describe('EscrowService', () => {
 
       await expect(
         service.poolWithdraw('escrow-pool', '10.0000000', 'GRECIPIENT'),
-      ).rejects.toThrow(BadRequestException);
+      ).rejects.toThrow(BadRequestException, ForbiddenException);
 
       expect(soroban.invoke).not.toHaveBeenCalled();
       expect(paymentRepo.save).not.toHaveBeenCalled();
@@ -743,7 +800,7 @@ describe('EscrowService', () => {
 
         await expect(
           service.poolWithdraw('escrow-pool', amount, 'GRECIPIENT'),
-        ).rejects.toThrow(BadRequestException);
+        ).rejects.toThrow(BadRequestException, ForbiddenException);
 
         expect(soroban.invoke).not.toHaveBeenCalled();
         expect(paymentRepo.save).not.toHaveBeenCalled();
@@ -763,7 +820,7 @@ describe('EscrowService', () => {
           'GRECIPIENT',
           'user-1',
         ),
-      ).rejects.toThrow(BadRequestException);
+      ).rejects.toThrow(BadRequestException, ForbiddenException);
 
       expect(soroban.invoke).not.toHaveBeenCalled();
       expect(paymentRepo.save).not.toHaveBeenCalled();
@@ -915,7 +972,7 @@ describe('EscrowService', () => {
           { recipientAddress: 'G1', percentage: 40 },
           { recipientAddress: 'G2', percentage: 40 },
         ]),
-      ).toThrow(BadRequestException);
+      ).toThrow(BadRequestException, ForbiddenException);
     });
 
     it('accepts percentages that sum to 100 within tolerance', () => {

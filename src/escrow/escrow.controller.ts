@@ -6,6 +6,7 @@ import {
   ParseUUIDPipe,
   Post,
   UseGuards,
+  Req,
 } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { Throttle } from '@nestjs/throttler';
@@ -13,6 +14,7 @@ import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
 import { Roles } from '../auth/decorators/roles.decorator';
 import { UserRole } from '../common/enums';
+import { Request } from 'express';
 import { EscrowService } from './escrow.service';
 import { FundEscrowDto } from './dto/fund-escrow.dto';
 import { ReleaseEscrowDto } from './dto/release-escrow.dto';
@@ -60,12 +62,15 @@ export class EscrowController {
   async release(
     @Param('id', new ParseUUIDPipe()) id: string,
     @Body() dto: ReleaseEscrowDto,
+    @Req() req?: Request,
   ) {
+    const userId = (req?.user as { userId?: string })?.userId;
     return toPublicEscrow(
       await this.escrowService.release(
         id,
         dto.recipientAddress,
         dto.recipientId,
+        userId,
       ),
     );
   }
@@ -81,8 +86,10 @@ export class EscrowController {
   splitRelease(
     @Param('id', new ParseUUIDPipe()) id: string,
     @Body() dto: SplitReleaseDto,
+    @Req() req?: Request,
   ) {
-    return this.escrowService.splitRelease(id, dto.recipients);
+    const userId = (req?.user as { userId?: string })?.userId;
+    return this.escrowService.splitRelease(id, dto.recipients, userId);
   }
 
   @ApiOperation({
@@ -97,7 +104,11 @@ export class EscrowController {
   @Post(':id/refund')
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles(UserRole.MAINTAINER, UserRole.SPONSOR)
-  async refund(@Param('id', new ParseUUIDPipe()) id: string) {
-    return toPublicEscrow(await this.escrowService.refund(id));
+  async refund(
+    @Param('id', new ParseUUIDPipe()) id: string,
+    @Req() req?: Request,
+  ) {
+    const userId = (req?.user as { userId?: string })?.userId;
+    return toPublicEscrow(await this.escrowService.refund(id, userId));
   }
 }

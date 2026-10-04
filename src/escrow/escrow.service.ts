@@ -1,5 +1,6 @@
 import {
   BadRequestException,
+  ForbiddenException,
   Injectable,
   Logger,
   NotFoundException,
@@ -7,7 +8,7 @@ import {
 import { InjectDataSource, InjectRepository } from '@nestjs/typeorm';
 import { DataSource, EntityManager, In, Repository } from 'typeorm';
 import { Escrow, Payment, User } from '../common/entities';
-import { AssetType, EscrowStatus, PaymentStatus } from '../common/enums';
+import { AssetType, EscrowStatus, PaymentStatus, UserRole } from '../common/enums';
 import {
   amountToStroops,
   isSupportedEscrowAsset,
@@ -164,6 +165,7 @@ export class EscrowService {
     escrowId: string,
     recipientAddress: string,
     recipientId?: string,
+    callingUserId?: string,
   ): Promise<Escrow> {
     // Validated before the row lock is taken so a bad recipient doesn't hold
     // the escrow locked while the lookup runs.
@@ -174,6 +176,9 @@ export class EscrowService {
     // observes the RELEASED status written by the first and is rejected —
     // instead of both passing the LOCKED check and double-paying (#303).
     return this.withLockedEscrow(escrowId, async (escrow, manager) => {
+      if (callingUserId) {
+        await this.assertCallerAuthorized(escrow, callingUserId, 'release');
+      }
       const result = await this.invokeRelease(
         escrow,
         'release',
@@ -222,6 +227,7 @@ export class EscrowService {
   async splitRelease(
     escrowId: string,
     recipients: SplitRecipient[],
+    callingUserId?: string,
   ): Promise<Payment[]> {
     this.assertValidSplits(recipients);
     await this.assertRecipientsMatchUsers(recipients);
@@ -424,9 +430,13 @@ export class EscrowService {
   }
 
   /** Refunds the full escrowed amount back to the original funder. */
-  async refund(escrowId: string): Promise<Escrow> {
+  async refund(escrowId: string, callingUserId?: string): Promise<Escrow> {
     const escrow = await this.getOrThrow(escrowId);
     this.assertLocked(escrow);
+
+    if (callingUserId) {
+      await this.assertCallerAuthorized(escrow, callingUserId, 'refund');
+    }
 
     const result = await this.invokeOnLockedEscrow(escrow, 'refund', () =>
       this.soroban.invoke(
@@ -445,6 +455,40 @@ export class EscrowService {
 
   async findOne(id: string): Promise<Escrow> {
     return this.getOrThrow(id);
+  }
+
+  /**
+   * Asserts that the authenticated caller is authorized to mutate this escrow (#299).
+   * MAINTAINERs are authorized for all escrows. SPONSORs are only authorized
+   * for escrows they funded (matching escrow.sponsorId or user's stellarAddress).
+   */
+  private async assertCallerAuthorized(
+    escrow: Escrow,
+    callingUserId: string,
+    action: string,
+  ): Promise<void> {
+    const caller = await this.userRepo.findOne({
+      where: { id: callingUserId },
+    });
+    if (!caller) {
+      throw new NotFoundException(`User ${callingUserId} not found`);
+    }
+
+    const isMaintainer = caller.roles?.includes(UserRole.MAINTAINER);
+    if (isMaintainer) {
+      return;
+    }
+
+    const isSponsorMatch =
+      (escrow.sponsorId && escrow.sponsorId === callingUserId) ||
+      (caller.stellarAddress &&
+        escrow.fundedByAddress === caller.stellarAddress);
+
+    if (!isSponsorMatch) {
+      throw new ForbiddenException(
+        `User ${callingUserId} is not authorized to ${action} escrow ${escrow.id}`,
+      );
+    }
   }
 
   private async getOrThrow(id: string): Promise<Escrow> {
@@ -584,20 +628,13 @@ export class EscrowService {
     recipients: Array<[string, number]>,
     manager?: EntityManager,
   ): Promise<ContractInvocationResult> {
-    return this.invokeOnLockedEscrow(escrow, operation, () =>
-      this.soroban.invoke(
-        'release',
-        // `release(issue_id: u64, recipients)` — u64-typed on-chain (#301).
-        [u64(this.onChainKeyFor(escrow)), recipients],
-        this.contractOpts(escrow),
-      ),
     return this.invokeOnLockedEscrow(
       escrow,
       operation,
       () =>
         this.soroban.invoke(
           'release',
-          [this.onChainKeyFor(escrow), recipients],
+          [u64(this.onChainKeyFor(escrow)), recipients],
           this.contractOpts(escrow),
         ),
       manager,
