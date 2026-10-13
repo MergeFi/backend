@@ -4,7 +4,7 @@ import { getRepositoryToken } from '@nestjs/typeorm';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { BountiesService } from './bounties.service';
 import { EscrowService } from '../escrow/escrow.service';
-import { Bounty, Team, User } from '../common/entities';
+import { Bounty, Issue, Team, User } from '../common/entities';
 import { AssetType, BountyDifficulty, BountyStatus } from '../common/enums';
 import { InvalidBountyTransitionError } from './bounty-state-machine';
 
@@ -19,6 +19,7 @@ describe('BountiesService', () => {
   };
   let userRepo: { findOne: jest.Mock; find: jest.Mock };
   let teamRepo: { findOne: jest.Mock };
+  let issueRepo: { findOne: jest.Mock; find: jest.Mock };
   let escrowService: {
     fund: jest.Mock;
     release: jest.Mock;
@@ -38,8 +39,18 @@ describe('BountiesService', () => {
       find: jest.fn(),
       createQueryBuilder: jest.fn(),
     };
-    userRepo = { findOne: jest.fn(), find: jest.fn() };
+    userRepo = {
+      findOne: jest.fn().mockResolvedValue({
+        id: 'sponsor-1',
+        stellarAddress: 'GSPONSOR',
+      }),
+      find: jest.fn(),
+    };
     teamRepo = { findOne: jest.fn() };
+    issueRepo = {
+      findOne: jest.fn().mockResolvedValue({ id: 'issue-1' }),
+      find: jest.fn(),
+    };
     escrowService = {
       fund: jest.fn().mockResolvedValue({ id: 'escrow-1', status: 'locked' }),
       release: jest.fn().mockResolvedValue(undefined),
@@ -53,6 +64,7 @@ describe('BountiesService', () => {
         { provide: getRepositoryToken(Bounty), useValue: bountyRepo },
         { provide: getRepositoryToken(User), useValue: userRepo },
         { provide: getRepositoryToken(Team), useValue: teamRepo },
+        { provide: getRepositoryToken(Issue), useValue: issueRepo },
         { provide: EscrowService, useValue: escrowService },
         { provide: EventEmitter2, useValue: { emit: jest.fn() } },
       ],
@@ -70,6 +82,32 @@ describe('BountiesService', () => {
       difficulty: BountyDifficulty.INTERMEDIATE,
     });
     expect(bounty.status).toBe(BountyStatus.OPEN);
+  });
+
+  describe('findOne (#588)', () => {
+    it('loads issue.repository, sponsor, claimedBy, and team.splits relations', async () => {
+      const mockBounty = { id: 'b1' };
+      bountyRepo.findOne.mockResolvedValue(mockBounty);
+
+      const result = await service.findOne('b1');
+
+      expect(bountyRepo.findOne).toHaveBeenCalledWith({
+        where: { id: 'b1' },
+        relations: {
+          issue: { repository: true },
+          sponsor: true,
+          claimedBy: true,
+          team: { splits: true },
+        },
+      });
+      expect(result).toBe(mockBounty);
+    });
+
+    it('throws NotFoundException when bounty does not exist', async () => {
+      bountyRepo.findOne.mockResolvedValue(null);
+
+      await expect(service.findOne('non-existent')).rejects.toThrow();
+    });
   });
 
   it('funding an OPEN bounty locks escrow and moves it to FUNDED', async () => {
@@ -326,6 +364,19 @@ describe('BountiesService', () => {
     expect(qb.leftJoinAndSelect).toHaveBeenCalledWith(
       'issue.repository',
       'repository',
+    );
+    expect(qb.leftJoinAndSelect).toHaveBeenCalledWith(
+      'bounty.claimedBy',
+      'claimedBy',
+    );
+    expect(qb.leftJoinAndSelect).toHaveBeenCalledWith(
+      'bounty.sponsor',
+      'sponsor',
+    );
+    expect(qb.leftJoinAndSelect).toHaveBeenCalledWith('bounty.team', 'team');
+    expect(qb.leftJoinAndSelect).toHaveBeenCalledWith(
+      'team.splits',
+      'teamSplits',
     );
     expect(qb.andWhere).toHaveBeenCalledWith('bounty.status = :status', {
       status: BountyStatus.OPEN,
