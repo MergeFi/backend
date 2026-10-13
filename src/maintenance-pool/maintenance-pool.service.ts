@@ -176,8 +176,10 @@ export class MaintenancePoolService {
       .execute();
 
     if (updateResult.affected === 0) {
+      const freshPool = await this.poolRepo.findOne({ where: { id } });
+      const currentBalance = freshPool?.balance ?? pool.balance;
       throw new BadRequestException(
-        `Requested reward ${amount} exceeds pool balance ${pool.balance}`,
+        `Requested reward ${amount} exceeds pool balance ${currentBalance}`,
       );
     }
 
