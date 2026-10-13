@@ -466,7 +466,7 @@ describe('EscrowService', () => {
 
       expect(soroban.invoke).toHaveBeenCalledWith(
         'release_partial',
-        ['milestone-1', 'GRECIPIENT', 300_000_000n],
+        [9100n, 'GRECIPIENT', 300_000_000n],
         {},
       );
       expect(paymentRepo.save).toHaveBeenCalledWith(
@@ -517,7 +517,7 @@ describe('EscrowService', () => {
       expect(soroban.invoke).toHaveBeenNthCalledWith(
         2,
         'release_partial',
-        ['milestone-1', 'GB', 600_000_000n],
+        [9100n, 'GB', 600_000_000n],
         {},
       );
       expect(escrowRepo.save).toHaveBeenCalledWith(
@@ -541,6 +541,28 @@ describe('EscrowService', () => {
       expect(escrowRepo.save).not.toHaveBeenCalled();
     });
   });
+
+
+    it('uses derived numeric on-chain key when onChainId is unset on the escrow', async () => {
+      const escrowWithoutOnChainId = {
+        ...lockedEscrow(),
+        onChainId: null,
+      };
+      escrowRepo.findOne.mockResolvedValue(escrowWithoutOnChainId);
+      paymentRepo.find.mockResolvedValue([]);
+
+      await service.releasePartial(
+        'escrow-partial',
+        '30.0000000',
+        'GRECIPIENT',
+      );
+
+      expect(soroban.invoke).toHaveBeenCalledWith(
+        'release_partial',
+        [expect.any(BigInt), 'GRECIPIENT', 300_000_000n],
+        {},
+      );
+    });
 
   describe('pessimistic row locking (#303)', () => {
     const lockedEscrow = {
