@@ -67,9 +67,31 @@ export interface AppConfig {
   };
 }
 
+/**
+ * Parses a positive integer from an environment variable string, or falls back
+ * to `defaultValue` when unset or empty. Fails fast with a descriptive Error
+ * if the string is non-numeric, zero, negative, or not an integer (#610).
+ */
+export function parsePositiveIntegerEnv(
+  value: string | undefined,
+  defaultValue: number,
+  varName: string,
+): number {
+  if (value === undefined || value.trim() === '') {
+    return defaultValue;
+  }
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed <= 0) {
+    throw new Error(
+      `Invalid environment variable ${varName}: expected a positive integer, got "${value}"`,
+    );
+  }
+  return parsed;
+}
+
 export default (): AppConfig => ({
   env: process.env.NODE_ENV ?? 'development',
-  port: parseInt(process.env.PORT ?? '4000', 10),
+  port: parsePositiveIntegerEnv(process.env.PORT, 4000, 'PORT'),
   appUrl: process.env.APP_URL ?? 'http://localhost:4000',
   frontendUrl: process.env.FRONTEND_URL ?? 'http://localhost:3000',
   logLevel: process.env.LOG_LEVEL ?? 'debug',
@@ -96,9 +118,10 @@ export default (): AppConfig => ({
   },
 
   analytics: {
-    platformSummaryTtlMs: parseInt(
-      process.env.ANALYTICS_PLATFORM_SUMMARY_TTL_MS ?? '60000',
-      10,
+    platformSummaryTtlMs: parsePositiveIntegerEnv(
+      process.env.ANALYTICS_PLATFORM_SUMMARY_TTL_MS,
+      60000,
+      'ANALYTICS_PLATFORM_SUMMARY_TTL_MS',
     ),
   },
   stellar: {
@@ -118,9 +141,10 @@ export default (): AppConfig => ({
       USDC: process.env.USDC_TOKEN_CONTRACT_ID ?? '',
       XLM: process.env.XLM_TOKEN_CONTRACT_ID ?? '',
     },
-    escrowDeadlineSeconds: parseInt(
-      process.env.ESCROW_DEADLINE_SECONDS ?? '7776000',
-      10,
+    escrowDeadlineSeconds: parsePositiveIntegerEnv(
+      process.env.ESCROW_DEADLINE_SECONDS,
+      7776000,
+      'ESCROW_DEADLINE_SECONDS',
     ),
   },
 });
