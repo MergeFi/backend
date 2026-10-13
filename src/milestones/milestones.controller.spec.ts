@@ -1,4 +1,6 @@
 import { Test, TestingModule } from '@nestjs/testing';
+import { getRepositoryToken } from '@nestjs/typeorm';
+import { Reflector } from '@nestjs/core';
 import { plainToInstance } from 'class-transformer';
 import { validate } from 'class-validator';
 import { MilestonesController } from './milestones.controller';
@@ -7,6 +9,8 @@ import { CreateMilestoneDto } from './dto/create-milestone.dto';
 import { AssetType, MilestoneStatus } from '../common/enums';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
+import { IdempotencyInterceptor } from '../common/idempotency/idempotency.interceptor';
+import { IdempotencyKey } from '../common/entities/idempotency-key.entity';
 
 describe('MilestonesController', () => {
   let controller: MilestonesController;
@@ -22,10 +26,16 @@ describe('MilestonesController', () => {
 
   beforeEach(async () => {
     milestonesService = {
-      create: jest.fn().mockResolvedValue({ id: 'm1', status: MilestoneStatus.OPEN }),
-      findOne: jest.fn().mockResolvedValue({ id: 'm1', status: MilestoneStatus.OPEN }),
+      create: jest
+        .fn()
+        .mockResolvedValue({ id: 'm1', status: MilestoneStatus.OPEN }),
+      findOne: jest
+        .fn()
+        .mockResolvedValue({ id: 'm1', status: MilestoneStatus.OPEN }),
       list: jest.fn().mockResolvedValue([]),
-      fund: jest.fn().mockResolvedValue({ id: 'm1', status: MilestoneStatus.FUNDED }),
+      fund: jest
+        .fn()
+        .mockResolvedValue({ id: 'm1', status: MilestoneStatus.FUNDED }),
       addIssue: jest.fn().mockResolvedValue({ id: 'm1' }),
       resolveIssue: jest.fn().mockResolvedValue({ id: 'm1' }),
       allocateBudget: jest.fn().mockResolvedValue({ id: 'm1' }),
@@ -33,7 +43,20 @@ describe('MilestonesController', () => {
 
     const module: TestingModule = await Test.createTestingModule({
       controllers: [MilestonesController],
-      providers: [{ provide: MilestonesService, useValue: milestonesService }],
+      providers: [
+        { provide: MilestonesService, useValue: milestonesService },
+        IdempotencyInterceptor,
+        Reflector,
+        {
+          provide: getRepositoryToken(IdempotencyKey),
+          useValue: {
+            findOneBy: jest.fn(),
+            insert: jest.fn(),
+            update: jest.fn(),
+            delete: jest.fn(),
+          },
+        },
+      ],
     })
       .overrideGuard(JwtAuthGuard)
       .useValue({ canActivate: () => true })
@@ -52,10 +75,11 @@ describe('MilestonesController', () => {
         budget: '500',
         asset: AssetType.USDC,
       };
+      const req = { user: { userId: 'user-1' } } as any;
 
-      await controller.create(dto);
+      await controller.create(dto, req);
 
-      expect(milestonesService.create).toHaveBeenCalledWith(dto);
+      expect(milestonesService.create).toHaveBeenCalledWith(dto, 'user-1');
     });
   });
 
@@ -77,9 +101,14 @@ describe('MilestonesController', () => {
 
   describe('fund', () => {
     it('calls milestonesService.fund with id and funderAddress', async () => {
-      await controller.fund('m1', { funderAddress: 'GFUNDER' });
+      const req = { user: { userId: 'user-1' } } as any;
+      await controller.fund('m1', { funderAddress: 'GFUNDER' }, req);
 
-      expect(milestonesService.fund).toHaveBeenCalledWith('m1', 'GFUNDER');
+      expect(milestonesService.fund).toHaveBeenCalledWith(
+        'm1',
+        'GFUNDER',
+        'user-1',
+      );
     });
   });
 
@@ -98,7 +127,12 @@ describe('MilestonesController', () => {
         recipientId: 'u1',
       });
 
-      expect(milestonesService.resolveIssue).toHaveBeenCalledWith('m1', 'i1', 'GADDR', 'u1');
+      expect(milestonesService.resolveIssue).toHaveBeenCalledWith(
+        'm1',
+        'i1',
+        'GADDR',
+        'u1',
+      );
     });
   });
 

@@ -123,4 +123,50 @@ describe('ReputationService', () => {
       await expect(service.getLatest('new-user')).resolves.toBeNull();
     });
   });
+
+  describe('getOrComputeLatest (#589)', () => {
+    it('returns existing latest snapshot if present without recomputing', async () => {
+      const snapshot = { id: 'snap-existing', userId: 'user-1' };
+      mockSnapshotRepo.findOne.mockResolvedValue(snapshot);
+      const spy = jest.spyOn(service, 'computeAndSave');
+
+      const result = await service.getOrComputeLatest('user-1');
+
+      expect(result).toBe(snapshot);
+      expect(spy).not.toHaveBeenCalled();
+    });
+
+    it('computes and saves initial snapshot if user has no snapshot yet', async () => {
+      mockSnapshotRepo.findOne.mockResolvedValue(null);
+      const newSnapshot = { id: 'snap-new', userId: 'user-new' };
+      const spy = jest
+        .spyOn(service, 'computeAndSave')
+        .mockResolvedValue(newSnapshot as any);
+
+      const result = await service.getOrComputeLatest('user-new');
+
+      expect(result).toBe(newSnapshot);
+      expect(spy).toHaveBeenCalledWith('user-new');
+    });
+  });
+
+  describe('handleRecomputeEvent (#589)', () => {
+    it('calls computeAndSave when a REPUTATION_RECOMPUTE_EVENT is handled', async () => {
+      const spy = jest
+        .spyOn(service, 'computeAndSave')
+        .mockResolvedValue({} as any);
+
+      await service.handleRecomputeEvent({ userId: 'user-paid' });
+
+      expect(spy).toHaveBeenCalledWith('user-paid');
+    });
+
+    it('ignores payloads with missing or undefined userId', async () => {
+      const spy = jest.spyOn(service, 'computeAndSave');
+
+      await service.handleRecomputeEvent({ userId: '' });
+
+      expect(spy).not.toHaveBeenCalled();
+    });
+  });
 });

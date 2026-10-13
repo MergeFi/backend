@@ -4,8 +4,9 @@ import { getRepositoryToken } from '@nestjs/typeorm';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { BountiesService } from './bounties.service';
 import { EscrowService } from '../escrow/escrow.service';
-import { Bounty, Team, User } from '../common/entities';
+import { Bounty, Issue, Team, User } from '../common/entities';
 import { AssetType, BountyDifficulty, BountyStatus } from '../common/enums';
+import { REPUTATION_RECOMPUTE_EVENT } from '../reputation/reputation.events';
 import { InvalidBountyTransitionError } from './bounty-state-machine';
 
 describe('BountiesService', () => {
@@ -19,12 +20,14 @@ describe('BountiesService', () => {
   };
   let userRepo: { findOne: jest.Mock; find: jest.Mock };
   let teamRepo: { findOne: jest.Mock };
+  let issueRepo: { findOne: jest.Mock; update: jest.Mock };
   let escrowService: {
     fund: jest.Mock;
     release: jest.Mock;
     splitRelease: jest.Mock;
     refund: jest.Mock;
   };
+  let eventEmitter: { emit: jest.Mock };
 
   beforeEach(async () => {
     bountyRepo = {
@@ -38,14 +41,26 @@ describe('BountiesService', () => {
       find: jest.fn(),
       createQueryBuilder: jest.fn(),
     };
-    userRepo = { findOne: jest.fn(), find: jest.fn() };
+    userRepo = {
+      findOne: jest
+        .fn()
+        .mockResolvedValue({ id: 'user-1', stellarAddress: 'GCONTRIBUTOR' }),
+      find: jest.fn(),
+    };
     teamRepo = { findOne: jest.fn() };
+    issueRepo = {
+      findOne: jest
+        .fn()
+        .mockResolvedValue({ id: 'issue-1', githubIssueId: '1' }),
+      update: jest.fn(),
+    };
     escrowService = {
       fund: jest.fn().mockResolvedValue({ id: 'escrow-1', status: 'locked' }),
       release: jest.fn().mockResolvedValue(undefined),
       splitRelease: jest.fn().mockResolvedValue([]),
       refund: jest.fn().mockResolvedValue(undefined),
     };
+    eventEmitter = { emit: jest.fn() };
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
@@ -53,8 +68,9 @@ describe('BountiesService', () => {
         { provide: getRepositoryToken(Bounty), useValue: bountyRepo },
         { provide: getRepositoryToken(User), useValue: userRepo },
         { provide: getRepositoryToken(Team), useValue: teamRepo },
+        { provide: getRepositoryToken(Issue), useValue: issueRepo },
         { provide: EscrowService, useValue: escrowService },
-        { provide: EventEmitter2, useValue: { emit: jest.fn() } },
+        { provide: EventEmitter2, useValue: eventEmitter },
       ],
     }).compile();
 
@@ -197,6 +213,9 @@ describe('BountiesService', () => {
       'contributor-1',
     );
     expect(bounty.status).toBe(BountyStatus.PAID);
+    expect(eventEmitter.emit).toHaveBeenCalledWith(REPUTATION_RECOMPUTE_EVENT, {
+      userId: 'contributor-1',
+    });
   });
 
   it('markMergedAndRelease batches user lookups for team splits', async () => {
@@ -231,6 +250,12 @@ describe('BountiesService', () => {
       { recipientId: 'u2', recipientAddress: 'GADDR2', percentage: 40 },
     ]);
     expect(bounty.status).toBe(BountyStatus.PAID);
+    expect(eventEmitter.emit).toHaveBeenCalledWith(REPUTATION_RECOMPUTE_EVENT, {
+      userId: 'u1',
+    });
+    expect(eventEmitter.emit).toHaveBeenCalledWith(REPUTATION_RECOMPUTE_EVENT, {
+      userId: 'u2',
+    });
   });
 
   it('refund calls escrowService.refund and moves bounty to REFUNDED', async () => {

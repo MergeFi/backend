@@ -1,8 +1,13 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
+import { OnEvent } from '@nestjs/event-emitter';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { Bounty, Payment, ReputationSnapshot } from '../common/entities';
 import { queryContributorCoreStats } from '../common/stats/contributor-stats.sql';
+import {
+  REPUTATION_RECOMPUTE_EVENT,
+  ReputationRecomputePayload,
+} from './reputation.events';
 
 export const REPUTATION_HISTORY_DEFAULT_LIMIT = 50;
 export const REPUTATION_HISTORY_MAX_LIMIT = 100;
@@ -14,6 +19,8 @@ export interface ReputationHistoryOptions {
 
 @Injectable()
 export class ReputationService {
+  private readonly logger = new Logger(ReputationService.name);
+
   constructor(
     @InjectRepository(Bounty) private readonly bountyRepo: Repository<Bounty>,
     @InjectRepository(Payment)
@@ -21,6 +28,23 @@ export class ReputationService {
     @InjectRepository(ReputationSnapshot)
     private readonly snapshotRepo: Repository<ReputationSnapshot>,
   ) {}
+
+  /**
+   * Asynchronously handles automated reputation recalculation on payment and payout events (#589).
+   */
+  @OnEvent(REPUTATION_RECOMPUTE_EVENT, { async: true })
+  async handleRecomputeEvent(
+    payload: ReputationRecomputePayload,
+  ): Promise<void> {
+    if (!payload?.userId) return;
+    try {
+      await this.computeAndSave(payload.userId);
+    } catch (err) {
+      this.logger.error(
+        `Failed to recompute reputation snapshot for user ${payload.userId}: ${(err as Error).message}`,
+      );
+    }
+  }
 
   /**
    * Recomputes a contributor's reputation stats from SQL aggregates of their
@@ -52,6 +76,18 @@ export class ReputationService {
       where: { userId },
       order: { computedAt: 'DESC' },
     });
+  }
+
+  /**
+   * Retrieves the most recent snapshot for the user, computing and saving an
+   * initial snapshot if none exists yet so profiles and dashboards never read empty (#589).
+   */
+  async getOrComputeLatest(userId: string): Promise<ReputationSnapshot> {
+    const latest = await this.getLatest(userId);
+    if (latest) {
+      return latest;
+    }
+    return this.computeAndSave(userId);
   }
 
   async history(

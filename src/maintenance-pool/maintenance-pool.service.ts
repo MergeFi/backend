@@ -3,13 +3,16 @@ import {
   ConflictException,
   Injectable,
   NotFoundException,
+  Optional,
 } from '@nestjs/common';
+import { EventEmitter2 } from '@nestjs/event-emitter';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { IsNull, Repository } from 'typeorm';
 import { Issue, MaintenancePool, Payment } from '../common/entities';
 import { MaintenancePoolStatus } from '../common/enums';
 import { EscrowService } from '../escrow/escrow.service';
 import { CreatePoolDto } from './dto/create-pool.dto';
+import { REPUTATION_RECOMPUTE_EVENT } from '../reputation/reputation.events';
 
 /**
  * Recurring maintenance pool: sponsors make monthly deposits into a shared
@@ -27,6 +30,7 @@ export class MaintenancePoolService {
     @InjectRepository(Payment)
     private readonly paymentRepo: Repository<Payment>,
     private readonly escrowService: EscrowService,
+    @Optional() private readonly eventEmitter?: EventEmitter2,
   ) {}
 
   async create(
@@ -80,12 +84,11 @@ export class MaintenancePoolService {
       // Use WHERE escrowId IS NULL so a losing concurrent request detects the
       // race and tops up the winner's escrow instead of creating a second one.
       const updateResult = await this.poolRepo.update(
-        { id: pool.id, escrowId: null } as any,
+        { id: pool.id, escrowId: IsNull() },
         { escrowId: escrow.id },
       );
       if (updateResult.affected === 0) {
         // Another request won the race — top up the winner's escrow instead.
-        const existingPool = await this.findOne(id);
         await this.escrowService.fund({
           amount,
           asset: pool.asset,
@@ -144,11 +147,6 @@ export class MaintenancePoolService {
     }
 
     // Guard against double/triple payout for the same issue (#273).
-    const existingPayment = await this.paymentRepo.findOne({
-      where: {
-        recipientId: recipientId ?? null,
-      },
-    });
     // Check if there's already a payment for this issue from this pool's escrow.
     const existingPoolPayment = await this.paymentRepo
       .createQueryBuilder('payment')
@@ -191,6 +189,12 @@ export class MaintenancePoolService {
       recipientAddress,
       recipientId,
     );
+
+    if (recipientId) {
+      this.eventEmitter?.emit(REPUTATION_RECOMPUTE_EVENT, {
+        userId: recipientId,
+      });
+    }
 
     return payment;
   }

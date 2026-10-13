@@ -6,6 +6,7 @@ import { MilestonesService } from './milestones.service';
 import { EscrowService } from '../escrow/escrow.service';
 import { Issue, Milestone } from '../common/entities';
 import { AssetType, MilestoneStatus } from '../common/enums';
+import { REPUTATION_RECOMPUTE_EVENT } from '../reputation/reputation.events';
 
 /**
  * Transaction manager mock (#531): resolveIssue re-reads the milestone FOR
@@ -40,6 +41,7 @@ describe('MilestonesService', () => {
   let dataSource: {
     transaction: jest.Mock;
   };
+  let eventEmitter: { emit: jest.Mock };
 
   beforeEach(async () => {
     milestoneRepo = {
@@ -63,6 +65,7 @@ describe('MilestonesService', () => {
     dataSource = {
       transaction: jest.fn().mockImplementation((fn: Function) => fn(makeMgr())),
     };
+    eventEmitter = { emit: jest.fn() };
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
@@ -71,6 +74,7 @@ describe('MilestonesService', () => {
         { provide: getRepositoryToken(Issue), useValue: issueRepo },
         { provide: EscrowService, useValue: escrowService },
         { provide: DataSource, useValue: dataSource },
+        { provide: EventEmitter2, useValue: eventEmitter },
       ],
     }).compile();
 
@@ -279,6 +283,12 @@ describe('MilestonesService', () => {
       );
       expect(payment.id).toBe('payment-1');
       expect(dataSource.transaction).toHaveBeenCalled();
+      expect(eventEmitter.emit).toHaveBeenCalledWith(
+        REPUTATION_RECOMPUTE_EVENT,
+        {
+          userId: 'user-1',
+        },
+      );
     });
 
     it('marks milestone as COMPLETED when budget is fully distributed', async () => {
@@ -431,7 +441,9 @@ describe('MilestonesService', () => {
 
       await expect(
         service.resolveIssue('m1', 'i1', 'RECIPIENT_ADDR'),
-      ).rejects.toThrow('Milestone m1 is not accepting distributions');
+      ).rejects.toThrow(
+        'Cannot transition milestone from "open" to "in_progress"',
+      );
     });
 
     it('rejects when the issue does not belong to the milestone (#114)', async () => {
@@ -496,6 +508,7 @@ describe('MilestonesService', () => {
         '333.3333333',
         'RECIPIENT_ADDR',
         undefined,
+        expect.anything(),
       );
     });
   });
