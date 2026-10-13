@@ -69,9 +69,9 @@ export interface AppConfig {
 
 export default (): AppConfig => ({
   env: process.env.NODE_ENV ?? 'development',
-  port: parseInt(process.env.PORT ?? '3000', 10),
-  appUrl: process.env.APP_URL ?? 'http://localhost:3000',
-  frontendUrl: process.env.FRONTEND_URL ?? 'http://localhost:3001',
+  port: parseInt(process.env.PORT ?? '4000', 10),
+  appUrl: process.env.APP_URL ?? 'http://localhost:4000',
+  frontendUrl: process.env.FRONTEND_URL ?? 'http://localhost:3000',
   logLevel: process.env.LOG_LEVEL ?? 'debug',
   database: {
     url:
@@ -89,7 +89,7 @@ export default (): AppConfig => ({
     clientSecret: process.env.GITHUB_CLIENT_SECRET || 'mock_secret_key_67890',
     oauthCallbackUrl:
       process.env.GITHUB_OAUTH_CALLBACK_URL ||
-      'http://localhost:3000/api/auth/github/callback',
+      'http://localhost:4000/api/auth/github/callback',
     apiToken: process.env.GITHUB_API_TOKEN ?? '',
     webhookSecret: process.env.GITHUB_WEBHOOK_SECRET ?? '',
     syncAllowedRepos: process.env.GITHUB_SYNC_ALLOWED_REPOS ?? '',

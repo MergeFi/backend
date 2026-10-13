@@ -238,7 +238,7 @@ docker compose up --build
 - **Hot Reloading**: The codebase is mounted into the container using a bind mount. File changes on the host will automatically trigger application restarts.
 - **Node Modules Isolation**: The container uses an anonymous volume for `/usr/src/app/node_modules`. This prevents Windows/Host compiled node packages from contaminating the Linux-native container.
 - **Services**:
-  - The API is served at `http://localhost:3000/api` (Swagger docs at `http://localhost:3000/api/docs`).
+  - The API is served at `http://localhost:4000/api` (Swagger docs at `http://localhost:4000/api/docs`).
   - PostgreSQL is mapped to port `5432` on your localhost with credentials `postgres:postgres` and database name `mergefi`.
 
 ### 2. Local Development Natively on Host
@@ -274,7 +274,7 @@ docker build --target runner -t mergefi-backend:latest .
 - **Production Mode**: The final image forces `NODE_ENV=production`.
 - **Required-secret Enforcer**: When `NODE_ENV=production`, `assertRequiredConfig` (`src/config/validate-required-config.ts`, called from `src/main.ts`) crashes the container at boot — listing every problem at once — unless all of `JWT_SECRET` (not the `insecure-dev-secret` default), `DATABASE_URL` (not the local `postgres:postgres@localhost` default), `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET`, `GITHUB_WEBHOOK_SECRET`, `ESCROW_CONTRACT_ID` and `TREASURY_SECRET` are set to real values. This closes the silent-failure gap where, for example, an empty `GITHUB_WEBHOOK_SECRET` made the app boot "healthy" while rejecting 100% of webhook deliveries. You **must** provide these when running the production container, e.g.:
   ```bash
-  docker run -p 3000:3000 \
+  docker run -p 4000:4000 \
     -e JWT_SECRET="your-highly-secure-random-jwt-key" \
     -e DATABASE_URL="postgresql://user:pass@db-host:5432/mergefi" \
     -e GITHUB_CLIENT_ID=... -e GITHUB_CLIENT_SECRET=... \
