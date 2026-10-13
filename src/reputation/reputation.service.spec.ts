@@ -23,6 +23,7 @@ describe('ReputationService', () => {
     save: jest.fn((entity) => Promise.resolve({ id: 'snap-1', ...entity })),
     findOne: jest.fn(),
     find: jest.fn(),
+    findAndCount: jest.fn(),
   };
 
   beforeEach(async () => {
@@ -93,17 +94,49 @@ describe('ReputationService', () => {
     expect(result.onTimeDeliveryPercentage).toBe('50.00');
   });
 
-  it('paginates history with a default/max limit', async () => {
-    mockSnapshotRepo.find.mockResolvedValue([]);
-    await service.history('user-1');
-    expect(mockSnapshotRepo.find).toHaveBeenCalledWith(
-      expect.objectContaining({ take: 50, skip: 0 }),
-    );
+  describe('history (#585)', () => {
+    it('orders DESC by default and returns { items, total }', async () => {
+      const mockItems = [{ id: 'snap-1', computedAt: new Date() }];
+      mockSnapshotRepo.findAndCount.mockResolvedValue([mockItems, 1]);
 
-    await service.history('user-1', { limit: 1000, offset: 10 });
-    expect(mockSnapshotRepo.find).toHaveBeenCalledWith(
-      expect.objectContaining({ take: 100, skip: 10 }),
-    );
+      const result = await service.history('user-1');
+
+      expect(result).toEqual({ items: mockItems, total: 1 });
+      expect(mockSnapshotRepo.findAndCount).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: { userId: 'user-1' },
+          order: { computedAt: 'DESC' },
+          take: 50,
+          skip: 0,
+        }),
+      );
+    });
+
+    it('allows overriding sort direction to ASC', async () => {
+      mockSnapshotRepo.findAndCount.mockResolvedValue([[], 0]);
+
+      await service.history('user-1', { order: 'ASC' });
+
+      expect(mockSnapshotRepo.findAndCount).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: { userId: 'user-1' },
+          order: { computedAt: 'ASC' },
+        }),
+      );
+    });
+
+    it('paginates history with a default/max limit', async () => {
+      mockSnapshotRepo.findAndCount.mockResolvedValue([[], 0]);
+      await service.history('user-1');
+      expect(mockSnapshotRepo.findAndCount).toHaveBeenCalledWith(
+        expect.objectContaining({ take: 50, skip: 0 }),
+      );
+
+      await service.history('user-1', { limit: 1000, offset: 10 });
+      expect(mockSnapshotRepo.findAndCount).toHaveBeenCalledWith(
+        expect.objectContaining({ take: 100, skip: 10 }),
+      );
+    });
   });
   describe('getLatest', () => {
     it('returns the most recent snapshot by querying computedAt DESC', async () => {
