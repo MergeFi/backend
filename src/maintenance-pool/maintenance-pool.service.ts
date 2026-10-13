@@ -5,7 +5,7 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { IsNull, Repository } from 'typeorm';
 import { Issue, MaintenancePool, Payment } from '../common/entities';
 import { MaintenancePoolStatus } from '../common/enums';
 import { EscrowService } from '../escrow/escrow.service';
@@ -46,7 +46,13 @@ export class MaintenancePoolService {
   }
 
   async findOne(id: string): Promise<MaintenancePool> {
-    const pool = await this.poolRepo.findOne({ where: { id } });
+    const pool = await this.poolRepo.findOne({
+      where: { id },
+      relations: {
+        repository: true,
+        createdBy: true,
+      },
+    });
     if (!pool) throw new NotFoundException(`Maintenance pool ${id} not found`);
     return pool;
   }
@@ -80,12 +86,11 @@ export class MaintenancePoolService {
       // Use WHERE escrowId IS NULL so a losing concurrent request detects the
       // race and tops up the winner's escrow instead of creating a second one.
       const updateResult = await this.poolRepo.update(
-        { id: pool.id, escrowId: null } as any,
+        { id: pool.id, escrowId: IsNull() },
         { escrowId: escrow.id },
       );
       if (updateResult.affected === 0) {
         // Another request won the race — top up the winner's escrow instead.
-        const existingPool = await this.findOne(id);
         await this.escrowService.fund({
           amount,
           asset: pool.asset,
@@ -144,11 +149,6 @@ export class MaintenancePoolService {
     }
 
     // Guard against double/triple payout for the same issue (#273).
-    const existingPayment = await this.paymentRepo.findOne({
-      where: {
-        recipientId: recipientId ?? null,
-      },
-    });
     // Check if there's already a payment for this issue from this pool's escrow.
     const existingPoolPayment = await this.paymentRepo
       .createQueryBuilder('payment')
@@ -196,6 +196,12 @@ export class MaintenancePoolService {
   }
 
   async list(): Promise<MaintenancePool[]> {
-    return this.poolRepo.find();
+    return this.poolRepo.find({
+      relations: {
+        repository: true,
+        createdBy: true,
+      },
+      order: { createdAt: 'DESC' },
+    });
   }
 }

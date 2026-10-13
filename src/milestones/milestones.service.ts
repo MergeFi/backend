@@ -28,7 +28,7 @@ export class MilestonesService {
     callerUserId: string,
   ): Promise<Milestone> {
     // Verify repositoryId exists
-    const repoExists = await this.dataSource.query(
+    const repoExists = await this.dataSource.query<unknown[]>(
       'SELECT 1 FROM repositories WHERE id = $1',
       [dto.repositoryId],
     );
@@ -55,7 +55,11 @@ export class MilestonesService {
   async findOne(id: string): Promise<Milestone> {
     const milestone = await this.milestoneRepo.findOne({
       where: { id },
-      relations: { issues: true },
+      relations: {
+        repository: true,
+        issues: true,
+        sponsor: true,
+      },
     });
     if (!milestone) throw new NotFoundException(`Milestone ${id} not found`);
     return milestone;
@@ -65,12 +69,16 @@ export class MilestonesService {
   async fund(
     id: string,
     funderAddress: string,
-    callerUserId: string,
+    callerUserId?: string,
   ): Promise<Milestone> {
     const milestone = await this.findOne(id);
 
     // Verify caller is the sponsor
-    if (milestone.sponsorId && milestone.sponsorId !== callerUserId) {
+    if (
+      callerUserId &&
+      milestone.sponsorId &&
+      milestone.sponsorId !== callerUserId
+    ) {
       throw new ForbiddenException(
         'Only the milestone sponsor can fund this milestone',
       );
@@ -239,7 +247,14 @@ export class MilestonesService {
   }
 
   async list(): Promise<Milestone[]> {
-    return this.milestoneRepo.find();
+    return this.milestoneRepo.find({
+      relations: {
+        repository: true,
+        issues: true,
+        sponsor: true,
+      },
+      order: { createdAt: 'DESC' },
+    });
   }
 
   /**

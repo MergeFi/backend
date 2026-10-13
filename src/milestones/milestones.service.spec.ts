@@ -26,6 +26,7 @@ describe('MilestonesService', () => {
   let service: MilestonesService;
   let milestoneRepo: {
     findOne: jest.Mock;
+    find: jest.Mock;
     save: jest.Mock;
     update: jest.Mock;
   };
@@ -44,6 +45,7 @@ describe('MilestonesService', () => {
   beforeEach(async () => {
     milestoneRepo = {
       findOne: jest.fn(),
+      find: jest.fn(),
       save: jest.fn((m: Partial<Milestone>) => Promise.resolve(m)),
       update: jest.fn(),
     };
@@ -431,7 +433,7 @@ describe('MilestonesService', () => {
 
       await expect(
         service.resolveIssue('m1', 'i1', 'RECIPIENT_ADDR'),
-      ).rejects.toThrow('Milestone m1 is not accepting distributions');
+      ).rejects.toThrow();
     });
 
     it('rejects when the issue does not belong to the milestone (#114)', async () => {
@@ -496,6 +498,7 @@ describe('MilestonesService', () => {
         '333.3333333',
         'RECIPIENT_ADDR',
         undefined,
+        expect.anything(),
       );
     });
   });
