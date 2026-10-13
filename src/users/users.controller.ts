@@ -1,6 +1,7 @@
 import {
   Body,
   Controller,
+  ForbiddenException,
   Get,
   Param,
   ParseUUIDPipe,
@@ -12,6 +13,10 @@ import { UsersService } from './users.service';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { IsStellarAddress } from '../common/validators/stellar-address.validator';
 import { ApiInternalErrorResponse } from '../common/swagger/api-common-responses.decorator';
+import {
+  AuthenticatedUser,
+  CurrentUser,
+} from '../common/decorators/current-user.decorator';
 
 // Checksum-validated (StrKey), like every other Stellar-address-accepting DTO.
 // This value later becomes the on-chain recipient of escrow releases, so a
@@ -48,7 +53,13 @@ export class UsersController {
   setStellarAddress(
     @Param('id', new ParseUUIDPipe()) id: string,
     @Body() dto: SetStellarAddressDto,
+    @CurrentUser() user: AuthenticatedUser,
   ) {
+    if (user.userId !== id) {
+      throw new ForbiddenException(
+        'You may only set your own Stellar payout address',
+      );
+    }
     return this.usersService.setStellarAddress(id, dto.stellarAddress);
   }
 }
