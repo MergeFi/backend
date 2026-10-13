@@ -50,6 +50,12 @@ export class ResolveIssueDto {
   recipientId?: string;
 }
 
+interface AuthenticatedRequest extends Request {
+  user?: {
+    userId?: string;
+  };
+}
+
 @ApiTags('milestones')
 @Controller('milestones')
 @ApiInternalErrorResponse()
@@ -63,8 +69,8 @@ export class MilestonesController {
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles(UserRole.SPONSOR, UserRole.MAINTAINER)
   @Post()
-  create(@Body() dto: CreateMilestoneDto, @Req() req: Request) {
-    const userId = (req.user as any).userId;
+  create(@Body() dto: CreateMilestoneDto, @Req() req?: AuthenticatedRequest) {
+    const userId = req?.user?.userId;
     return this.milestonesService.create(dto, userId);
   }
 
@@ -92,9 +98,9 @@ export class MilestonesController {
   fund(
     @Param('id', new ParseUUIDPipe()) id: string,
     @Body() dto: FundMilestoneDto,
-    @Req() req: Request,
+    @Req() req?: AuthenticatedRequest,
   ) {
-    const userId = (req.user as any).userId;
+    const userId = req?.user?.userId;
     return this.milestonesService.fund(id, dto.funderAddress, userId);
   }
 
@@ -142,5 +148,23 @@ export class MilestonesController {
   @Post(':id/allocate')
   allocateBudget(@Param('id', new ParseUUIDPipe()) id: string) {
     return this.milestonesService.allocateBudget(id);
+  }
+
+  @ApiOperation({
+    summary: 'Close a milestone and refund any remaining escrow budget',
+  })
+  @ApiBearerAuth()
+  @ApiStandardErrorResponses()
+  @Throttle({ short: { limit: 1, ttl: 1000 } })
+  @Idempotent('milestone.close')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(UserRole.SPONSOR, UserRole.MAINTAINER)
+  @Post(':id/close')
+  close(
+    @Param('id', new ParseUUIDPipe()) id: string,
+    @Req() req?: AuthenticatedRequest,
+  ) {
+    const userId = req?.user?.userId;
+    return this.milestonesService.close(id, userId);
   }
 }
