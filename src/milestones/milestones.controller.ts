@@ -76,6 +76,7 @@ export class MilestonesController {
   }
 
   @ApiOperation({ summary: 'Get a milestone by id' })
+  @Throttle({ long: { limit: 1000, ttl: 3600000 } })
   @Get(':id')
   findOne(@Param('id', new ParseUUIDPipe()) id: string) {
     return this.milestonesService.findOne(id);
