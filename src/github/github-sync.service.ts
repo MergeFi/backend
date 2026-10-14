@@ -8,10 +8,7 @@ import {
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Octokit } from '@octokit/rest';
-import {
-  FindOptionsRelations,
-  Repository as TypeOrmRepository,
-} from 'typeorm';
+import { FindOptionsRelations, Repository as TypeOrmRepository } from 'typeorm';
 import { ANALYTICS_PLATFORM_INVALIDATE_EVENT } from '../analytics/analytics.events';
 import { Issue, Repository } from '../common/entities';
 import { IssueState } from '../common/enums';
@@ -305,10 +302,37 @@ export class GithubSyncService {
       githubUpdatedAt: incomingUpdatedAt,
     };
 
-    const issue = existing
-      ? this.issueRepo.merge(existing, attrs)
-      : this.issueRepo.create(attrs);
-    return { issue: await this.issueRepo.save(issue), applied: true };
+    // Atomic INSERT ... ON CONFLICT DO UPDATE — the prior read-then-save let
+    // two concurrent syncs both find no row and both INSERT, so one hit the
+    // unique githubIssueId constraint (#562, regression of #376). The atomic
+    // upsert makes the write race-safe; the stale-check above still guards
+    // the update path, and the conflict-update is conditional on the incoming
+    // row being newer so a stale delivery can't overwrite fresh data.
+    const githubId = githubIssueId;
+    await this.issueRepo
+      .createQueryBuilder()
+      .insert()
+      .into(Issue)
+      .values(attrs as never)
+      .orUpdate(
+        [
+          'number',
+          'title',
+          'body',
+          'state',
+          'labels',
+          'githubUrl',
+          'authorLogin',
+          'isMaintenanceType',
+          'closedAt',
+          'githubUpdatedAt',
+          'repositoryId',
+        ],
+        ['githubIssueId'],
+      )
+      .execute();
+    const issue = await this.findIssueByGithubIdOrNull(githubId);
+    return { issue: issue as Issue, applied: true };
   }
 
   async findRepositoryByGithubId(
