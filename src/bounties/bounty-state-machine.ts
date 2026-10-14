@@ -40,9 +40,21 @@ export const BOUNTY_TRANSITIONS: Record<BountyStatus, BountyStatus[]> = {
   [BountyStatus.EXPIRED]: [BountyStatus.REFUNDED],
 };
 
-export class InvalidBountyTransitionError extends Error {
+import { HttpException, HttpStatus } from '@nestjs/common';
+
+/**
+ * A state-transition rejection is a CLIENT-facing error — the bounty's
+ * current state conflicts with the requested transition (e.g. claiming a
+ * bounty already claimed). Extending HttpException(409) surfaces it as a real
+ * HTTP status instead of an opaque 500 (#579) — a plain Error would hit the
+ * global filter's internal-error path and leak nothing useful.
+ */
+export class InvalidBountyTransitionError extends HttpException {
   constructor(from: BountyStatus, to: BountyStatus) {
-    super(`Cannot transition bounty from "${from}" to "${to}"`);
+    super(
+      `Cannot transition bounty from "${from}" to "${to}"`,
+      HttpStatus.CONFLICT,
+    );
     this.name = 'InvalidBountyTransitionError';
   }
 }

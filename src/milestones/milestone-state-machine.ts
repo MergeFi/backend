@@ -21,18 +21,30 @@ export const MILESTONE_TRANSITIONS: Record<MilestoneStatus, MilestoneStatus[]> =
     [MilestoneStatus.CLOSED]: [],
   };
 
-export class InvalidMilestoneTransitionError extends Error {
+import { HttpException, HttpStatus } from '@nestjs/common';
+
+/** A milestone transition-rejection is a client-facing 409, not a 500 (#579). */
+export class InvalidMilestoneTransitionError extends HttpException {
   constructor(from: MilestoneStatus, to: MilestoneStatus) {
-    super(`Cannot transition milestone from "${from}" to "${to}"`);
+    super(
+      `Cannot transition milestone from "${from}" to "${to}"`,
+      HttpStatus.CONFLICT,
+    );
     this.name = 'InvalidMilestoneTransitionError';
   }
 }
 
-export function canTransition(from: MilestoneStatus, to: MilestoneStatus): boolean {
+export function canTransition(
+  from: MilestoneStatus,
+  to: MilestoneStatus,
+): boolean {
   return MILESTONE_TRANSITIONS[from]?.includes(to) ?? false;
 }
 
-export function assertTransition(from: MilestoneStatus, to: MilestoneStatus): void {
+export function assertTransition(
+  from: MilestoneStatus,
+  to: MilestoneStatus,
+): void {
   if (!canTransition(from, to)) {
     throw new InvalidMilestoneTransitionError(from, to);
   }
