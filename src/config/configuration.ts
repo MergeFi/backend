@@ -67,9 +67,32 @@ export interface AppConfig {
   };
 }
 
+/**
+ * Parse a numeric env var, failing loudly at config-load if it isn't a
+ * positive integer. A bare `parseInt` returns NaN on garbage input — for
+ * ESCROW_DEADLINE_SECONDS that NaN reached `resolveDeadline` and threw
+ * `RangeError: cannot convert NaN to BigInt` on every escrow fund, after the
+ * PENDING row was already saved (#610). Validate here so a bad value is a
+ * boot-time config error, not a mid-transaction crash.
+ */
+function envInt(
+  name: string,
+  raw: string | undefined,
+  fallback: number,
+): number {
+  const v =
+    raw === undefined || raw === '' ? fallback : Number.parseInt(raw, 10);
+  if (!Number.isFinite(v) || v <= 0) {
+    throw new Error(
+      `Invalid ${name}: expected a positive integer, got '${raw}'`,
+    );
+  }
+  return v;
+}
+
 export default (): AppConfig => ({
   env: process.env.NODE_ENV ?? 'development',
-  port: parseInt(process.env.PORT ?? '3000', 10),
+  port: envInt('PORT', process.env.PORT, 3000),
   appUrl: process.env.APP_URL ?? 'http://localhost:3000',
   frontendUrl: process.env.FRONTEND_URL ?? 'http://localhost:3001',
   logLevel: process.env.LOG_LEVEL ?? 'debug',
@@ -96,9 +119,10 @@ export default (): AppConfig => ({
   },
 
   analytics: {
-    platformSummaryTtlMs: parseInt(
-      process.env.ANALYTICS_PLATFORM_SUMMARY_TTL_MS ?? '60000',
-      10,
+    platformSummaryTtlMs: envInt(
+      'ANALYTICS_PLATFORM_SUMMARY_TTL_MS',
+      process.env.ANALYTICS_PLATFORM_SUMMARY_TTL_MS,
+      60000,
     ),
   },
   stellar: {
@@ -118,9 +142,10 @@ export default (): AppConfig => ({
       USDC: process.env.USDC_TOKEN_CONTRACT_ID ?? '',
       XLM: process.env.XLM_TOKEN_CONTRACT_ID ?? '',
     },
-    escrowDeadlineSeconds: parseInt(
-      process.env.ESCROW_DEADLINE_SECONDS ?? '7776000',
-      10,
+    escrowDeadlineSeconds: envInt(
+      'ESCROW_DEADLINE_SECONDS',
+      process.env.ESCROW_DEADLINE_SECONDS,
+      7776000,
     ),
   },
 });
