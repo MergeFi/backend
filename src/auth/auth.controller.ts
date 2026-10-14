@@ -56,11 +56,21 @@ export class AuthController {
       // Defense-in-depth: also set the JWT as an httpOnly cookie so a frontend
       // that prefers cookie-based auth never needs to handle a bearer token in
       // the URL at all. The handoff code remains the primary exchange mechanism.
-      const isProd =
-        this.configService.get('env', { infer: true }) === 'production';
+      // The cookie must carry `Secure` on ANY HTTPS deployment, not just
+      // production — a staging/preview deploy served over TLS but with
+      // NODE_ENV=staging/development was issuing a cookie that a plain-HTTP
+      // request could leak. Base it on the deployment's actual protocol:
+      // the request came over HTTPS (req.secure, honoring trust proxy) OR
+      // the configured app URL is https. Local HTTP dev stays non-secure so
+      // the cookie still sets there. (#614)
+      const appUrl =
+        this.configService.get<string>('frontendUrl', { infer: true }) ||
+        this.configService.get<string>('appUrl', { infer: true }) ||
+        '';
+      const secure = Boolean(req.secure) || appUrl.startsWith('https://');
       res.cookie('access_token', accessToken, {
         httpOnly: true,
-        secure: isProd,
+        secure,
         sameSite: 'lax',
         maxAge: 7 * 24 * 60 * 60 * 1000,
         path: '/',
