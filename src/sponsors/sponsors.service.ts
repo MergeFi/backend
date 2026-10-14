@@ -86,13 +86,24 @@ export class SponsorsService {
    * bounty/milestone is later deleted (#27).
    */
   async budgetLocked(sponsorId: string): Promise<number> {
+    // A milestone escrow stays LOCKED while releasePartial pays issues out of
+    // it — it only flips to RELEASED at the full amount. Summing the whole
+    // escrow.amount double-counts the already-paid portion in both
+    // budgetLocked AND totalSpend (#575). Subtract the confirmed payments
+    // against each locked escrow so locked = the remaining unpaid balance.
     const row = await this.escrowRepo
       .createQueryBuilder('escrow')
-      .select('COALESCE(SUM(escrow.amount), 0)', 'total')
+      .leftJoin('escrow.payments', 'payment', 'payment.status = :payStatus', {
+        payStatus: PaymentStatus.CONFIRMED,
+      })
+      .select(
+        'COALESCE(SUM(escrow.amount), 0) - COALESCE(SUM(payment.amount), 0)',
+        'total',
+      )
       .where('escrow.sponsorId = :sponsorId', { sponsorId })
       .andWhere('escrow.status = :status', { status: EscrowStatus.LOCKED })
       .getRawOne<{ total: string }>();
-    return Number(row?.total ?? 0);
+    return Math.max(0, Number(row?.total ?? 0));
   }
 
   async activeMilestones(
