@@ -84,8 +84,9 @@ export class MaintenancePoolService {
         { escrowId: escrow.id },
       );
       if (updateResult.affected === 0) {
-        // Another request won the race — top up the winner's escrow instead.
-        const existingPool = await this.findOne(id);
+        // Another request won the race — fund() with the same
+        // maintenancePoolId tops up the winner's escrow balance, so the
+        // deposit isn't lost (#605: the fetched winner-pool was unused).
         await this.escrowService.fund({
           amount,
           asset: pool.asset,
