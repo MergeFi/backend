@@ -102,7 +102,10 @@ describe('RepoScopeGuard', () => {
     );
   });
 
-  it('claims an unassigned tracked repository for the first maintainer to sync it', async () => {
+  // Ownership is no longer a sync side-effect (#565) — an unclaimed repo is
+  // syncable but NOT auto-assigned to whoever happens to sync it first;
+  // maintainerId stays null until it's set explicitly.
+  it('allows an unassigned tracked repository without silently claiming it', async () => {
     userRepo.findOne.mockResolvedValue({
       id: 'user-1',
       roles: [UserRole.MAINTAINER],
@@ -113,10 +116,7 @@ describe('RepoScopeGuard', () => {
     });
 
     await expect(guard.canActivate(maintainerContext())).resolves.toBe(true);
-    expect(repositoryRepo.update).toHaveBeenCalledWith(
-      { id: 'repo-uuid-1' },
-      { maintainerId: 'user-1' },
-    );
+    expect(repositoryRepo.update).not.toHaveBeenCalled();
   });
 
   it('refuses a first-time sync of an untracked repository', async () => {
@@ -168,9 +168,9 @@ describe('RepoScopeGuard', () => {
   });
 
   it('refuses an unauthenticated request', async () => {
-    await expect(guard.canActivate(context({ owner: 'acme', repo: 'repo' }))).rejects.toThrow(
-      /Authentication is required/,
-    );
+    await expect(
+      guard.canActivate(context({ owner: 'acme', repo: 'repo' })),
+    ).rejects.toThrow(/Authentication is required/);
   });
 
   it('refuses a request whose authenticated user no longer exists', async () => {
@@ -182,8 +182,8 @@ describe('RepoScopeGuard', () => {
   });
 
   it('refuses a request with no repository parameters', async () => {
-    await expect(guard.canActivate(context({ user: { userId: 'user-1' } }))).rejects.toThrow(
-      NotFoundException,
-    );
+    await expect(
+      guard.canActivate(context({ user: { userId: 'user-1' } })),
+    ).rejects.toThrow(NotFoundException);
   });
 });

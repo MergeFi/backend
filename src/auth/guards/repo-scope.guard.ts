@@ -9,7 +9,7 @@ import { Reflector } from '@nestjs/core';
 import { InjectRepository } from '@nestjs/typeorm';
 import { ConfigService } from '@nestjs/config';
 import { Request } from 'express';
-import { Repository } from 'typeorm';
+import { ILike, Repository } from 'typeorm';
 import { Repository as RepositoryEntity } from '../../common/entities';
 import { User } from '../../common/entities';
 import { UserRole } from '../../common/enums';
@@ -82,8 +82,11 @@ export class RepoScopeGuard implements CanActivate {
       throw new ForbiddenException('Maintainer role required');
     }
 
+    // GitHub owner/repo names are case-insensitive — the isAllowlisted check
+    // lowercases both sides but this lookup didn't, so `Owner/Repo` and
+    // `owner/repo` resolved differently (#564). Match case-insensitively.
     const tracked = await this.repositoryRepo.findOne({
-      where: { fullName },
+      where: { fullName: ILike(fullName) },
       select: { id: true, maintainerId: true },
     });
 
@@ -104,12 +107,12 @@ export class RepoScopeGuard implements CanActivate {
       );
     }
 
-    // Tracked with no maintainer yet: allow, and claim it for this user so the
-    // scope is explicit from here on.
-    await this.repositoryRepo.update(
-      { id: tracked.id },
-      { maintainerId: user.id },
-    );
+    // Tracked with no maintainer yet: the old code silently assigned it to
+    // the first requester ("lets the first claimant take it", #565) — any
+    // maintainer could claim ownership of any unclaimed repo just by syncing
+    // it. Don't self-assign; a repo's owner must be set explicitly. Allow the
+    // sync but leave maintainerId null — ownership assignment is a separate,
+    // deliberate action.
     return true;
   }
 
