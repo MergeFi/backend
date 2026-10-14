@@ -8,16 +8,22 @@ import {
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Octokit } from '@octokit/rest';
-import {
-  FindOptionsRelations,
-  Repository as TypeOrmRepository,
-} from 'typeorm';
+import { FindOptionsRelations, Repository as TypeOrmRepository } from 'typeorm';
 import { ANALYTICS_PLATFORM_INVALIDATE_EVENT } from '../analytics/analytics.events';
 import { Issue, Repository } from '../common/entities';
 import { IssueState } from '../common/enums';
 import { GITHUB_OCTOKIT } from './octokit.provider';
 
-const MAINTENANCE_LABELS = ['maintenance', 'dependencies', 'chore', 'docs'];
+// GitHub's default label set (created in every new repo) uses `documentation`,
+// not `docs` — without it, docs issues in most repos were never
+// isMaintenanceType and assignReward rejected them as ineligible (#563).
+const MAINTENANCE_LABELS = [
+  'maintenance',
+  'dependencies',
+  'chore',
+  'docs',
+  'documentation',
+];
 
 /**
  * Shape shared by a REST `issues.listForRepo` item and an `issues` webhook

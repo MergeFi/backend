@@ -1,7 +1,7 @@
 import { ApiProperty } from '@nestjs/swagger';
 import { Type } from 'class-transformer';
 import {
-  IsDateString,
+  IsDate,
   IsOptional,
   IsString,
   IsUUID,
@@ -73,7 +73,8 @@ export class FundEscrowDto {
   @IsOptional()
   @IsString()
   @Matches(/^\d+$/, {
-    message: 'onChainIssueId must be the linked GitHub issue numeric id (digits only)',
+    message:
+      'onChainIssueId must be the linked GitHub issue numeric id (digits only)',
   })
   @MaxLength(20)
   onChainIssueId?: string;
@@ -89,7 +90,11 @@ export class FundEscrowDto {
       'ISO 8601 refund-deadline passed to escrow::fund (defaults to the configured window)',
   })
   @IsOptional()
-  @IsDateString()
+  // The global ValidationPipe has transform:true — class-transformer's
+  // @Type(()=>Date) converts the string to a Date BEFORE class-validator
+  // runs, so @IsDateString() (which requires a string) always rejected it.
+  // Validate the transformed Date with @IsDate() instead (#580).
+  @IsDate()
   @Type(() => Date)
   deadline?: Date;
 }
