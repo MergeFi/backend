@@ -11,8 +11,14 @@ import {
 
 export interface SponsorDashboard {
   activeBounties: Bounty[];
+  /** @deprecated sums USDC and XLM into one meaningless number — use totalSpentByAsset (#574). */
   totalSpent: number;
+  /** @deprecated sums USDC and XLM into one meaningless number — use budgetLockedByAsset (#574). */
   budgetLocked: number;
+  /** Per-asset spend: {USDC: n, XLM: n} — the currency-correct totals. */
+  totalSpentByAsset: Record<string, number>;
+  /** Per-asset locked balance: {USDC: n, XLM: n}. */
+  budgetLockedByAsset: Record<string, number>;
   activeMilestones: Milestone[];
   recentPayments: Payment[];
 }
@@ -63,6 +69,26 @@ export class SponsorsService {
    * this stays correct even if the parent bounty/milestone is later deleted
    * (#27).
    */
+  /**
+   * Per-asset spend — a sponsor who paid 100 USDC and 100 XLM was previously
+   * shown "totalSpent: 200", a meaningless sum of unlike currencies (#574).
+   * Group by the escrow's asset so the total stays meaningful per currency.
+   */
+  async totalSpendByAsset(sponsorId: string): Promise<Record<string, number>> {
+    const rows = await this.paymentRepo
+      .createQueryBuilder('payment')
+      .innerJoin('payment.escrow', 'escrow')
+      .select('escrow.asset', 'asset')
+      .addSelect('COALESCE(SUM(payment.amount), 0)', 'total')
+      .where('escrow.sponsorId = :sponsorId', { sponsorId })
+      .andWhere('payment.status = :status', {
+        status: PaymentStatus.CONFIRMED,
+      })
+      .groupBy('escrow.asset')
+      .getRawMany<{ asset: string; total: string }>();
+    return Object.fromEntries(rows.map((r) => [r.asset, Number(r.total)]));
+  }
+
   async totalSpend(sponsorId: string): Promise<number> {
     const row = await this.paymentRepo
       .createQueryBuilder('payment')
@@ -93,6 +119,21 @@ export class SponsorsService {
       .andWhere('escrow.status = :status', { status: EscrowStatus.LOCKED })
       .getRawOne<{ total: string }>();
     return Number(row?.total ?? 0);
+  }
+
+  /** Per-asset locked-balance — see #574 (unlike currencies must not sum). */
+  async budgetLockedByAsset(
+    sponsorId: string,
+  ): Promise<Record<string, number>> {
+    const rows = await this.escrowRepo
+      .createQueryBuilder('escrow')
+      .select('escrow.asset', 'asset')
+      .addSelect('COALESCE(SUM(escrow.amount), 0)', 'total')
+      .where('escrow.sponsorId = :sponsorId', { sponsorId })
+      .andWhere('escrow.status = :status', { status: EscrowStatus.LOCKED })
+      .groupBy('escrow.asset')
+      .getRawMany<{ asset: string; total: string }>();
+    return Object.fromEntries(rows.map((r) => [r.asset, Number(r.total)]));
   }
 
   async activeMilestones(
@@ -131,13 +172,23 @@ export class SponsorsService {
     sponsorId: string,
     options: SponsorDashboardOptions = {},
   ): Promise<SponsorDashboard> {
-    const [activeBounties, totalSpent, budgetLocked, activeMilestones] =
-      await Promise.all([
-        this.activeBounties(sponsorId, options),
-        this.totalSpend(sponsorId),
-        this.budgetLocked(sponsorId),
-        this.activeMilestones(sponsorId, options),
-      ]);
+    const [
+      activeBounties,
+      totalSpent,
+      budgetLocked,
+      activeMilestones,
+      totalSpentByAsset,
+      budgetLockedByAsset,
+    ] = await Promise.all([
+      this.activeBounties(sponsorId, options),
+      this.totalSpend(sponsorId),
+      this.budgetLocked(sponsorId),
+      this.activeMilestones(sponsorId, options),
+      // Per-asset breakdowns (#574) — the single numbers above sum unlike
+      // currencies; these group by asset so USDC and XLM stay separate.
+      this.totalSpendByAsset(sponsorId),
+      this.budgetLockedByAsset(sponsorId),
+    ]);
 
     // Joins on escrow.sponsorId directly (not escrow.bounty.sponsorId): the
     // old join required the escrow's parent bounty row to still exist and
@@ -157,6 +208,8 @@ export class SponsorsService {
       activeBounties,
       totalSpent,
       budgetLocked,
+      totalSpentByAsset,
+      budgetLockedByAsset,
       activeMilestones,
       recentPayments,
     };

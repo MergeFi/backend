@@ -37,7 +37,10 @@ export interface ContributorAnalyticsQuery {
 
 export interface PlatformSummary {
   totalBounties: number;
+  /** @deprecated sums USDC and XLM into one meaningless number — use totalPaidOutByAsset (#574). */
   totalPaidOut: number;
+  /** Per-asset payout totals: {USDC: n, XLM: n} — the currency-correct breakdown. */
+  totalPaidOutByAsset: Record<string, number>;
   totalRepos: number;
 }
 
@@ -97,19 +100,32 @@ export class AnalyticsService {
   }
 
   private async loadPlatformSummary(): Promise<PlatformSummary> {
-    const [totalBounties, totalPaidRaw, totalRepos] = await Promise.all([
-      this.bountyRepo.count(),
-      this.bountyRepo
-        .createQueryBuilder('bounty')
-        .select('COALESCE(SUM(bounty.amount), 0)', 'total')
-        .where('bounty.status = :status', { status: BountyStatus.PAID })
-        .getRawOne<{ total: string }>(),
-      this.repositoryRepo.count(),
-    ]);
+    const [totalBounties, totalPaidRaw, paidByAssetRows, totalRepos] =
+      await Promise.all([
+        this.bountyRepo.count(),
+        this.bountyRepo
+          .createQueryBuilder('bounty')
+          .select('COALESCE(SUM(bounty.amount), 0)', 'total')
+          .where('bounty.status = :status', { status: BountyStatus.PAID })
+          .getRawOne<{ total: string }>(),
+        // Per-asset payout — the single totalPaidOut sums USDC and XLM into a
+        // meaningless number (#574); group by asset for the correct breakdown.
+        this.bountyRepo
+          .createQueryBuilder('bounty')
+          .select('bounty.asset', 'asset')
+          .addSelect('COALESCE(SUM(bounty.amount), 0)', 'total')
+          .where('bounty.status = :status', { status: BountyStatus.PAID })
+          .groupBy('bounty.asset')
+          .getRawMany<{ asset: string; total: string }>(),
+        this.repositoryRepo.count(),
+      ]);
 
     return {
       totalBounties,
       totalPaidOut: Number(totalPaidRaw?.total ?? 0),
+      totalPaidOutByAsset: Object.fromEntries(
+        paidByAssetRows.map((r) => [r.asset, Number(r.total)]),
+      ),
       totalRepos,
     };
   }
