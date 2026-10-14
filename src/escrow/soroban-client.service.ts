@@ -89,10 +89,60 @@ export class SorobanClientService {
 
   constructor(private readonly configService: ConfigService<AppConfig, true>) {
     this.stellar = this.configService.get('stellar', { infer: true });
-    this.networkPassphrase = this.stellar.networkPassphrase || Networks.TESTNET;
+    this.networkPassphrase = this.resolvePassphrase(this.stellar);
     this.server = new rpc.Server(this.stellar.sorobanRpcUrl, {
       allowHttp: this.stellar.sorobanRpcUrl.startsWith('http://'),
     });
+  }
+
+  /**
+   * Resolve the network passphrase. STELLAR_NETWORK_PASSPHRASE is an explicit
+   * override; otherwise derive it from STELLAR_NETWORK so the two can't drift
+   * apart (a `NETWORK=mainnet` + leftover testnet-passphrase config only failed
+   * at submission with an opaque tx_bad_auth — #611).
+   */
+  private resolvePassphrase(stellar: AppConfig['stellar']): string {
+    if (stellar.networkPassphrase) {
+      return stellar.networkPassphrase;
+    }
+    switch ((stellar.network || 'testnet').toLowerCase()) {
+      case 'mainnet':
+      case 'public':
+      case 'pubnet':
+        return Networks.PUBLIC;
+      case 'futurenet':
+        return Networks.FUTURENET;
+      default:
+        return Networks.TESTNET;
+    }
+  }
+
+  /** At boot, fail fast if the configured passphrase doesn't match the RPC
+   * server's real network — a mismatched deploy should refuse to start rather
+   * than fail on a money path later. Skipped when the client isn't configured
+   * (dry-run) so the check only runs on live paths. */
+  async onModuleInit(): Promise<void> {
+    if (!this.isConfigured()) {
+      return;
+    }
+    try {
+      const net = await this.server.getNetwork();
+      if (net.passphrase !== this.networkPassphrase) {
+        throw new Error(
+          `Soroban network mismatch: configured passphrase for ` +
+            `'${this.stellar.network}' does not match the RPC server's ` +
+            `network '${net.passphrase}'. Check STELLAR_NETWORK and ` +
+            `STELLAR_NETWORK_PASSPHRASE agree.`,
+        );
+      }
+    } catch (err) {
+      this.logger.error(
+        `Soroban boot-time network check failed: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+      throw err;
+    }
   }
 
   /** Whether a real escrow contract has been configured for this environment. */
