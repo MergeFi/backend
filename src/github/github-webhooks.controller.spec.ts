@@ -122,12 +122,7 @@ describe('GithubWebhooksController — header extraction and response shape (#31
       'sha256=bad',
     );
 
-    expect(handleEvent).toHaveBeenCalledWith(
-      'push',
-      'delivery-11',
-      {},
-      false,
-    );
+    expect(handleEvent).toHaveBeenCalledWith('push', 'delivery-11', {}, false);
     expect(result).toEqual({
       received: true,
       eventId: 'event-11',
@@ -137,9 +132,12 @@ describe('GithubWebhooksController — header extraction and response shape (#31
 
   it('is declared with a 202 HTTP status for the accepted delivery', () => {
     // @HttpCode(202) tells Nest to answer 202 instead of POST's default 201.
+    // Property-key form — referencing prototype.handle trips unbound-method
+    // (#606).
     const httpCode = Reflect.getMetadata(
       '__httpCode__',
-      GithubWebhooksController.prototype.handle,
+      GithubWebhooksController.prototype,
+      'handle',
     );
     expect(httpCode).toBe(202);
   });
