@@ -1,6 +1,7 @@
 import { ApiProperty } from '@nestjs/swagger';
 import { Transform, Type } from 'class-transformer';
 import {
+  ArrayMaxSize,
   ArrayMinSize,
   IsNotEmpty,
   IsNumber,
@@ -34,6 +35,7 @@ export class TeamMemberSplitDto {
 export class UpdateTeamSplitsDto {
   @ApiProperty({ type: [TeamMemberSplitDto] })
   @ArrayMinSize(1)
+  @ArrayMaxSize(50)
   @ValidateNested({ each: true })
   @Type(() => TeamMemberSplitDto)
   splits: TeamMemberSplitDto[];
@@ -56,6 +58,7 @@ export class CreateTeamDto {
 
   @ApiProperty({ type: [TeamMemberSplitDto] })
   @ArrayMinSize(1)
+  @ArrayMaxSize(50)
   @ValidateNested({ each: true })
   @Type(() => TeamMemberSplitDto)
   members: TeamMemberSplitDto[];

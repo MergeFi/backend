@@ -1,6 +1,7 @@
 import { ApiProperty } from '@nestjs/swagger';
 import { Type } from 'class-transformer';
 import {
+  ArrayMaxSize,
   ArrayMinSize,
   IsNumber,
   IsOptional,
@@ -29,8 +30,13 @@ export class SplitRecipientDto {
 }
 
 export class SplitReleaseDto {
+  // Unbounded recipients: the contract's `release` iterates every recipient
+  // (one token transfer each) — a large split exceeds Soroban's
+  // per-transaction resource limits and fails on-chain (#581, #15). Cap at a
+  // size that stays within the contract's budget.
   @ApiProperty({ type: [SplitRecipientDto] })
   @ArrayMinSize(1)
+  @ArrayMaxSize(50)
   @ValidateNested({ each: true })
   @Type(() => SplitRecipientDto)
   recipients: SplitRecipientDto[];
