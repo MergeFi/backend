@@ -1,6 +1,11 @@
-import { Escrow } from '../common/entities';
+import { Escrow, Payment } from '../common/entities';
 
 export type PublicEscrow = Omit<Escrow, 'metadata'>;
+
+/** A Payment with its `escrow` relation redacted to the public shape. */
+export type PublicPayment = Omit<Payment, 'escrow'> & {
+  escrow?: PublicEscrow;
+};
 
 /**
  * Strips `metadata` before an Escrow reaches an HTTP client. `metadata`
@@ -19,4 +24,14 @@ export function toPublicEscrow(escrow: Escrow): PublicEscrow {
   const publicEscrow: Partial<Escrow> = { ...escrow };
   delete publicEscrow.metadata;
   return publicEscrow as PublicEscrow;
+}
+
+/**
+ * #91 — `splitRelease` returned raw `Payment[]`, so a loaded `payment.escrow`
+ * relation carried `Escrow.metadata` (raw Soroban diagnostics) to the client.
+ * Strip it the same way `toPublicEscrow` does for the escrow routes.
+ */
+export function toPublicPayment(payment: Payment): PublicPayment {
+  const { escrow, ...rest } = payment;
+  return escrow ? { ...rest, escrow: toPublicEscrow(escrow) } : { ...rest };
 }
