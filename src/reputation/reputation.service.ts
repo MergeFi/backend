@@ -1,6 +1,7 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
+import { Cron, CronExpression } from '@nestjs/schedule';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { IsNull, Not, Repository } from 'typeorm';
 import { Bounty, Payment, ReputationSnapshot } from '../common/entities';
 import { queryContributorCoreStats } from '../common/stats/contributor-stats.sql';
 
@@ -14,6 +15,8 @@ export interface ReputationHistoryOptions {
 
 @Injectable()
 export class ReputationService {
+  private readonly logger = new Logger(ReputationService.name);
+
   constructor(
     @InjectRepository(Bounty) private readonly bountyRepo: Repository<Bounty>,
     @InjectRepository(Payment)
@@ -45,6 +48,33 @@ export class ReputationService {
       orgsContributedTo: stats.orgs,
     });
     return this.snapshotRepo.save(snapshot);
+  }
+
+  /**
+   * Scheduled sweep — previously the ONLY way a snapshot was written was the
+   * owner-only POST /reputation/:userId/recompute, so GET returned nothing
+   * for anyone who never manually recomputed (#589). Nightly, recompute for
+   * every contributor who has a claimed bounty.
+   */
+  @Cron(CronExpression.EVERY_DAY_AT_MIDNIGHT)
+  async recomputeAllActiveContributors(): Promise<void> {
+    const claimed = await this.bountyRepo.find({
+      where: { claimedById: Not(IsNull()) },
+      select: { claimedById: true },
+    });
+    const userIds = [...new Set(claimed.map((b) => b.claimedById!))];
+    for (const userId of userIds) {
+      try {
+        await this.computeAndSave(userId);
+      } catch (err) {
+        this.logger.warn(`Reputation recompute failed for ${userId}: ${err}`);
+      }
+    }
+    if (userIds.length) {
+      this.logger.log(
+        `Recomputed reputation for ${userIds.length} contributor(s)`,
+      );
+    }
   }
 
   async getLatest(userId: string): Promise<ReputationSnapshot | null> {
