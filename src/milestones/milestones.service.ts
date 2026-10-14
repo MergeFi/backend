@@ -36,12 +36,13 @@ export class MilestonesService {
       throw new NotFoundException(`Repository ${dto.repositoryId} not found`);
     }
 
-    // Fall back to the authenticated caller's id when the client omits sponsorId.
-    // This prevents milestones with sponsorId = null that become permanently
-    // invisible to every sponsor dashboard filter.
+    // The sponsor is always the authenticated caller — never a client-
+    // supplied sponsorId. Otherwise a caller could create a milestone owned
+    // by someone else, and the sponsor-only ops (fund/close) would gate on
+    // the wrong identity (#40).
     const milestone = this.milestoneRepo.create({
       repositoryId: dto.repositoryId,
-      sponsorId: dto.sponsorId ?? callerUserId,
+      sponsorId: callerUserId,
       title: dto.title?.trim() ?? dto.title,
       description: dto.description ?? null,
       budget: dto.budget,
