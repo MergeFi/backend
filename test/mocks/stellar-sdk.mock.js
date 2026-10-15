@@ -40,7 +40,16 @@ class TransactionBuilder {
   }
 }
 
+
+class StrKey {
+  // Tests only need accept/reject — real CRC16 stays in the SDK's prod path.
+  static isValidEd25519PublicKey(value) {
+    return typeof value === 'string' && /^G[A-Z2-7]{55}$/.test(value);
+  }
+}
+
 module.exports = {
+  StrKey,
   Contract,
   Address,
   Keypair,
