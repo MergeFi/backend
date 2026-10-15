@@ -1,7 +1,7 @@
 import { ApiProperty } from '@nestjs/swagger';
 import { Type } from 'class-transformer';
 import {
-  IsDateString,
+  IsDate,
   IsOptional,
   IsString,
   IsUUID,
@@ -89,7 +89,10 @@ export class FundEscrowDto {
       'ISO 8601 refund-deadline passed to escrow::fund (defaults to the configured window)',
   })
   @IsOptional()
-  @IsDateString()
+  // @Type(() => Date) transforms before validation, so IsDateString (which
+  // requires a string) would reject every real deadline. IsDate accepts the
+  // transformed value and still rejects NaN "Invalid Date" results.
+  @IsDate()
   @Type(() => Date)
   deadline?: Date;
 }
