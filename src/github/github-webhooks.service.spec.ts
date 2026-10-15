@@ -10,7 +10,6 @@ import * as sigUtil from './webhook-signature.util';
 
 describe('GithubWebhooksService', () => {
   let service: GithubWebhooksService;
-  let webhookEventRepo: { create: jest.Mock; save: jest.Mock };
   let webhookEventRepo: {
     create: jest.Mock;
     save: jest.Mock;
@@ -40,6 +39,7 @@ describe('GithubWebhooksService', () => {
       findOne: jest.fn().mockResolvedValue(null),
     };
     bountyRepo = { findOne: jest.fn() };
+    issueRepo = { findOne: jest.fn().mockResolvedValue(null) };
     bountiesService = {
       markInReview: jest.fn().mockResolvedValue(undefined),
       markMergedAndRelease: jest.fn().mockResolvedValue(undefined),
@@ -264,11 +264,11 @@ describe('GithubWebhooksService', () => {
       byNumber: Record<number, { bountyId: string; status: string }>,
     ) {
       syncService.findIssueByRepoAndNumber.mockImplementation(
-        ({ where }: { where: { number: number } }) => {
-          const entry = byNumber[where.number];
+        (_repoId: string, number: number) => {
+          const entry = byNumber[number];
           return Promise.resolve(
             entry
-              ? { id: `issue-${where.number}`, bounty: { id: entry.bountyId } }
+              ? { id: `issue-${number}`, bounty: { id: entry.bountyId } }
               : null,
           );
         },
@@ -637,9 +637,8 @@ describe('GithubWebhooksService', () => {
   describe('comma-separated closing references (#309)', () => {
     /** Collects every issue number the merged-PR path ends up releasing. */
     function releasedNumbers(): number[] {
-      return issueRepo.findOne.mock.calls.map(
-        (call: unknown[]) =>
-          (call[0] as { where: { number: number } }).where.number,
+      return syncService.findIssueByRepoAndNumber.mock.calls.map(
+        (call: unknown[]) => call[1] as number,
       );
     }
 
@@ -732,11 +731,11 @@ describe('GithubWebhooksService', () => {
     });
 
     it('marks a comma-separated bounty in review when the PR is opened', async () => {
-      issueRepo.findOne.mockImplementation(
-        ({ where }: { where: { number: number } }) =>
+      syncService.findIssueByRepoAndNumber.mockImplementation(
+        (_repoId: string, number: number) =>
           Promise.resolve({
-            id: `issue-${where.number}`,
-            bounty: { id: `bounty-${where.number}` },
+            id: `issue-${number}`,
+            bounty: { id: `bounty-${number}` },
           }),
       );
       bountyRepo.findOne.mockImplementation(
@@ -782,10 +781,10 @@ describe('GithubWebhooksService', () => {
 
   describe('pull_request edited events (#310)', () => {
     it('moves a bounty to in_review when a closing keyword is added after opening', async () => {
-      issueRepo.findOne.mockImplementation(
-        ({ where }: { where: { number: number } }) =>
+      syncService.findIssueByRepoAndNumber.mockImplementation(
+        (_repoId: string, number: number) =>
           Promise.resolve({
-            id: `issue-${where.number}`,
+            id: `issue-${number}`,
             bounty: { id: 'bounty-42' },
           }),
       );
