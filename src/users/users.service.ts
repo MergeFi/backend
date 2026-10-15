@@ -170,7 +170,7 @@ export class UsersService {
 
   async setStellarAddress(
     userId: string,
-    stellarAddress: string,
+    stellarAddress: string | null,
   ): Promise<PublicUserDto> {
     const user = await this.findOneRaw(userId);
     user.stellarAddress = stellarAddress;
