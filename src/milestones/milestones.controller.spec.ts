@@ -6,7 +6,9 @@ import { MilestonesService } from './milestones.service';
 import { CreateMilestoneDto } from './dto/create-milestone.dto';
 import { AssetType, MilestoneStatus } from '../common/enums';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
+import { IdempotencyInterceptor } from '../common/idempotency/idempotency.interceptor';
 import { RolesGuard } from '../auth/guards/roles.guard';
+import type { Request } from 'express';
 
 describe('MilestonesController', () => {
   let controller: MilestonesController;
@@ -39,6 +41,8 @@ describe('MilestonesController', () => {
       .useValue({ canActivate: () => true })
       .overrideGuard(RolesGuard)
       .useValue({ canActivate: () => true })
+      .overrideInterceptor(IdempotencyInterceptor)
+      .useValue({ intercept: (_ctx: unknown, next: { handle: () => unknown }) => next.handle() })
       .compile();
 
     controller = module.get(MilestonesController);
@@ -53,9 +57,9 @@ describe('MilestonesController', () => {
         asset: AssetType.USDC,
       };
 
-      await controller.create(dto);
+      await controller.create(dto, { user: { userId: 'u1' } } as Request);
 
-      expect(milestonesService.create).toHaveBeenCalledWith(dto);
+      expect(milestonesService.create).toHaveBeenCalledWith(dto, 'u1');
     });
   });
 
@@ -77,9 +81,9 @@ describe('MilestonesController', () => {
 
   describe('fund', () => {
     it('calls milestonesService.fund with id and funderAddress', async () => {
-      await controller.fund('m1', { funderAddress: 'GFUNDER' });
+      await controller.fund('m1', { funderAddress: 'GFUNDER' }, { user: { userId: 'u1' } } as Request);
 
-      expect(milestonesService.fund).toHaveBeenCalledWith('m1', 'GFUNDER');
+      expect(milestonesService.fund).toHaveBeenCalledWith('m1', 'GFUNDER', 'u1');
     });
   });
 
