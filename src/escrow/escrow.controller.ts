@@ -17,7 +17,7 @@ import { EscrowService } from './escrow.service';
 import { FundEscrowDto } from './dto/fund-escrow.dto';
 import { ReleaseEscrowDto } from './dto/release-escrow.dto';
 import { SplitReleaseDto } from './dto/split-release.dto';
-import { toPublicEscrow } from './escrow-response.mapper';
+import { toPublicEscrow, toPublicPayment } from './escrow-response.mapper';
 import { Idempotent } from '../common/idempotency/idempotent.decorator';
 import {
   ApiInternalErrorResponse,
@@ -47,7 +47,8 @@ export class EscrowController {
 
   @ApiOperation({
     summary: 'Release an escrow to its recipient',
-    description: 'Rate-limited to 1 request/second to protect against replay/DoS.',
+    description:
+      'Rate-limited to 1 request/second to protect against replay/DoS.',
   })
   @ApiBearerAuth()
   @ApiStandardErrorResponses()
@@ -82,12 +83,15 @@ export class EscrowController {
     @Param('id', new ParseUUIDPipe()) id: string,
     @Body() dto: SplitReleaseDto,
   ) {
-    return this.escrowService.splitRelease(id, dto.recipients);
+    return this.escrowService
+      .splitRelease(id, dto.recipients)
+      .then((payments) => payments.map(toPublicPayment));
   }
 
   @ApiOperation({
     summary: 'Refund an escrow to its original funder',
-    description: 'Rate-limited to 1 request/second to protect against replay/DoS.',
+    description:
+      'Rate-limited to 1 request/second to protect against replay/DoS.',
   })
   @ApiBearerAuth()
   @ApiStandardErrorResponses()
