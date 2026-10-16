@@ -7,6 +7,10 @@ import { CreateMilestoneDto } from './dto/create-milestone.dto';
 import { AssetType, MilestoneStatus } from '../common/enums';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
+import { Reflector } from '@nestjs/core';
+import { getRepositoryToken } from '@nestjs/typeorm';
+import { IdempotencyInterceptor } from '../common/idempotency/idempotency.interceptor';
+import { IdempotencyKey } from '../common/entities/idempotency-key.entity';
 
 describe('MilestonesController', () => {
   let controller: MilestonesController;
@@ -33,7 +37,20 @@ describe('MilestonesController', () => {
 
     const module: TestingModule = await Test.createTestingModule({
       controllers: [MilestonesController],
-      providers: [{ provide: MilestonesService, useValue: milestonesService }],
+      providers: [
+        { provide: MilestonesService, useValue: milestonesService },
+        IdempotencyInterceptor,
+        Reflector,
+        {
+          provide: getRepositoryToken(IdempotencyKey),
+          useValue: {
+            findOneBy: jest.fn(),
+            insert: jest.fn(),
+            update: jest.fn(),
+            delete: jest.fn(),
+          },
+        },
+      ],
     })
       .overrideGuard(JwtAuthGuard)
       .useValue({ canActivate: () => true })
@@ -53,9 +70,9 @@ describe('MilestonesController', () => {
         asset: AssetType.USDC,
       };
 
-      await controller.create(dto);
+      await controller.create(dto, { user: { userId: 'user-1' } } as any);
 
-      expect(milestonesService.create).toHaveBeenCalledWith(dto);
+      expect(milestonesService.create).toHaveBeenCalledWith(dto, 'user-1');
     });
   });
 
@@ -77,9 +94,9 @@ describe('MilestonesController', () => {
 
   describe('fund', () => {
     it('calls milestonesService.fund with id and funderAddress', async () => {
-      await controller.fund('m1', { funderAddress: 'GFUNDER' });
+      await controller.fund('m1', { funderAddress: 'GFUNDER' }, { user: { userId: 'user-1' } } as any);
 
-      expect(milestonesService.fund).toHaveBeenCalledWith('m1', 'GFUNDER');
+      expect(milestonesService.fund).toHaveBeenCalledWith('m1', 'GFUNDER', 'user-1');
     });
   });
 

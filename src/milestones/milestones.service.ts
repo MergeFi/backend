@@ -153,7 +153,23 @@ export class MilestonesService {
         `Milestone ${milestoneId} has not been funded yet`,
       );
     }
-    assertTransition(milestone.status, MilestoneStatus.IN_PROGRESS);
+    // The status check replaces a bare transition assert — a milestone pays
+    // from FUNDED or IN_PROGRESS (#578). Anything else is a clean 400 with a
+    // message callers can act on, and the state machine only runs when the
+    // status actually changes (FUNDED -> IN_PROGRESS), so a second payout on
+    // an in-flight milestone doesn't hit an invalid IN_PROGRESS->IN_PROGRESS
+    // transition.
+    if (
+      milestone.status !== MilestoneStatus.FUNDED &&
+      milestone.status !== MilestoneStatus.IN_PROGRESS
+    ) {
+      throw new BadRequestException(
+        `Milestone ${milestoneId} is not accepting distributions`,
+      );
+    }
+    if (milestone.status !== MilestoneStatus.IN_PROGRESS) {
+      assertTransition(milestone.status, MilestoneStatus.IN_PROGRESS);
+    }
 
     // Verify the issue belongs to this milestone (#114).
     const issue = milestone.issues.find((i) => i.id === issueId);
