@@ -43,4 +43,13 @@ describe('UsersController (e2e)', () => {
         .expect(403);
     });
   });
+
+  describe('PATCH /users/:id/stellar-address', () => {
+    it('should return 403 when the guard denies the request', () => {
+      return request(app.getHttpServer())
+        .patch('/users/00000000-0000-0000-0000-000000000000/stellar-address')
+        .send({ stellarAddress: 'GXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX' })
+        .expect(403);
+    });
+  });
 });
