@@ -88,7 +88,7 @@ describe('EscrowService', () => {
     dataSource = {
       transaction: jest.fn((fn: (m: typeof manager) => unknown) => fn(manager)),
       manager,
-    } as unknown as { transaction: jest.Mock; manager: typeof manager };
+    };
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
@@ -250,7 +250,7 @@ describe('EscrowService', () => {
       // First save (the PENDING row) succeeds; the post-invoke save fails —
       // exactly the post-on-chain-success failure #42 describes.
       escrowRepo.save
-        .mockResolvedValueOnce({ id: 'escrow-1' } as Partial<Escrow>)
+        .mockResolvedValueOnce({ id: 'escrow-1' })
         .mockRejectedValueOnce(new Error('connection terminated unexpectedly'));
 
       await expect(
@@ -288,7 +288,7 @@ describe('EscrowService', () => {
     it('surfaces the original error when the post-invoke retry also fails (#302)', async () => {
       // PENDING row persists, then every post-invoke write fails too.
       escrowRepo.save
-        .mockResolvedValueOnce({ id: 'escrow-1' } as Partial<Escrow>)
+        .mockResolvedValueOnce({ id: 'escrow-1' })
         .mockRejectedValue(new Error('pool exhausted'));
 
       await expect(
