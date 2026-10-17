@@ -1,5 +1,9 @@
 import { Test, TestingModule } from '@nestjs/testing';
-import { DefaultValuePipe, ParseIntPipe, ArgumentMetadata } from '@nestjs/common';
+import {
+  DefaultValuePipe,
+  ParseIntPipe,
+  ArgumentMetadata,
+} from '@nestjs/common';
 import { GithubController } from './github.controller';
 import { GithubSyncService } from './github-sync.service';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
