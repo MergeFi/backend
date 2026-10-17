@@ -132,7 +132,13 @@ export class BountiesController {
     return this.bountiesService.claim(id, userId);
   }
 
-  @ApiOperation({ summary: 'Approve a claimed bounty' })
+  // Stub — not implemented (#253 regression). Marked deprecated so /api/docs
+  // doesn't present it as a working operation (#613).
+  @ApiOperation({
+    summary: 'Approve a claimed bounty',
+    deprecated: true,
+    description: 'Not implemented — stub route, no approval happens.',
+  })
   @ApiBearerAuth()
   @ApiStandardErrorResponses()
   @Idempotent('bounty.approve')
@@ -143,7 +149,13 @@ export class BountiesController {
     return this.bountiesService.approve(id);
   }
 
-  @ApiOperation({ summary: 'Reject a claimed bounty' })
+  // Stub — not implemented (#253 regression). Marked deprecated so /api/docs
+  // doesn't present it as a working operation (#613).
+  @ApiOperation({
+    summary: 'Reject a claimed bounty',
+    deprecated: true,
+    description: 'Not implemented — stub route, no rejection happens.',
+  })
   @ApiBearerAuth()
   @ApiStandardErrorResponses()
   @Idempotent('bounty.reject')

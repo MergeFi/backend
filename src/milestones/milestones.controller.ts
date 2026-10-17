@@ -133,7 +133,13 @@ export class MilestonesController {
     );
   }
 
-  @ApiOperation({ summary: 'Allocate the milestone budget' })
+  // Stub — not implemented (#253 regression). Marked deprecated so /api/docs
+  // doesn't present it as a working operation (#613).
+  @ApiOperation({
+    summary: 'Allocate the milestone budget',
+    deprecated: true,
+    description: 'Not implemented — stub route, no allocation happens.',
+  })
   @ApiBearerAuth()
   @ApiStandardErrorResponses()
   @Idempotent('milestone.allocateBudget')
