@@ -31,7 +31,19 @@ describe('Stellar address validation at the API boundary — users endpoint (#29
       providers: [{ provide: UsersService, useValue: usersService }],
     })
       .overrideGuard(JwtAuthGuard)
-      .useValue({ canActivate: () => true })
+      .useValue({
+        canActivate: (ctx: import('@nestjs/common').ExecutionContext) => {
+          const req = ctx.switchToHttp().getRequest<{
+            params?: { id?: string };
+            user?: { userId: string; username: string };
+          }>();
+          req.user = {
+            userId: req.params?.id ?? 'user_1',
+            username: 'testuser',
+          };
+          return true;
+        },
+      })
       .compile();
 
     app = moduleFixture.createNestApplication();
