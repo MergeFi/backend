@@ -59,3 +59,151 @@ describe('AuthController handoff exchange logging (#366)', () => {
     expect(warnSpy).not.toHaveBeenCalled();
   });
 });
+
+describe('AuthController githubCallback cookie security (#614)', () => {
+  let controller: AuthController;
+  let loginWithGithub: jest.Mock;
+  let createHandoffCode: jest.Mock;
+  let configServiceGet: jest.Mock;
+
+  beforeEach(() => {
+    loginWithGithub = jest
+      .fn()
+      .mockResolvedValue({ accessToken: 'jwt-token-xyz' });
+    createHandoffCode = jest.fn().mockReturnValue('handoff-code-123');
+    configServiceGet = jest.fn((key: string) => {
+      if (key === 'frontendUrl') return 'https://staging.mergefi.xyz';
+      if (key === 'env') return 'staging';
+      if (key === 'appUrl') return 'https://api-staging.mergefi.xyz';
+      return undefined;
+    });
+
+    const mockAuthService = {
+      loginWithGithub,
+      createHandoffCode,
+    } as unknown as AuthService;
+
+    const mockConfigService = {
+      get: configServiceGet,
+    } as unknown as ConfigService<AppConfig, true>;
+
+    controller = new AuthController(mockAuthService, mockConfigService);
+  });
+
+  it('sets secure: true on HTTPS staging/preview deployments via req.secure', async () => {
+    const req = {
+      user: { githubId: '123', login: 'alice' },
+      secure: true,
+      protocol: 'https',
+    } as unknown as Request;
+
+    const cookieMock = jest.fn();
+    const redirectMock = jest.fn();
+    const res = {
+      cookie: cookieMock,
+      redirect: redirectMock,
+    } as unknown as Response;
+
+    await controller.githubCallback(req, res);
+
+    expect(cookieMock).toHaveBeenCalledWith(
+      'access_token',
+      'jwt-token-xyz',
+      expect.objectContaining({
+        httpOnly: true,
+        secure: true,
+        sameSite: 'lax',
+      }),
+    );
+    expect(redirectMock).toHaveBeenCalledWith(
+      'https://staging.mergefi.xyz/auth/callback?code=handoff-code-123',
+    );
+  });
+
+  it('sets secure: true when appUrl begins with https even if req.secure is false', async () => {
+    const req = {
+      user: { githubId: '123', login: 'alice' },
+      secure: false,
+      protocol: 'http',
+    } as unknown as Request;
+
+    const cookieMock = jest.fn();
+    const res = {
+      cookie: cookieMock,
+      redirect: jest.fn(),
+    } as unknown as Response;
+
+    await controller.githubCallback(req, res);
+
+    expect(cookieMock).toHaveBeenCalledWith(
+      'access_token',
+      'jwt-token-xyz',
+      expect.objectContaining({
+        httpOnly: true,
+        secure: true,
+      }),
+    );
+  });
+
+  it('sets secure: true unconditionally in production', async () => {
+    configServiceGet.mockImplementation((key: string) => {
+      if (key === 'env') return 'production';
+      if (key === 'appUrl') return 'http://internal-ingress';
+      if (key === 'frontendUrl') return 'https://mergefi.xyz';
+      return undefined;
+    });
+
+    const req = {
+      user: { githubId: '123', login: 'alice' },
+      secure: false,
+      protocol: 'http',
+    } as unknown as Request;
+
+    const cookieMock = jest.fn();
+    const res = {
+      cookie: cookieMock,
+      redirect: jest.fn(),
+    } as unknown as Response;
+
+    await controller.githubCallback(req, res);
+
+    expect(cookieMock).toHaveBeenCalledWith(
+      'access_token',
+      'jwt-token-xyz',
+      expect.objectContaining({
+        secure: true,
+      }),
+    );
+  });
+
+  it('allows secure: false only on plain http local development', async () => {
+    configServiceGet.mockImplementation((key: string) => {
+      if (key === 'env') return 'development';
+      if (key === 'appUrl') return 'http://localhost:3000';
+      if (key === 'frontendUrl') return 'http://localhost:3001';
+      return undefined;
+    });
+
+    const req = {
+      user: { githubId: '123', login: 'alice' },
+      secure: false,
+      protocol: 'http',
+    } as unknown as Request;
+
+    const cookieMock = jest.fn();
+    const res = {
+      cookie: cookieMock,
+      redirect: jest.fn(),
+    } as unknown as Response;
+
+    await controller.githubCallback(req, res);
+
+    expect(cookieMock).toHaveBeenCalledWith(
+      'access_token',
+      'jwt-token-xyz',
+      expect.objectContaining({
+        secure: false,
+      }),
+    );
+  });
+});
