@@ -11,7 +11,9 @@ export interface JwtPayload {
   username: string;
 }
 
-function cookieExtractor(req: Request): string | null {
+// Exported for the spec (#593) — the cookie-parsing + decodeURIComponent
+// guard are security-relevant (a malformed cookie must return null, not throw).
+export function cookieExtractor(req: Request): string | null {
   if (!req) return null;
   // If cookie-parser is installed, req.cookies will be populated.
   const cookies = (req as unknown as { cookies?: Record<string, string> })
