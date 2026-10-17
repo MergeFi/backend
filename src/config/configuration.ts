@@ -69,9 +69,16 @@ export interface AppConfig {
 
 export default (): AppConfig => ({
   env: process.env.NODE_ENV ?? 'development',
-  port: parseInt(process.env.PORT ?? '3000', 10),
-  appUrl: process.env.APP_URL ?? 'http://localhost:3000',
-  frontendUrl: process.env.FRONTEND_URL ?? 'http://localhost:3001',
+  // The frontend's `next dev` occupies 3000 — the backend's default is 3001
+  // so a fresh dev setup doesn't port-collide (#590).
+  port: parseInt(process.env.PORT ?? '3001', 10),
+  // FRONTEND_URL is the CORS origin + OAuth redirect target — it must match
+  // where the frontend actually serves. `next dev` runs on 3000, so the old
+  // 3001 default made CORS reject the frontend's origin and OAuth redirect
+  // wrong (#590). And the backend's own default PORT must differ from the
+  // frontend's 3000 — moved to 3001 so dev defaults don't collide.
+  appUrl: process.env.APP_URL ?? 'http://localhost:3001',
+  frontendUrl: process.env.FRONTEND_URL ?? 'http://localhost:3000',
   logLevel: process.env.LOG_LEVEL ?? 'debug',
   database: {
     url:
