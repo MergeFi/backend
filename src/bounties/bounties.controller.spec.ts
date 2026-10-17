@@ -6,7 +6,6 @@ import { validate } from 'class-validator';
 import { BountiesController } from './bounties.controller';
 import { BountiesService } from './bounties.service';
 import { CreateBountyDto } from './dto/create-bounty.dto';
-import { ClaimBountyDto } from './dto/claim-bounty.dto';
 import { AssetType, BountyDifficulty, BountyStatus } from '../common/enums';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';

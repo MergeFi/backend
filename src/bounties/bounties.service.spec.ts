@@ -72,6 +72,23 @@ describe('BountiesService', () => {
     expect(bounty.status).toBe(BountyStatus.OPEN);
   });
 
+  it('falls back to callerUserId when sponsorId is omitted', async () => {
+    userRepo.findOne.mockResolvedValueOnce({ id: 'caller-1' });
+    const bounty = await service.create(
+      {
+        issueId: 'issue-1',
+        amount: '100',
+        asset: AssetType.USDC,
+        difficulty: BountyDifficulty.INTERMEDIATE,
+      } as any,
+      'caller-1',
+    );
+    expect(bountyRepo.create).toHaveBeenCalledWith(
+      expect.objectContaining({ sponsorId: 'caller-1' }),
+    );
+    expect(bounty.status).toBe(BountyStatus.OPEN);
+  });
+
   it('funding an OPEN bounty locks escrow and moves it to FUNDED', async () => {
     bountyRepo.findOne.mockResolvedValue({
       id: 'b1',
