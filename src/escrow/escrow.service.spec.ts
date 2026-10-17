@@ -1,6 +1,6 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { getRepositoryToken } from '@nestjs/typeorm';
-import { BadRequestException } from '@nestjs/common';
+import { BadRequestException, ConflictException } from '@nestjs/common';
 import { DataSource } from 'typeorm';
 import { EscrowService } from './escrow.service';
 import {
@@ -88,7 +88,7 @@ describe('EscrowService', () => {
     dataSource = {
       transaction: jest.fn((fn: (m: typeof manager) => unknown) => fn(manager)),
       manager,
-    } as unknown as { transaction: jest.Mock; manager: typeof manager };
+    };
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
@@ -173,6 +173,74 @@ describe('EscrowService', () => {
       expect(first.onChainId).toMatch(/^\d+$/);
       expect(first.onChainId).toBe(second.onChainId);
       expect(() => BigInt(first.onChainId as string)).not.toThrow();
+      // Verifies high bit (bit 63) is set (#609)
+      expect(BigInt(first.onChainId as string) >= 1n << 63n).toBe(true);
+    });
+
+    it('namespaces derived keys with bit 63 set so they never collide with GitHub issue IDs (#609)', () => {
+      const gitHubIssueId = 4242n;
+      // Real GitHub issue IDs have bit 63 clear
+      expect(gitHubIssueId < 1n << 63n).toBe(true);
+
+      const derivedMilestoneKey = BigInt(
+        service.deriveOnChainId('milestone:uuid-123'),
+      );
+      const derivedPoolKey = BigInt(service.deriveOnChainId('pool:uuid-123'));
+
+      // Both derived keys have bit 63 set
+      expect(derivedMilestoneKey >= 1n << 63n).toBe(true);
+      expect(derivedPoolKey >= 1n << 63n).toBe(true);
+
+      // Thus cannot collide with any GitHub issue ID
+      expect(derivedMilestoneKey).not.toBe(gitHubIssueId);
+      expect(derivedPoolKey).not.toBe(gitHubIssueId);
+    });
+
+    it('domain-prefixes seeds so milestones and pools with identical UUIDs produce distinct on-chain IDs (#609)', () => {
+      const uuid = '00000000-0000-4000-8000-000000000001';
+      const milestoneKey = service.deriveOnChainId(`milestone:${uuid}`);
+      const poolKey = service.deriveOnChainId(`pool:${uuid}`);
+      const bountyKey = service.deriveOnChainId(`bounty:${uuid}`);
+
+      expect(milestoneKey).not.toBe(poolKey);
+      expect(milestoneKey).not.toBe(bountyKey);
+      expect(poolKey).not.toBe(bountyKey);
+    });
+
+    it('rejects funding when an escrow with the same onChainId is already LOCKED in the ledger (#609)', async () => {
+      escrowRepo.findOne.mockResolvedValueOnce({
+        id: 'existing-escrow-uuid',
+        onChainId: '77',
+        status: EscrowStatus.LOCKED,
+      });
+
+      await expect(
+        service.fund({
+          amount: '10.0000000',
+          asset: AssetType.USDC,
+          funderAddress: 'GFUNDER',
+          bountyId: 'bounty-1',
+          onChainIssueId: '77',
+        }),
+      ).rejects.toThrow(ConflictException);
+    });
+
+    it('rejects funding when on-chain contract already holds an escrow for the issue_id (#609)', async () => {
+      (soroban as any).getEscrow = jest
+        .fn()
+        .mockResolvedValue({ id: 'on-chain-escrow' });
+
+      await expect(
+        service.fund({
+          amount: '10.0000000',
+          asset: AssetType.USDC,
+          funderAddress: 'GFUNDER',
+          bountyId: 'bounty-1',
+          onChainIssueId: '999',
+        }),
+      ).rejects.toThrow(ConflictException);
+
+      delete (soroban as any).getEscrow;
     });
 
     it('persists the denormalized sponsorId on the created escrow row', async () => {
@@ -250,7 +318,7 @@ describe('EscrowService', () => {
       // First save (the PENDING row) succeeds; the post-invoke save fails —
       // exactly the post-on-chain-success failure #42 describes.
       escrowRepo.save
-        .mockResolvedValueOnce({ id: 'escrow-1' } as Partial<Escrow>)
+        .mockResolvedValueOnce({ id: 'escrow-1' })
         .mockRejectedValueOnce(new Error('connection terminated unexpectedly'));
 
       await expect(
@@ -288,7 +356,7 @@ describe('EscrowService', () => {
     it('surfaces the original error when the post-invoke retry also fails (#302)', async () => {
       // PENDING row persists, then every post-invoke write fails too.
       escrowRepo.save
-        .mockResolvedValueOnce({ id: 'escrow-1' } as Partial<Escrow>)
+        .mockResolvedValueOnce({ id: 'escrow-1' })
         .mockRejectedValue(new Error('pool exhausted'));
 
       await expect(

@@ -1,5 +1,6 @@
 import {
   BadRequestException,
+  ConflictException,
   Injectable,
   Logger,
   NotFoundException,
@@ -97,6 +98,7 @@ export class EscrowService {
     });
     escrow.contractId = this.resolveContractId(input) || null;
     escrow.onChainId = this.resolveOnChainId(input);
+    await this.assertNoCollision(escrow.onChainId, escrow.contractId);
     const deadline = this.resolveDeadline(input);
     escrow.deadline = deadline;
     await this.escrowRepo.save(escrow);
@@ -612,6 +614,40 @@ export class EscrowService {
   }
 
   /**
+   * Asserts that an on-chain key is not already in use by a live escrow (#609).
+   * Checks the local ledger for any existing LOCKED escrow with this key, and
+   * queries the on-chain contract when available to detect collisions before funding.
+   */
+  async assertNoCollision(
+    onChainId: string,
+    contractId?: string | null,
+  ): Promise<void> {
+    const existing = await this.escrowRepo.findOne({
+      where: {
+        onChainId,
+        status: EscrowStatus.LOCKED,
+      },
+    });
+    if (existing) {
+      throw new ConflictException(
+        `On-chain key collision: key ${onChainId} is already occupied by locked escrow ${existing.id} (#609)`,
+      );
+    }
+
+    if (this.soroban.getEscrow) {
+      const onChain = await this.soroban.getEscrow(
+        BigInt(onChainId),
+        contractId ?? undefined,
+      );
+      if (onChain) {
+        throw new ConflictException(
+          `On-chain key collision: contract already holds an escrow for issue_id ${onChainId} (#609)`,
+        );
+      }
+    }
+  }
+
+  /**
    * The deployed contract a new escrow instance should be held by (#157):
    * the maintenance-pool deployment for pool escrows, the bounty escrow
    * contract otherwise. Resolved once at fund time and persisted on the row.
@@ -634,30 +670,49 @@ export class EscrowService {
   }
 
   /**
-   * The `u64` key `escrow::fund` should store this escrow under (#158). A
+   * High bit (bit 63) set on derived on-chain IDs (#609).
+   * Ensures derived milestone and pool keys never collide with real GitHub issue IDs.
+   */
+  static readonly DERIVED_ON_CHAIN_KEY_FLAG = 1n << 63n;
+
+  /**
+   * The `u64` key `escrow::fund` should store this escrow under (#158, #609). A
    * bounty carries the linked GitHub issue's numeric id (passed as
    * `onChainIssueId`); milestone / maintenance-pool escrows, which belong on
-   * their own sibling contracts (#157), get a stable u64 derived from the
-   * parent UUID until then.
+   * their own sibling contracts (#157), get a namespaced u64 with bit 63 set
+   * derived from the parent entity (#609).
    */
   private resolveOnChainId(input: FundEscrowInput): string {
     const explicit = input.onChainIssueId;
     if (explicit != null && `${explicit}`.trim() !== '') {
       const value = `${explicit}`.trim();
-      return /^\d+$/.test(value) ? value : this.deriveOnChainId(value);
+      return /^\d+$/.test(value)
+        ? value
+        : this.deriveOnChainId(`explicit:${value}`);
     }
-    return this.deriveOnChainId(
-      input.bountyId ?? input.milestoneId ?? input.maintenancePoolId ?? '',
-    );
+    if (input.milestoneId) {
+      return this.deriveOnChainId(`milestone:${input.milestoneId}`);
+    }
+    if (input.maintenancePoolId) {
+      return this.deriveOnChainId(`pool:${input.maintenancePoolId}`);
+    }
+    if (input.bountyId) {
+      return this.deriveOnChainId(`bounty:${input.bountyId}`);
+    }
+    return this.deriveOnChainId('fallback');
   }
 
-  /** Deterministic FNV-1a-64 hash of a non-numeric reference into a `u64` string. */
-  private deriveOnChainId(seed: string): string {
+  /**
+   * Deterministic FNV-1a-64 hash of a non-numeric reference into a `u64` string.
+   * Sets bit 63 to namespace derived keys away from GitHub issue IDs (#609).
+   */
+  deriveOnChainId(seed: string): string {
     let hash = 14695981039346656037n;
     for (let i = 0; i < seed.length; i++) {
       hash ^= BigInt(seed.charCodeAt(i));
       hash = BigInt.asUintN(64, hash * 1099511628211n);
     }
+    hash = BigInt.asUintN(64, hash | EscrowService.DERIVED_ON_CHAIN_KEY_FLAG);
     return hash.toString();
   }
 
@@ -670,14 +725,14 @@ export class EscrowService {
     if (escrow.onChainId != null && escrow.onChainId !== '') {
       return BigInt(escrow.onChainId);
     }
-    return BigInt(
-      this.deriveOnChainId(
-        escrow.bountyId ??
-          escrow.milestoneId ??
-          escrow.maintenancePoolId ??
-          escrow.id,
-      ),
-    );
+    const seed = escrow.milestoneId
+      ? `milestone:${escrow.milestoneId}`
+      : escrow.maintenancePoolId
+        ? `pool:${escrow.maintenancePoolId}`
+        : escrow.bountyId
+          ? `bounty:${escrow.bountyId}`
+          : `escrow:${escrow.id}`;
+    return BigInt(this.deriveOnChainId(seed));
   }
 
   /** Resolves the funding deadline: the parent's own, or the configured default window. */
