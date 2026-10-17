@@ -9,6 +9,7 @@ import {
   UseGuards,
 } from '@nestjs/common';
 import { ApiBearerAuth, ApiQuery, ApiTags } from '@nestjs/swagger';
+import { Throttle } from '@nestjs/throttler';
 import { ReputationService } from './reputation.service';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
@@ -34,6 +35,7 @@ export class ReputationController {
   }
 
   @ApiBearerAuth()
+  @Throttle({ short: { limit: 1, ttl: 2000 } })
   @UseGuards(JwtAuthGuard)
   @Post(':userId/recompute')
   recompute(
@@ -52,7 +54,7 @@ export class ReputationController {
     @CurrentUser() user: AuthenticatedUser,
   ) {
     this.assertOwner(user, userId);
-    return this.reputationService.getLatest(userId);
+    return this.reputationService.getOrComputeLatest(userId);
   }
 
   @ApiBearerAuth()

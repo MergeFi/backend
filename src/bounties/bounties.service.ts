@@ -12,6 +12,7 @@ import { In, Repository } from 'typeorm';
 import { Bounty, Issue, Team, User } from '../common/entities';
 import { AssetType, BountyDifficulty, BountyStatus } from '../common/enums';
 import { ANALYTICS_PLATFORM_INVALIDATE_EVENT } from '../analytics/analytics.events';
+import { REPUTATION_RECOMPUTE_EVENT } from '../reputation/reputation.events';
 import { assertTransition } from './bounty-state-machine';
 import { EscrowService } from '../escrow/escrow.service';
 import { CreateBountyDto } from './dto/create-bounty.dto';
@@ -35,7 +36,7 @@ export class BountiesService {
     @Optional() private readonly eventEmitter?: EventEmitter2,
   ) {}
 
-  async create(dto: CreateBountyDto, callerUserId: string): Promise<Bounty> {
+  async create(dto: CreateBountyDto, callerUserId?: string): Promise<Bounty> {
     // Verify issueId exists
     const issueExists = await this.issueRepo.findOne({
       where: { id: dto.issueId },
@@ -44,17 +45,18 @@ export class BountiesService {
       throw new NotFoundException(`Issue ${dto.issueId} not found`);
     }
 
+    const sponsorId = dto.sponsorId || callerUserId;
     // Verify sponsorId exists
     const sponsorExists = await this.userRepo.findOne({
       where: { id: dto.sponsorId },
     });
     if (!sponsorExists) {
-      throw new NotFoundException(`Sponsor ${dto.sponsorId} not found`);
+      throw new NotFoundException(`Sponsor ${sponsorId} not found`);
     }
 
     const bounty = this.bountyRepo.create({
       issueId: dto.issueId,
-      sponsorId: dto.sponsorId,
+      sponsorId: sponsorId,
       amount: dto.amount,
       asset: dto.asset,
       difficulty: dto.difficulty,
@@ -171,7 +173,6 @@ export class BountiesService {
     const bounty = await this.findOne(id);
     assertTransition(bounty.status, BountyStatus.MERGED);
 
-    const previousStatus = bounty.status;
     bounty.status = BountyStatus.MERGED;
     bounty.mergedAt = new Date();
     await this.bountyRepo.save(bounty);
@@ -228,6 +229,22 @@ export class BountiesService {
     bounty.paidAt = new Date();
     const paid = await this.bountyRepo.save(bounty);
     this.eventEmitter?.emit(ANALYTICS_PLATFORM_INVALIDATE_EVENT);
+    if (bounty.claimedById) {
+      this.eventEmitter?.emit(REPUTATION_RECOMPUTE_EVENT, {
+        userId: bounty.claimedById,
+      });
+    }
+    if (bounty.teamId) {
+      const team = await this.teamRepo.findOne({
+        where: { id: bounty.teamId },
+        relations: { splits: true },
+      });
+      for (const split of team?.splits ?? []) {
+        this.eventEmitter?.emit(REPUTATION_RECOMPUTE_EVENT, {
+          userId: split.userId,
+        });
+      }
+    }
     return paid;
   }
 
