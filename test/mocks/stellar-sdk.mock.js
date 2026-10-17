@@ -40,11 +40,14 @@ class TransactionBuilder {
   }
 }
 
+const { StrKey } = require('../../node_modules/@stellar/stellar-sdk/lib/cjs/base/strkey.js');
+
 module.exports = {
   Contract,
   Address,
   Keypair,
   TransactionBuilder,
+  StrKey,
   BASE_FEE: '100',
   Networks: { TESTNET: 'Test SDF Network ; September 2015', PUBLIC: 'Public Global Stellar Network ; September 2015' },
   nativeToScVal: (v) => v,
