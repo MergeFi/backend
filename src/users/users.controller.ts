@@ -1,13 +1,16 @@
 import {
   Body,
   Controller,
+  ForbiddenException,
   Get,
   Param,
   ParseUUIDPipe,
   Patch,
+  Req,
   UseGuards,
 } from '@nestjs/common';
 import { ApiBearerAuth, ApiProperty, ApiTags } from '@nestjs/swagger';
+import type { Request } from 'express';
 import { UsersService } from './users.service';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { IsStellarAddress } from '../common/validators/stellar-address.validator';
@@ -48,7 +51,12 @@ export class UsersController {
   setStellarAddress(
     @Param('id', new ParseUUIDPipe()) id: string,
     @Body() dto: SetStellarAddressDto,
+    @Req() req: Request,
   ) {
+    const callerId = (req.user as any)?.userId;
+    if (!callerId || callerId !== id) {
+      throw new ForbiddenException("Cannot modify another user's payout address");
+    }
     return this.usersService.setStellarAddress(id, dto.stellarAddress);
   }
 }
