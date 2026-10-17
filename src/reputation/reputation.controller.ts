@@ -9,6 +9,7 @@ import {
   UseGuards,
 } from '@nestjs/common';
 import { ApiBearerAuth, ApiQuery, ApiTags } from '@nestjs/swagger';
+import { Throttle } from '@nestjs/throttler';
 import { ReputationService } from './reputation.service';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
@@ -35,6 +36,10 @@ export class ReputationController {
 
   @ApiBearerAuth()
   @UseGuards(JwtAuthGuard)
+  // Unthrottled, every call ran the multi-join stats SQL AND inserted a row —
+  // ~170k snapshots/day from one user (#584). Tight limit + the service skips
+  // the insert when nothing changed.
+  @Throttle({ long: { limit: 10, ttl: 3_600_000 } })
   @Post(':userId/recompute')
   recompute(
     @Param('userId', new ParseUUIDPipe()) userId: string,
@@ -47,11 +52,10 @@ export class ReputationController {
   @ApiBearerAuth()
   @UseGuards(JwtAuthGuard)
   @Get(':userId')
-  latest(
-    @Param('userId', new ParseUUIDPipe()) userId: string,
-    @CurrentUser() user: AuthenticatedUser,
-  ) {
-    this.assertOwner(user, userId);
+  latest(@Param('userId', new ParseUUIDPipe()) userId: string) {
+    // Reputation is a contributor's public track record — a sponsor or
+    // maintainer needs to read it before assigning a bounty/team (#583).
+    // Any authenticated user may read; only recompute stays owner-gated.
     return this.reputationService.getLatest(userId);
   }
 
@@ -66,11 +70,11 @@ export class ReputationController {
   @ApiQuery({ name: 'offset', required: false })
   history(
     @Param('userId', new ParseUUIDPipe()) userId: string,
-    @CurrentUser() user: AuthenticatedUser,
     @Query('limit') limit?: string,
     @Query('offset') offset?: string,
   ) {
-    this.assertOwner(user, userId);
+    // Public read — sponsors/maintainers see a contributor's track record
+    // before assigning work (#583). Only recompute is owner-gated.
     return this.reputationService.history(userId, {
       limit: parseOptionalInt(limit),
       offset: parseOptionalInt(offset),
