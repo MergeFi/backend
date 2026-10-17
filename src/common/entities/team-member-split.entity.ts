@@ -23,6 +23,7 @@ export class TeamMemberSplit {
   team: Team;
 
   @Column()
+  @Index('IDX_team_member_splits_teamId')
   teamId: string;
 
   @ManyToOne(() => User, { onDelete: 'SET NULL', nullable: true })
