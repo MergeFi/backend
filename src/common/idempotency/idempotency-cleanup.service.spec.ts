@@ -1,6 +1,6 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { getRepositoryToken } from '@nestjs/typeorm';
-import { LessThan } from 'typeorm';
+import { DataSource, LessThan } from 'typeorm';
 import { IdempotencyKey } from '../entities/idempotency-key.entity';
 import { IdempotencyCleanupService } from './idempotency-cleanup.service';
 
@@ -21,10 +21,21 @@ describe('IdempotencyCleanupService', () => {
         .mockResolvedValue({ affected: 0 }),
     };
 
+    // The DataSource mock answers the advisory-lock query with locked:true
+    // so the single-runner guard passes and the sweep runs (#586).
+    const dataSource = {
+      createQueryRunner: jest.fn().mockReturnValue({
+        connect: jest.fn(),
+        query: jest.fn().mockResolvedValue([{ locked: true }]),
+        release: jest.fn(),
+      }),
+    };
+
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         IdempotencyCleanupService,
         { provide: getRepositoryToken(IdempotencyKey), useValue: repo },
+        { provide: DataSource, useValue: dataSource },
       ],
     }).compile();
 
