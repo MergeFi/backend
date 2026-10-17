@@ -1,6 +1,10 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { getRepositoryToken } from '@nestjs/typeorm';
-import { BadRequestException, ConflictException, NotFoundException } from '@nestjs/common';
+import {
+  BadRequestException,
+  ConflictException,
+  NotFoundException,
+} from '@nestjs/common';
 import { MaintenancePoolService } from './maintenance-pool.service';
 import { EscrowService } from '../escrow/escrow.service';
 import { Issue, MaintenancePool, Payment } from '../common/entities';
@@ -86,10 +90,16 @@ describe('MaintenancePoolService', () => {
     });
 
     it('falls back to callerUserId for createdById when client omits it', async () => {
-      await service.create({ name: 'Pool', asset: AssetType.USDC }, 'caller-99');
+      await service.create(
+        { name: 'Pool', asset: AssetType.USDC },
+        'caller-99',
+      );
 
       expect(poolRepo.save).toHaveBeenCalledWith(
-        expect.objectContaining({ repositoryId: null, createdById: 'caller-99' }),
+        expect.objectContaining({
+          repositoryId: null,
+          createdById: 'caller-99',
+        }),
       );
     });
   });
@@ -339,6 +349,7 @@ describe('MaintenancePoolService', () => {
         id: 'pool-1',
         balance: '100',
         escrowId: 'escrow-1',
+        status: MaintenancePoolStatus.ACTIVE,
       });
       // Mock the atomic balance check to succeed
       const mockQueryBuilder = {
@@ -412,6 +423,7 @@ describe('MaintenancePoolService', () => {
         id: 'pool-1',
         balance: '100',
         escrowId: 'escrow-1',
+        status: MaintenancePoolStatus.ACTIVE,
       });
       // Mock the payment query to return an existing payment
       const mockPaymentQueryBuilder = {
@@ -437,9 +449,14 @@ describe('MaintenancePoolService', () => {
     // time — not a value cached from an earlier read — and neither
     // decrement is lost.
     it('two concurrent assignReward calls both apply — no lost decrement (#51)', async () => {
-      const sharedPoolRow: { balance: string; escrowId: string } = {
+      const sharedPoolRow: {
+        balance: string;
+        escrowId: string;
+        status: MaintenancePoolStatus;
+      } = {
         balance: '1000.0000000',
         escrowId: 'escrow-1',
+        status: MaintenancePoolStatus.ACTIVE,
       };
       poolRepo.findOne.mockImplementation(() =>
         Promise.resolve({ id: 'pool-1', ...sharedPoolRow }),
@@ -462,6 +479,40 @@ describe('MaintenancePoolService', () => {
 
       // Both calls should have succeeded (atomic check passed)
       expect(mockQueryBuilder.execute).toHaveBeenCalledTimes(2);
+    });
+  });
+
+  describe('list and findOne (#591)', () => {
+    it('list loads repository and createdBy relations with order DESC', async () => {
+      const mockPools = [{ id: 'pool-1', name: 'Pool 1' }];
+      poolRepo.find.mockResolvedValue(mockPools);
+
+      const result = await service.list();
+
+      expect(poolRepo.find).toHaveBeenCalledWith({
+        relations: {
+          repository: true,
+          createdBy: true,
+        },
+        order: { createdAt: 'DESC' },
+      });
+      expect(result).toBe(mockPools);
+    });
+
+    it('findOne loads repository and createdBy relations', async () => {
+      const mockPool = { id: 'pool-1', name: 'Pool 1' };
+      poolRepo.findOne.mockResolvedValue(mockPool);
+
+      const result = await service.findOne('pool-1');
+
+      expect(poolRepo.findOne).toHaveBeenCalledWith({
+        where: { id: 'pool-1' },
+        relations: {
+          repository: true,
+          createdBy: true,
+        },
+      });
+      expect(result).toBe(mockPool);
     });
   });
 });
