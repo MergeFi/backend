@@ -81,6 +81,9 @@ export class MaintenancePoolController {
   }
 
   @ApiOperation({ summary: 'List maintenance pools' })
+  // Public read returning the whole table — tighten past the global default
+  // so it can't be scraped at the lenient rate (#592).
+  @Throttle({ long: { limit: 300, ttl: 3600000 } })
   @Get()
   list() {
     return this.poolService.list();
@@ -88,6 +91,7 @@ export class MaintenancePoolController {
 
   @ApiOperation({ summary: 'Get a maintenance pool by id' })
   @ApiStandardErrorResponses()
+  @Throttle({ long: { limit: 1000, ttl: 3600000 } })
   @Get(':id')
   findOne(@Param('id', new ParseUUIDPipe()) id: string) {
     return this.poolService.findOne(id);
