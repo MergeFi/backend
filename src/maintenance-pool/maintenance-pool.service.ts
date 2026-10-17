@@ -57,15 +57,9 @@ export class MaintenancePoolService {
     amount: string,
     funderAddress: string,
   ): Promise<MaintenancePool> {
-    // Use SELECT ... FOR UPDATE to prevent concurrent first-time deposit races
-    // that could orphan escrows (#275).
-    const pool = await this.poolRepo
-      .createQueryBuilder('pool')
-      .setLock('pessimistic_write')
-      .where('pool.id = :id', { id })
-      .getOne();
-
-    if (!pool) throw new NotFoundException(`Maintenance pool ${id} not found`);
+    // Drop broken pessimistic lock outside transaction (#457). First-time deposit
+    // races are guarded atomically by the conditional CAS update ({ escrowId: null }) below.
+    const pool = await this.findOne(id);
     if (pool.status !== MaintenancePoolStatus.ACTIVE) {
       throw new BadRequestException(`Pool ${id} is not ACTIVE`);
     }
