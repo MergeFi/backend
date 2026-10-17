@@ -18,7 +18,7 @@ export class GithubStrategy extends PassportStrategy(Strategy, 'github') {
       clientSecret: githubConfig?.clientSecret || 'mock_secret_key_67890',
       callbackURL:
         githubConfig?.oauthCallbackUrl ||
-        'http://localhost:3000/api/auth/github/callback',
+        'http://localhost:4000/api/auth/github/callback',
       scope: ['user:email', 'read:org'],
     });
   }

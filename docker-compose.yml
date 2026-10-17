@@ -6,7 +6,7 @@ services:
       context: .
       target: development
     ports:
-      - "3000:3000"
+      - "4000:4000"
     volumes:
       # Bind mount host files for hot-reloading (development watch mode)
       - .:/usr/src/app
@@ -18,7 +18,7 @@ services:
     environment:
       # Override DATABASE_URL to target the postgres container inside the docker network
       - DATABASE_URL=postgresql://postgres:postgres@db:5432/mergefi
-      - PORT=3000
+      - PORT=4000
       - NODE_ENV=development
     depends_on:
       db:
