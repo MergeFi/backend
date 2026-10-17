@@ -10,13 +10,11 @@ import * as sigUtil from './webhook-signature.util';
 
 describe('GithubWebhooksService', () => {
   let service: GithubWebhooksService;
-  let webhookEventRepo: { create: jest.Mock; save: jest.Mock };
   let webhookEventRepo: {
     create: jest.Mock;
     save: jest.Mock;
     findOne: jest.Mock;
   };
-  let issueRepo: { findOne: jest.Mock };
   let bountyRepo: { findOne: jest.Mock };
   let bountiesService: {
     markInReview: jest.Mock;
@@ -264,11 +262,11 @@ describe('GithubWebhooksService', () => {
       byNumber: Record<number, { bountyId: string; status: string }>,
     ) {
       syncService.findIssueByRepoAndNumber.mockImplementation(
-        ({ where }: { where: { number: number } }) => {
-          const entry = byNumber[where.number];
+        (_repoId: string, number: number) => {
+          const entry = byNumber[number];
           return Promise.resolve(
             entry
-              ? { id: `issue-${where.number}`, bounty: { id: entry.bountyId } }
+              ? { id: `issue-${number}`, bounty: { id: entry.bountyId } }
               : null,
           );
         },
@@ -637,14 +635,13 @@ describe('GithubWebhooksService', () => {
   describe('comma-separated closing references (#309)', () => {
     /** Collects every issue number the merged-PR path ends up releasing. */
     function releasedNumbers(): number[] {
-      return issueRepo.findOne.mock.calls.map(
-        (call: unknown[]) =>
-          (call[0] as { where: { number: number } }).where.number,
+      return syncService.findIssueByRepoAndNumber.mock.calls.map(
+        (call: [string, number]) => call[1],
       );
     }
 
     it('links every issue in a comma-separated list after one keyword', async () => {
-      issueRepo.findOne.mockResolvedValue(null);
+      syncService.findIssueByRepoAndNumber.mockResolvedValue(null);
       await service.handleEvent(
         'pull_request',
         'delivery-comma-list',
@@ -666,7 +663,7 @@ describe('GithubWebhooksService', () => {
     });
 
     it('keeps parsing subsequent keyword lists after a comma run', async () => {
-      issueRepo.findOne.mockResolvedValue(null);
+      syncService.findIssueByRepoAndNumber.mockResolvedValue(null);
       await service.handleEvent(
         'pull_request',
         'delivery-comma-then-keyword',
@@ -688,7 +685,7 @@ describe('GithubWebhooksService', () => {
     });
 
     it('stops the comma run at the first token that is not a reference', async () => {
-      issueRepo.findOne.mockResolvedValue(null);
+      syncService.findIssueByRepoAndNumber.mockResolvedValue(null);
       await service.handleEvent(
         'pull_request',
         'delivery-comma-stops',
@@ -710,7 +707,7 @@ describe('GithubWebhooksService', () => {
     });
 
     it('skips a foreign-repo qualifier inside a comma run but keeps the rest', async () => {
-      issueRepo.findOne.mockResolvedValue(null);
+      syncService.findIssueByRepoAndNumber.mockResolvedValue(null);
       await service.handleEvent(
         'pull_request',
         'delivery-comma-foreign',
@@ -732,11 +729,11 @@ describe('GithubWebhooksService', () => {
     });
 
     it('marks a comma-separated bounty in review when the PR is opened', async () => {
-      issueRepo.findOne.mockImplementation(
-        ({ where }: { where: { number: number } }) =>
+      syncService.findIssueByRepoAndNumber.mockImplementation(
+        (_repoId: string, number: number) =>
           Promise.resolve({
-            id: `issue-${where.number}`,
-            bounty: { id: `bounty-${where.number}` },
+            id: `issue-${number}`,
+            bounty: { id: `bounty-${number}` },
           }),
       );
       bountyRepo.findOne.mockImplementation(
@@ -782,10 +779,10 @@ describe('GithubWebhooksService', () => {
 
   describe('pull_request edited events (#310)', () => {
     it('moves a bounty to in_review when a closing keyword is added after opening', async () => {
-      issueRepo.findOne.mockImplementation(
-        ({ where }: { where: { number: number } }) =>
+      syncService.findIssueByRepoAndNumber.mockImplementation(
+        (_repoId: string, number: number) =>
           Promise.resolve({
-            id: `issue-${where.number}`,
+            id: `issue-${number}`,
             bounty: { id: 'bounty-42' },
           }),
       );
@@ -820,7 +817,7 @@ describe('GithubWebhooksService', () => {
     });
 
     it('leaves a bounty already in_review untouched on a later body edit', async () => {
-      issueRepo.findOne.mockResolvedValue({
+      syncService.findIssueByRepoAndNumber.mockResolvedValue({
         id: 'issue-42',
         bounty: { id: 'bounty-42' },
       });
@@ -869,6 +866,9 @@ describe('GithubWebhooksService', () => {
 
       expect(bountiesService.markInReview).not.toHaveBeenCalled();
       expect(bountiesService.markMergedAndRelease).not.toHaveBeenCalled();
+    });
+  });
+
   // #308: a redelivered X-GitHub-Delivery used to hit the unique constraint
   // on webhook_events.deliveryId and escape handleEvent as a 500, so every
   // redelivery of that event failed forever.
@@ -884,6 +884,39 @@ describe('GithubWebhooksService', () => {
       },
       repository: { id: 1, full_name: 'a/b' },
     };
+
+    it('re-processes a delivery if its previous attempt failed (#317)', async () => {
+      const existingFailedEvent = {
+        id: 'event-previously-failed',
+        deliveryId: 'delivery-retry-1',
+        status: WebhookEventStatus.FAILED,
+        error: 'transient failure',
+      };
+      webhookEventRepo.findOne.mockResolvedValueOnce(existingFailedEvent);
+
+      syncService.findIssueByRepoAndNumber.mockResolvedValue({
+        id: 'issue-1',
+        bounty: { id: 'bounty-1' },
+      });
+      bountyRepo.findOne.mockResolvedValue({
+        id: 'bounty-1',
+        status: 'claimed',
+      });
+
+      const event = await service.handleEvent(
+        'pull_request',
+        'delivery-retry-1',
+        payload,
+        true,
+      );
+
+      expect(bountiesService.markMergedAndRelease).toHaveBeenCalledWith(
+        'bounty-1',
+      );
+      expect(event.id).toBe('event-previously-failed');
+      expect(event.status).toBe(WebhookEventStatus.PROCESSED);
+      expect(event.error).toBeNull();
+    });
 
     it('returns the stored event without re-running business logic', async () => {
       webhookEventRepo.findOne.mockResolvedValueOnce({

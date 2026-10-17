@@ -113,9 +113,10 @@ export class GithubWebhooksService {
     // threw a QueryFailedError that escaped handleEvent entirely and turned
     // every redelivery into a bare 500, which GitHub then keeps retrying
     // (#308). Short-circuit on the stored row instead.
+    let existing: WebhookEvent | null = null;
     if (deliveryId) {
-      const existing = await this.findByDeliveryId(deliveryId);
-      if (existing) {
+      existing = await this.findByDeliveryId(deliveryId);
+      if (existing && existing.status !== WebhookEventStatus.FAILED) {
         this.logger.warn(
           `Ignoring duplicate webhook delivery ${deliveryId} — already recorded ` +
             `(status: ${existing.status})`,
@@ -125,32 +126,46 @@ export class GithubWebhooksService {
     }
 
     let event: WebhookEvent;
-    try {
-      event = await this.webhookEventRepo.save(
-        this.webhookEventRepo.create({
-          eventType,
-          deliveryId: deliveryId ?? null,
-          payload,
-          signatureValid,
-          status: signatureValid
-            ? WebhookEventStatus.RECEIVED
-            : WebhookEventStatus.IGNORED,
-        }),
+    if (existing) {
+      this.logger.log(
+        `Retrying previously failed webhook delivery ${deliveryId}`,
       );
-    } catch (err) {
-      // Two deliveries racing past the lookup above can still collide on the
-      // unique index; the loser treats that as the benign duplicate it is
-      // rather than a crash.
-      if (deliveryId && this.isUniqueViolation(err)) {
-        const raced = await this.findByDeliveryId(deliveryId);
-        if (raced) {
-          this.logger.warn(
-            `Ignoring concurrently delivered webhook ${deliveryId} — already recorded`,
-          );
-          return raced;
+      existing.payload = payload;
+      existing.signatureValid = signatureValid;
+      existing.status = signatureValid
+        ? WebhookEventStatus.RECEIVED
+        : WebhookEventStatus.IGNORED;
+      existing.error = null;
+      existing.processedAt = null;
+      event = await this.webhookEventRepo.save(existing);
+    } else {
+      try {
+        event = await this.webhookEventRepo.save(
+          this.webhookEventRepo.create({
+            eventType,
+            deliveryId: deliveryId ?? null,
+            payload,
+            signatureValid,
+            status: signatureValid
+              ? WebhookEventStatus.RECEIVED
+              : WebhookEventStatus.IGNORED,
+          }),
+        );
+      } catch (err) {
+        // Two deliveries racing past the lookup above can still collide on the
+        // unique index; the loser treats that as the benign duplicate it is
+        // rather than a crash.
+        if (deliveryId && this.isUniqueViolation(err)) {
+          const raced = await this.findByDeliveryId(deliveryId);
+          if (raced) {
+            this.logger.warn(
+              `Ignoring concurrently delivered webhook ${deliveryId} — already recorded`,
+            );
+            return raced;
+          }
         }
+        throw err;
       }
-      throw err;
     }
 
     if (!signatureValid) {
@@ -212,9 +227,8 @@ export class GithubWebhooksService {
     if (code === '23505') {
       return true;
     }
-    const driverCode = (
-      err as { driverError?: { code?: unknown } } | null
-    )?.driverError?.code;
+    const driverCode = (err as { driverError?: { code?: unknown } } | null)
+      ?.driverError?.code;
     if (driverCode === '23505') {
       return true;
     }
@@ -459,7 +473,8 @@ export class GithubWebhooksService {
     repoFullName: string,
   ): number[] {
     const isSameRepo = (repoQualifier?: string) =>
-      !repoQualifier || repoQualifier.toLowerCase() === repoFullName.toLowerCase();
+      !repoQualifier ||
+      repoQualifier.toLowerCase() === repoFullName.toLowerCase();
 
     const matches = [...body.matchAll(CLOSING_KEYWORD_RE)];
     const numbers: number[] = [];
@@ -543,7 +558,8 @@ export class GithubWebhooksService {
 
     return this.processLinkedIssues(issueNumbers, payload, {
       requiredStatus: BountyStatus.IN_REVIEW,
-      action: (bounty) => this.bountiesService.markPrClosedWithoutMerge(bounty.id),
+      action: (bounty) =>
+        this.bountiesService.markPrClosedWithoutMerge(bounty.id),
     });
   }
 }
