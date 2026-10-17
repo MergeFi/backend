@@ -1,4 +1,4 @@
-import { Escrow } from '../common/entities';
+import { Escrow, Payment } from '../common/entities';
 
 export type PublicEscrow = Omit<Escrow, 'metadata'>;
 
@@ -19,4 +19,18 @@ export function toPublicEscrow(escrow: Escrow): PublicEscrow {
   const publicEscrow: Partial<Escrow> = { ...escrow };
   delete publicEscrow.metadata;
   return publicEscrow as PublicEscrow;
+}
+
+export type PublicPayment = Omit<Payment, 'escrow' | 'recipient'>;
+
+/**
+ * Shapes a `Payment` entity before returning it across the HTTP boundary (#91, #368).
+ * Ensures internal relational entity graphs (e.g. attached `escrow` or full `recipient` User entity)
+ * are excluded from the response payload, leaving only clean payment attributes.
+ */
+export function toPublicPayment(payment: Payment): PublicPayment {
+  const publicPayment: Partial<Payment> = { ...payment };
+  delete (publicPayment as Partial<Payment>).escrow;
+  delete (publicPayment as Partial<Payment>).recipient;
+  return publicPayment as PublicPayment;
 }

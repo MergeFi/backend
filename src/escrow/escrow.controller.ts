@@ -17,7 +17,7 @@ import { EscrowService } from './escrow.service';
 import { FundEscrowDto } from './dto/fund-escrow.dto';
 import { ReleaseEscrowDto } from './dto/release-escrow.dto';
 import { SplitReleaseDto } from './dto/split-release.dto';
-import { toPublicEscrow } from './escrow-response.mapper';
+import { toPublicEscrow, toPublicPayment } from './escrow-response.mapper';
 import { Idempotent } from '../common/idempotency/idempotent.decorator';
 import {
   ApiInternalErrorResponse,
@@ -78,11 +78,12 @@ export class EscrowController {
   @ApiStandardErrorResponses()
   @Idempotent('escrow.splitRelease')
   @Post(':id/split-release')
-  splitRelease(
+  async splitRelease(
     @Param('id', new ParseUUIDPipe()) id: string,
     @Body() dto: SplitReleaseDto,
   ) {
-    return this.escrowService.splitRelease(id, dto.recipients);
+    const payments = await this.escrowService.splitRelease(id, dto.recipients);
+    return payments.map(toPublicPayment);
   }
 
   @ApiOperation({
