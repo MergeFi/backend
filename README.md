@@ -202,7 +202,7 @@ connection can't double-execute:
   runs cleanly rather than replaying the failure forever.
 - A second request reusing a key that's still mid-flight gets `409
   Conflict` instead of racing into a duplicate execution. If the original
-  request crashed before completing, the key is reclaimed after 30s so it
+  request crashed before completing, the key is reclaimed after 90s (`STALE_PROCESSING_MS`) so it
   doesn't 409 forever.
 - A key's identity is bound to the actual request, not just the route: a
   SHA-256 fingerprint of the path params and body is stored alongside the
