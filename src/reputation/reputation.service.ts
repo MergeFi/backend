@@ -33,7 +33,7 @@ export class ReputationService {
       this.paymentRepo,
     );
 
-    const snapshot = this.snapshotRepo.create({
+    const fields = {
       userId,
       totalEarnings: stats.lifetimeEarnings.toFixed(7),
       mergedPrCount: stats.mergedCount,
@@ -43,8 +43,28 @@ export class ReputationService {
       onTimeDeliveryPercentage: stats.onTimeDeliveryPercentage.toFixed(2),
       languages: stats.languages,
       orgsContributedTo: stats.orgs,
+    };
+
+    // Skip the insert when nothing changed — an unthrottled recompute could
+    // otherwise append a row per call (~170k/day for one user, #584). If the
+    // stats match the latest snapshot, return it instead of a duplicate.
+    const latest = await this.snapshotRepo.findOne({
+      where: { userId },
+      order: { computedAt: 'DESC' },
     });
-    return this.snapshotRepo.save(snapshot);
+    if (
+      latest &&
+      latest.totalEarnings === fields.totalEarnings &&
+      latest.mergedPrCount === fields.mergedPrCount &&
+      latest.openBountiesClaimed === fields.openBountiesClaimed &&
+      latest.completionRate === fields.completionRate &&
+      latest.avgReviewTimeHours === fields.avgReviewTimeHours &&
+      latest.onTimeDeliveryPercentage === fields.onTimeDeliveryPercentage
+    ) {
+      return latest;
+    }
+
+    return this.snapshotRepo.save(this.snapshotRepo.create(fields));
   }
 
   async getLatest(userId: string): Promise<ReputationSnapshot | null> {
