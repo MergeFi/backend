@@ -105,9 +105,10 @@ export default (): AppConfig => ({
     network: process.env.STELLAR_NETWORK ?? 'testnet',
     sorobanRpcUrl:
       process.env.SOROBAN_RPC_URL ?? 'https://soroban-testnet.stellar.org',
-    networkPassphrase:
-      process.env.STELLAR_NETWORK_PASSPHRASE ??
-      'Test SDF Network ; September 2015',
+    // Only set when STELLAR_NETWORK_PASSPHRASE is explicit — leaving it empty
+    // lets SorobanClientService derive the passphrase from STELLAR_NETWORK, so
+    // a mainnet deploy can't silently keep the testnet passphrase (#611).
+    networkPassphrase: process.env.STELLAR_NETWORK_PASSPHRASE ?? '',
     escrowContractId: process.env.ESCROW_CONTRACT_ID ?? '',
     maintenancePoolContractId:
       process.env.MAINTENANCE_POOL_CONTRACT_ID ??
