@@ -259,13 +259,30 @@ describe('SponsorsService', () => {
 
       const result = await service.activeMilestones('sponsor-1');
 
-      expect(milestoneRepo.find).toHaveBeenCalledWith({
-        where: [
-          { sponsorId: 'sponsor-1', status: MilestoneStatus.FUNDED },
-          { sponsorId: 'sponsor-1', status: MilestoneStatus.IN_PROGRESS },
-        ],
-      });
+      expect(milestoneRepo.find).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: [
+            { sponsorId: 'sponsor-1', status: MilestoneStatus.FUNDED },
+            { sponsorId: 'sponsor-1', status: MilestoneStatus.IN_PROGRESS },
+          ],
+          take: 20,
+          skip: 0,
+        }),
+      );
       expect(result).toBe(milestones);
+    });
+
+    it('forwards custom pagination parameters', async () => {
+      milestoneRepo.find.mockResolvedValue([]);
+
+      await service.activeMilestones('sponsor-1', { limit: 10, offset: 5 });
+
+      expect(milestoneRepo.find).toHaveBeenCalledWith(
+        expect.objectContaining({
+          take: 10,
+          skip: 5,
+        }),
+      );
     });
   });
 
