@@ -1,12 +1,15 @@
 import {
   Body,
   Controller,
+  ForbiddenException,
   Get,
   Param,
   ParseUUIDPipe,
   Patch,
+  Req,
   UseGuards,
 } from '@nestjs/common';
+import { Request } from 'express';
 import { ApiBearerAuth, ApiProperty, ApiTags } from '@nestjs/swagger';
 import { UsersService } from './users.service';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
@@ -48,7 +51,15 @@ export class UsersController {
   setStellarAddress(
     @Param('id', new ParseUUIDPipe()) id: string,
     @Body() dto: SetStellarAddressDto,
+    @Req() req: Request,
   ) {
+    // Self-only (#39): the URL :id must be the authenticated caller — the
+    // stellar-address is the on-chain payout recipient, so letting anyone set
+    // anyone's address would misdirect escrow releases. Reject non-self.
+    const callerId = (req.user as { userId?: string }).userId;
+    if (callerId !== id) {
+      throw new ForbiddenException('Can only set your own stellar address');
+    }
     return this.usersService.setStellarAddress(id, dto.stellarAddress);
   }
 }
