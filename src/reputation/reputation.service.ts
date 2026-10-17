@@ -10,6 +10,12 @@ export const REPUTATION_HISTORY_MAX_LIMIT = 100;
 export interface ReputationHistoryOptions {
   limit?: number;
   offset?: number;
+  order?: 'ASC' | 'DESC';
+}
+
+export interface ReputationHistoryResult {
+  items: ReputationSnapshot[];
+  total: number;
 }
 
 @Injectable()
@@ -57,17 +63,19 @@ export class ReputationService {
   async history(
     userId: string,
     options: ReputationHistoryOptions = {},
-  ): Promise<ReputationSnapshot[]> {
+  ): Promise<ReputationHistoryResult> {
     const limit = Math.min(
       Math.max(options.limit ?? REPUTATION_HISTORY_DEFAULT_LIMIT, 1),
       REPUTATION_HISTORY_MAX_LIMIT,
     );
     const offset = Math.max(options.offset ?? 0, 0);
-    return this.snapshotRepo.find({
+    const orderDirection = options.order === 'ASC' ? 'ASC' : 'DESC';
+    const [items, total] = await this.snapshotRepo.findAndCount({
       where: { userId },
-      order: { computedAt: 'ASC' },
+      order: { computedAt: orderDirection },
       take: limit,
       skip: offset,
     });
+    return { items, total };
   }
 }

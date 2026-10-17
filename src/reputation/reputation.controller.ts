@@ -64,16 +64,30 @@ export class ReputationController {
     description: `Default ${REPUTATION_HISTORY_DEFAULT_LIMIT}, max ${REPUTATION_HISTORY_MAX_LIMIT}`,
   })
   @ApiQuery({ name: 'offset', required: false })
+  @ApiQuery({
+    name: 'order',
+    required: false,
+    enum: ['ASC', 'DESC'],
+    description: 'Sort direction by computedAt, default DESC',
+  })
   history(
     @Param('userId', new ParseUUIDPipe()) userId: string,
     @CurrentUser() user: AuthenticatedUser,
     @Query('limit') limit?: string,
     @Query('offset') offset?: string,
+    @Query('order') order?: 'ASC' | 'DESC',
   ) {
     this.assertOwner(user, userId);
+    const normalizedOrder =
+      order?.toUpperCase() === 'ASC'
+        ? 'ASC'
+        : order?.toUpperCase() === 'DESC'
+          ? 'DESC'
+          : undefined;
     return this.reputationService.history(userId, {
       limit: parseOptionalInt(limit),
       offset: parseOptionalInt(offset),
+      order: normalizedOrder,
     });
   }
 }
