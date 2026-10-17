@@ -176,8 +176,17 @@ export class MaintenancePoolService {
       .execute();
 
     if (updateResult.affected === 0) {
+      // `pool.balance` was read BEFORE the conditional UPDATE — under the
+      // concurrency this guard exists for (#274) it's stale and can read
+      // higher than the real balance. Re-read the live value so the error
+      // reports the actual current balance, not the pre-update one (#608).
+      const current = await this.poolRepo.findOne({
+        where: { id },
+        select: ['balance'],
+      });
+      const balance = current?.balance ?? pool.balance;
       throw new BadRequestException(
-        `Requested reward ${amount} exceeds pool balance ${pool.balance}`,
+        `Requested reward ${amount} exceeds pool balance ${balance}`,
       );
     }
 
