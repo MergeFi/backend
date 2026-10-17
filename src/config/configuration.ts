@@ -1,3 +1,4 @@
+import { Networks } from '@stellar/stellar-sdk';
 import { AssetType } from '../common/enums';
 
 export interface AppConfig {
@@ -67,6 +68,23 @@ export interface AppConfig {
   };
 }
 
+export function defaultPassphraseForNetwork(network?: string): string {
+  switch (network?.toLowerCase()) {
+    case 'public':
+    case 'mainnet':
+      return Networks.PUBLIC;
+    case 'futurenet':
+      return Networks.FUTURENET;
+    case 'standalone':
+    case 'sandbox':
+    case 'local':
+      return Networks.STANDALONE;
+    case 'testnet':
+    default:
+      return Networks.TESTNET;
+  }
+}
+
 export default (): AppConfig => ({
   env: process.env.NODE_ENV ?? 'development',
   port: parseInt(process.env.PORT ?? '3000', 10),
@@ -107,7 +125,7 @@ export default (): AppConfig => ({
       process.env.SOROBAN_RPC_URL ?? 'https://soroban-testnet.stellar.org',
     networkPassphrase:
       process.env.STELLAR_NETWORK_PASSPHRASE ??
-      'Test SDF Network ; September 2015',
+      defaultPassphraseForNetwork(process.env.STELLAR_NETWORK),
     escrowContractId: process.env.ESCROW_CONTRACT_ID ?? '',
     maintenancePoolContractId:
       process.env.MAINTENANCE_POOL_CONTRACT_ID ??

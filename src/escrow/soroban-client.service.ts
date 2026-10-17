@@ -1,4 +1,4 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import {
   Address,
@@ -105,7 +105,7 @@ export function u64(value: bigint | number | string): U64Arg {
  *   fn release_issue(env: Env, milestone_id: BytesN<32>, issue_id: BytesN<32>, recipients: Vec<(Address, u32)>) -> i128
  */
 @Injectable()
-export class SorobanClientService {
+export class SorobanClientService implements OnModuleInit {
   private readonly logger = new Logger(SorobanClientService.name);
   private readonly server: rpc.Server;
   private readonly networkPassphrase: string;
@@ -117,6 +117,26 @@ export class SorobanClientService {
     this.server = new rpc.Server(this.stellar.sorobanRpcUrl, {
       allowHttp: this.stellar.sorobanRpcUrl.startsWith('http://'),
     });
+  }
+
+  /**
+   * Boot-time cross-check: Outside dry-run mode, assert that the Soroban RPC
+   * server's reported network passphrase matches the configured passphrase (#611).
+   */
+  async onModuleInit(): Promise<void> {
+    if (!this.isConfigured()) {
+      return;
+    }
+    await this.assertNetworkPassphraseMatches();
+  }
+
+  async assertNetworkPassphraseMatches(): Promise<void> {
+    const network = await this.server.getNetwork();
+    if (network.passphrase !== this.networkPassphrase) {
+      throw new Error(
+        `STELLAR_NETWORK_PASSPHRASE mismatch: configured "${this.networkPassphrase}" does not match RPC endpoint passphrase "${network.passphrase}" for STELLAR_NETWORK="${this.stellar.network}".`,
+      );
+    }
   }
 
   /** Whether a real escrow contract has been configured for this environment. */
