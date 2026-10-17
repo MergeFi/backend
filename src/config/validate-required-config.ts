@@ -109,6 +109,18 @@ export function collectConfigIssues(config: RequiredConfig): ConfigIssue[] {
     'escrow release/refund transactions cannot be signed',
   );
 
+  if (
+    typeof config.stellar.escrowDeadlineSeconds !== 'number' ||
+    !Number.isInteger(config.stellar.escrowDeadlineSeconds) ||
+    config.stellar.escrowDeadlineSeconds <= 0
+  ) {
+    issues.push({
+      key: 'ESCROW_DEADLINE_SECONDS',
+      message:
+        'ESCROW_DEADLINE_SECONDS must be a positive integer representing fallback escrow duration in seconds',
+    });
+  }
+
   return issues;
 }
 

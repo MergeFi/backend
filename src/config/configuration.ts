@@ -67,9 +67,59 @@ export interface AppConfig {
   };
 }
 
+/**
+ * Safely parses an optional environment variable as a positive integer (> 0).
+ * Throws a descriptive Error at boot if non-empty and not a valid positive integer (#610).
+ */
+export function parsePositiveInt(
+  raw: string | undefined,
+  fallback: number,
+  varName: string,
+): number {
+  if (raw === undefined || raw.trim() === '') {
+    return fallback;
+  }
+  const trimmed = raw.trim();
+  if (!/^\d+$/.test(trimmed)) {
+    throw new Error(
+      `Invalid configuration for ${varName}: expected a positive integer, got "${raw}"`,
+    );
+  }
+  const parsed = parseInt(trimmed, 10);
+  if (parsed <= 0) {
+    throw new Error(
+      `Invalid configuration for ${varName}: expected a positive integer, got "${raw}"`,
+    );
+  }
+  return parsed;
+}
+
+/**
+ * Safely parses an optional environment variable as a valid network port (1-65535).
+ * Throws a descriptive Error at boot if non-empty and not a valid port number (#610).
+ */
+export function parsePort(raw: string | undefined, fallback = 3000): number {
+  if (raw === undefined || raw.trim() === '') {
+    return fallback;
+  }
+  const trimmed = raw.trim();
+  if (!/^\d+$/.test(trimmed)) {
+    throw new Error(
+      `Invalid configuration for PORT: expected a port number (1-65535), got "${raw}"`,
+    );
+  }
+  const parsed = parseInt(trimmed, 10);
+  if (parsed < 1 || parsed > 65535) {
+    throw new Error(
+      `Invalid configuration for PORT: expected a port number (1-65535), got "${raw}"`,
+    );
+  }
+  return parsed;
+}
+
 export default (): AppConfig => ({
   env: process.env.NODE_ENV ?? 'development',
-  port: parseInt(process.env.PORT ?? '3000', 10),
+  port: parsePort(process.env.PORT, 3000),
   appUrl: process.env.APP_URL ?? 'http://localhost:3000',
   frontendUrl: process.env.FRONTEND_URL ?? 'http://localhost:3001',
   logLevel: process.env.LOG_LEVEL ?? 'debug',
@@ -96,9 +146,10 @@ export default (): AppConfig => ({
   },
 
   analytics: {
-    platformSummaryTtlMs: parseInt(
-      process.env.ANALYTICS_PLATFORM_SUMMARY_TTL_MS ?? '60000',
-      10,
+    platformSummaryTtlMs: parsePositiveInt(
+      process.env.ANALYTICS_PLATFORM_SUMMARY_TTL_MS,
+      60000,
+      'ANALYTICS_PLATFORM_SUMMARY_TTL_MS',
     ),
   },
   stellar: {
@@ -118,9 +169,10 @@ export default (): AppConfig => ({
       USDC: process.env.USDC_TOKEN_CONTRACT_ID ?? '',
       XLM: process.env.XLM_TOKEN_CONTRACT_ID ?? '',
     },
-    escrowDeadlineSeconds: parseInt(
-      process.env.ESCROW_DEADLINE_SECONDS ?? '7776000',
-      10,
+    escrowDeadlineSeconds: parsePositiveInt(
+      process.env.ESCROW_DEADLINE_SECONDS,
+      7776000,
+      'ESCROW_DEADLINE_SECONDS',
     ),
   },
 });
