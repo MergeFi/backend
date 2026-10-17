@@ -5,11 +5,14 @@
 export class TtlCache<T> {
   private entry: { data: T; expiresAt: number } | null = null;
   private inflight: Promise<T> | null = null;
+  private generation = 0;
 
   constructor(private readonly ttlMs: number) {}
 
   invalidate(): void {
     this.entry = null;
+    this.inflight = null;
+    this.generation++;
   }
 
   async getOrLoad(loader: () => Promise<T>): Promise<T> {
@@ -20,15 +23,23 @@ export class TtlCache<T> {
     if (this.inflight) {
       return this.inflight;
     }
+
+    const currentGen = this.generation;
+
     this.inflight = (async () => {
       try {
         const data = await loader();
-        this.entry = { data, expiresAt: Date.now() + this.ttlMs };
+        if (currentGen === this.generation) {
+          this.entry = { data, expiresAt: Date.now() + this.ttlMs };
+        }
         return data;
       } finally {
-        this.inflight = null;
+        if (currentGen === this.generation) {
+          this.inflight = null;
+        }
       }
     })();
+
     return this.inflight;
   }
 }
