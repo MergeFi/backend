@@ -35,7 +35,7 @@ export class BountiesService {
     @Optional() private readonly eventEmitter?: EventEmitter2,
   ) {}
 
-  async create(dto: CreateBountyDto, callerUserId: string): Promise<Bounty> {
+  async create(dto: CreateBountyDto, callerUserId?: string): Promise<Bounty> {
     // Verify issueId exists
     const issueExists = await this.issueRepo.findOne({
       where: { id: dto.issueId },
@@ -50,6 +50,12 @@ export class BountiesService {
     });
     if (!sponsorExists) {
       throw new NotFoundException(`Sponsor ${dto.sponsorId} not found`);
+    }
+
+    if (callerUserId && dto.sponsorId !== callerUserId) {
+      throw new ForbiddenException(
+        'Only the bounty sponsor can create this bounty',
+      );
     }
 
     const bounty = this.bountyRepo.create({
@@ -67,7 +73,15 @@ export class BountiesService {
   }
 
   async findOne(id: string): Promise<Bounty> {
-    const bounty = await this.bountyRepo.findOne({ where: { id } });
+    const bounty = await this.bountyRepo.findOne({
+      where: { id },
+      relations: {
+        issue: { repository: true },
+        sponsor: true,
+        claimedBy: true,
+        team: { splits: true },
+      },
+    });
     if (!bounty) throw new NotFoundException(`Bounty ${id} not found`);
     return bounty;
   }
@@ -171,7 +185,6 @@ export class BountiesService {
     const bounty = await this.findOne(id);
     assertTransition(bounty.status, BountyStatus.MERGED);
 
-    const previousStatus = bounty.status;
     bounty.status = BountyStatus.MERGED;
     bounty.mergedAt = new Date();
     await this.bountyRepo.save(bounty);
@@ -294,7 +307,11 @@ export class BountiesService {
     const qb = this.bountyRepo
       .createQueryBuilder('bounty')
       .leftJoinAndSelect('bounty.issue', 'issue')
-      .leftJoinAndSelect('issue.repository', 'repository');
+      .leftJoinAndSelect('issue.repository', 'repository')
+      .leftJoinAndSelect('bounty.claimedBy', 'claimedBy')
+      .leftJoinAndSelect('bounty.sponsor', 'sponsor')
+      .leftJoinAndSelect('bounty.team', 'team')
+      .leftJoinAndSelect('team.splits', 'teamSplits');
 
     if (options.status) {
       qb.andWhere('bounty.status = :status', { status: options.status });
