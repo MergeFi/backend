@@ -143,4 +143,19 @@ export class MilestonesController {
   allocateBudget(@Param('id', new ParseUUIDPipe()) id: string) {
     return this.milestonesService.allocateBudget(id);
   }
+
+  @ApiOperation({
+    summary: 'Close a milestone and refund its unspent balance',
+  })
+  @ApiBearerAuth()
+  @ApiStandardErrorResponses()
+  @UseGuards(JwtAuthGuard)
+  @Post(':id/close')
+  close(@Param('id', new ParseUUIDPipe()) id: string, @Req() req: Request) {
+    // There was no way to reach MilestoneStatus.CLOSED or refund the unspent
+    // escrow — a sponsor couldn't reclaim an unspent budget (#587). Sponsor-
+    // only; the service enforces it.
+    const userId = (req.user as { userId?: string }).userId;
+    return this.milestonesService.close(id, userId);
+  }
 }

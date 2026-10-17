@@ -132,6 +132,30 @@ export class MilestonesService {
   }
 
   /**
+   * Sponsor-only close — transitions the milestone to CLOSED and refunds the
+   * escrow's remaining unspent balance. MilestoneStatus.CLOSED existed and the
+   * state machine allowed (OPEN|FUNDED|IN_PROGRESS) -> CLOSED, but no service/
+   * controller path reached it (#587) — a sponsor had no way to reclaim the
+   * unspent part of a milestone budget.
+   */
+  async close(milestoneId: string, callerUserId: string): Promise<Milestone> {
+    const milestone = await this.findOne(milestoneId);
+    if (milestone.sponsorId && milestone.sponsorId !== callerUserId) {
+      throw new ForbiddenException('Only the milestone sponsor can close it');
+    }
+    assertTransition(milestone.status, MilestoneStatus.CLOSED);
+
+    // Refund the remaining escrow balance — the sponsor keeps what wasn't
+    // distributed. releasePartial paid the contributors; refund returns the
+    // rest (#587).
+    if (milestone.escrowId) {
+      await this.escrowService.refund(milestone.escrowId);
+    }
+    milestone.status = MilestoneStatus.CLOSED;
+    return this.milestoneRepo.save(milestone);
+  }
+
+  /**
    * Distributes this milestone's budget proportionally as its issues resolve.
    * TODO: support per-issue weighted budgets; currently splits the remaining
    * budget evenly across still-unresolved issues at the time of each call.
