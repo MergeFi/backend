@@ -289,6 +289,21 @@ describe('UsersService', () => {
       );
     });
 
+    it('clears stellarAddress when null is passed to unlink (#652)', async () => {
+      userRepo.findOne.mockResolvedValue({
+        id: 'u1',
+        stellarAddress: 'GEXISTINGADDRESS',
+      });
+
+      const user = await service.setStellarAddress('u1', null);
+
+      expect(user.stellarAddress).toBeNull();
+      expect(userRepo.save).toHaveBeenCalledWith(
+        expect.objectContaining({ id: 'u1', stellarAddress: null }),
+      );
+    });
+
+
     // Note on #39 (UsersController.setStellarAddress is authenticated but
     // not authorized: any logged-in user can overwrite another user's
     // payout address): UsersService.setStellarAddress(userId, address) has

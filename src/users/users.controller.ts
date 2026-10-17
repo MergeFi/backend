@@ -1,6 +1,7 @@
 import {
   Body,
   Controller,
+  Delete,
   Get,
   Param,
   ParseUUIDPipe,
@@ -50,5 +51,12 @@ export class UsersController {
     @Body() dto: SetStellarAddressDto,
   ) {
     return this.usersService.setStellarAddress(id, dto.stellarAddress);
+  }
+
+  @ApiBearerAuth()
+  @UseGuards(JwtAuthGuard)
+  @Delete(':id/stellar-address')
+  unlinkStellarAddress(@Param('id', new ParseUUIDPipe()) id: string) {
+    return this.usersService.setStellarAddress(id, null);
   }
 }
