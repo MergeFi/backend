@@ -57,17 +57,21 @@ export class ReputationService {
   async history(
     userId: string,
     options: ReputationHistoryOptions = {},
-  ): Promise<ReputationSnapshot[]> {
+  ): Promise<{ items: ReputationSnapshot[]; total: number }> {
     const limit = Math.min(
       Math.max(options.limit ?? REPUTATION_HISTORY_DEFAULT_LIMIT, 1),
       REPUTATION_HISTORY_MAX_LIMIT,
     );
     const offset = Math.max(options.offset ?? 0, 0);
-    return this.snapshotRepo.find({
+    // DESC — newest first. ASC returned the OLDEST `limit` snapshots, so the
+    // newest only appeared on the last page and a client needed the total to
+    // reach them (#585). findAndCount also returns the real total.
+    const [items, total] = await this.snapshotRepo.findAndCount({
       where: { userId },
-      order: { computedAt: 'ASC' },
+      order: { computedAt: 'DESC' },
       take: limit,
       skip: offset,
     });
+    return { items, total };
   }
 }
