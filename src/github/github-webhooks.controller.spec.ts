@@ -137,10 +137,13 @@ describe('GithubWebhooksController — header extraction and response shape (#31
 
   it('is declared with a 202 HTTP status for the accepted delivery', () => {
     // @HttpCode(202) tells Nest to answer 202 instead of POST's default 201.
-    const httpCode = Reflect.getMetadata(
-      '__httpCode__',
-      GithubWebhooksController.prototype.handle,
-    );
+    const handler = (
+      GithubWebhooksController.prototype as unknown as Record<
+        string,
+        (...args: unknown[]) => unknown
+      >
+    )['handle'];
+    const httpCode = Reflect.getMetadata('__httpCode__', handler);
     expect(httpCode).toBe(202);
   });
 });
