@@ -132,7 +132,12 @@ export class BountiesController {
     return this.bountiesService.claim(id, userId);
   }
 
-  @ApiOperation({ summary: 'Approve a claimed bounty' })
+  @ApiOperation({
+    summary: 'Approve a claimed bounty',
+    deprecated: true,
+    description:
+      'Not implemented — stub route (see #253); returns a static response.',
+  })
   @ApiBearerAuth()
   @ApiStandardErrorResponses()
   @Idempotent('bounty.approve')
@@ -143,7 +148,12 @@ export class BountiesController {
     return this.bountiesService.approve(id);
   }
 
-  @ApiOperation({ summary: 'Reject a claimed bounty' })
+  @ApiOperation({
+    summary: 'Reject a claimed bounty',
+    deprecated: true,
+    description:
+      'Not implemented — stub route (see #253); returns a static response.',
+  })
   @ApiBearerAuth()
   @ApiStandardErrorResponses()
   @Idempotent('bounty.reject')

@@ -133,7 +133,12 @@ export class MilestonesController {
     );
   }
 
-  @ApiOperation({ summary: 'Allocate the milestone budget' })
+  @ApiOperation({
+    summary: 'Allocate the milestone budget',
+    deprecated: true,
+    description:
+      'Not implemented — stub route (see #253); returns a static response.',
+  })
   @ApiBearerAuth()
   @ApiStandardErrorResponses()
   @Idempotent('milestone.allocateBudget')
