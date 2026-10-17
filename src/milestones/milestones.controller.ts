@@ -45,6 +45,7 @@ export class ResolveIssueDto {
     required: false,
     description: 'Optional user UUID of the recipient',
   })
+>>>>>>> origin/main
   @IsOptional()
   @IsUUID()
   recipientId?: string;
