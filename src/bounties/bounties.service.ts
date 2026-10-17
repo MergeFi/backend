@@ -67,7 +67,14 @@ export class BountiesService {
   }
 
   async findOne(id: string): Promise<Bounty> {
-    const bounty = await this.bountyRepo.findOne({ where: { id } });
+    // Load the relations clients render — issue (repo/issue-number link),
+    // claimedBy/sponsor (who owns it), team (the payout split), escrow
+    // (fund status). Without `relations` the response was a bare row and the
+    // UI got no issue/sponsor/team data (#588).
+    const bounty = await this.bountyRepo.findOne({
+      where: { id },
+      relations: ['issue', 'sponsor', 'claimedBy', 'team', 'escrow'],
+    });
     if (!bounty) throw new NotFoundException(`Bounty ${id} not found`);
     return bounty;
   }
