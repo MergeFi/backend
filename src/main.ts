@@ -33,6 +33,7 @@ export async function bootstrap() {
   const env = configService.get('env', { infer: true });
   const logLevel = configService.get('logLevel', { infer: true });
   app.useLogger(resolveLogLevels(logLevel || 'log'));
+  app.enableShutdownHooks();
 
   app.use(helmet());
   app.enableCors({
