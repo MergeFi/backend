@@ -196,6 +196,10 @@ export class MaintenancePoolService {
   }
 
   async list(): Promise<MaintenancePool[]> {
-    return this.poolRepo.find();
+    // Load repository/sponsor/escrow — the frontend's adaptMaintenancePool
+    // needs them; a bare find() returned rows with no relations (#591).
+    return this.poolRepo.find({
+      relations: ['repository', 'createdBy', 'escrow'],
+    });
   }
 }

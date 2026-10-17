@@ -239,7 +239,12 @@ export class MilestonesService {
   }
 
   async list(): Promise<Milestone[]> {
-    return this.milestoneRepo.find();
+    // Load the relations the frontend's adaptMilestone renders — repository
+    // (org/repo display), sponsor, escrow (fund status), issues (the linked
+    // issues). A bare find() returned empty rows (#591).
+    return this.milestoneRepo.find({
+      relations: ['repository', 'sponsor', 'escrow', 'issues'],
+    });
   }
 
   /**
