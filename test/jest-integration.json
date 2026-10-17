@@ -1,0 +1,19 @@
+{
+  "moduleFileExtensions": [
+    "js",
+    "json",
+    "ts"
+  ],
+  "rootDir": "..",
+  "testEnvironment": "node",
+  "testRegex": ".*\\.integration\\.spec\\.ts$",
+  "transform": {
+    "^.+\\.(t|j)s$": "ts-jest"
+  },
+  "moduleNameMapper": {
+    "^@stellar/stellar-sdk$": "<rootDir>/test/mocks/stellar-sdk.mock.js"
+  },
+  "transformIgnorePatterns": [
+    "/node_modules/(?!(@octokit|before-after-hook|universal-user-agent)/)"
+  ]
+}
