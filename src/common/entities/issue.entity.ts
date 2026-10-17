@@ -20,6 +20,14 @@ export class Issue {
   @PrimaryGeneratedColumn('uuid')
   id: string;
 
+  /**
+   * Note on cascade deletion: Repository -> Issue uses `onDelete: 'CASCADE'`.
+   * However, if an Issue has an active financial record attached (Bounty),
+   * Bounty.issue is configured with `onDelete: 'RESTRICT'` (see bounty.entity.ts
+   * and #53). In PostgreSQL, deleting a repository with bountied issues will
+   * safely abort with a foreign key violation to prevent orphaned or deleted
+   * escrow funds.
+   */
   @ManyToOne(() => Repository, (repo) => repo.issues, { onDelete: 'CASCADE' })
   @JoinColumn()
   repository: Repository;
@@ -63,7 +71,7 @@ export class Issue {
   milestone: Milestone | null;
 
   @Column({ type: 'varchar', nullable: true })
-  milestoneId: string | null;
+  milestoneId: string;
 
   @OneToOne(() => Bounty, (bounty) => bounty.issue, { nullable: true })
   bounty: Bounty | null;
