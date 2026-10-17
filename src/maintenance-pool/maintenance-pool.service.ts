@@ -164,6 +164,18 @@ export class MaintenancePoolService {
       );
     }
 
+    // Run cheap preconditions (escrow LOCKED, valid amount, recipient/user
+    // match) *before* the balance decrement so that bad-input errors never
+    // leave the pool's DB balance below the real on-chain balance (#issue).
+    // assertPoolWithdrawPreconditions mirrors the first three guards inside
+    // poolWithdraw exactly, so if they pass here they won't fire again there.
+    await this.escrowService.assertPoolWithdrawPreconditions(
+      pool.escrowId,
+      amount,
+      recipientAddress,
+      recipientId,
+    );
+
     // Atomic balance check and decrement — prevents TOCTOU race where concurrent
     // calls could overdraw the pool (#274). Uses a conditional UPDATE that only
     // succeeds if balance >= amount, then checks affected rows.
@@ -185,14 +197,25 @@ export class MaintenancePoolService {
     // not a milestone-style fixed lock that gets partially released and then
     // closed out — so pay the reward via the pool contract's `withdraw`,
     // leaving the escrow LOCKED for the next reward (#163).
-    const payment = await this.escrowService.poolWithdraw(
-      pool.escrowId,
-      amount,
-      recipientAddress,
-      recipientId,
-    );
-
-    return payment;
+    //
+    // If poolWithdraw throws for any reason — escrow status race, Soroban
+    // simulate/send/poll failure, paymentRepo.save failure — the balance
+    // decrement above has already been applied but no USDC has left the
+    // contract (the escrow stays LOCKED either way). Restore the reservation
+    // atomically so the pool's DB balance never permanently drifts below the
+    // real on-chain balance (#issue). The original error is rethrown so the
+    // caller observes a clean failure.
+    try {
+      return await this.escrowService.poolWithdraw(
+        pool.escrowId,
+        amount,
+        recipientAddress,
+        recipientId,
+      );
+    } catch (err) {
+      await this.poolRepo.increment({ id }, 'balance', Number(amount));
+      throw err;
+    }
   }
 
   async list(): Promise<MaintenancePool[]> {

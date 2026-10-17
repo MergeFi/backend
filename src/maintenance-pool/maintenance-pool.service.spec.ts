@@ -18,7 +18,7 @@ describe('MaintenancePoolService', () => {
     decrement: jest.Mock;
     createQueryBuilder: jest.Mock;
   };
-  let escrowService: { fund: jest.Mock; poolWithdraw: jest.Mock };
+  let escrowService: { fund: jest.Mock; poolWithdraw: jest.Mock; assertPoolWithdrawPreconditions: jest.Mock };
   let issueRepo: { findOne: jest.Mock };
   let paymentRepo: {
     findOne: jest.Mock;
@@ -41,6 +41,7 @@ describe('MaintenancePoolService', () => {
     escrowService = {
       fund: jest.fn(),
       poolWithdraw: jest.fn(),
+      assertPoolWithdrawPreconditions: jest.fn().mockResolvedValue(undefined),
     };
     issueRepo = {
       findOne: jest.fn().mockResolvedValue({
@@ -339,6 +340,7 @@ describe('MaintenancePoolService', () => {
         id: 'pool-1',
         balance: '100',
         escrowId: 'escrow-1',
+        status: MaintenancePoolStatus.ACTIVE,
       });
       // Mock the atomic balance check to succeed
       const mockQueryBuilder = {
@@ -412,6 +414,7 @@ describe('MaintenancePoolService', () => {
         id: 'pool-1',
         balance: '100',
         escrowId: 'escrow-1',
+        status: MaintenancePoolStatus.ACTIVE,
       });
       // Mock the payment query to return an existing payment
       const mockPaymentQueryBuilder = {
@@ -442,7 +445,7 @@ describe('MaintenancePoolService', () => {
         escrowId: 'escrow-1',
       };
       poolRepo.findOne.mockImplementation(() =>
-        Promise.resolve({ id: 'pool-1', ...sharedPoolRow }),
+        Promise.resolve({ id: 'pool-1', status: MaintenancePoolStatus.ACTIVE, ...sharedPoolRow }),
       );
       // Mock the atomic balance check to succeed for both calls
       const mockQueryBuilder = {
@@ -462,6 +465,126 @@ describe('MaintenancePoolService', () => {
 
       // Both calls should have succeeded (atomic check passed)
       expect(mockQueryBuilder.execute).toHaveBeenCalledTimes(2);
+    });
+
+    // Balance-leak regression tests (#issue): any throw inside poolWithdraw
+    // after the balance has been decremented must trigger an increment
+    // restoration so the pool's DB balance never drifts below the real
+    // on-chain balance.
+
+    describe('balance restoration on poolWithdraw failure', () => {
+      let mockQueryBuilder: {
+        update: jest.Mock;
+        set: jest.Mock;
+        where: jest.Mock;
+        setParameter: jest.Mock;
+        execute: jest.Mock;
+      };
+
+      beforeEach(() => {
+        poolRepo.findOne.mockResolvedValue({
+          id: 'pool-1',
+          balance: '100',
+          escrowId: 'escrow-1',
+          status: MaintenancePoolStatus.ACTIVE,
+        });
+        mockQueryBuilder = {
+          update: jest.fn().mockReturnThis(),
+          set: jest.fn().mockReturnThis(),
+          where: jest.fn().mockReturnThis(),
+          setParameter: jest.fn().mockReturnThis(),
+          execute: jest.fn().mockResolvedValue({ affected: 1 }),
+        };
+        poolRepo.createQueryBuilder.mockReturnValue(mockQueryBuilder);
+      });
+
+      it('restores pool balance when poolWithdraw throws a Soroban invocation error', async () => {
+        const sorobanError = new Error('Soroban simulate failed: insufficient fee');
+        escrowService.poolWithdraw.mockRejectedValue(sorobanError);
+
+        await expect(
+          service.assignReward('pool-1', 'issue-1', '30', 'GRECIPIENT', 'user-1'),
+        ).rejects.toThrow('Soroban simulate failed: insufficient fee');
+
+        // Balance must be restored via increment after the decrement
+        expect(poolRepo.increment).toHaveBeenCalledWith(
+          { id: 'pool-1' },
+          'balance',
+          30,
+        );
+      });
+
+      it('restores pool balance when poolWithdraw throws a paymentRepo.save error', async () => {
+        const dbError = new Error('connection terminated unexpectedly');
+        escrowService.poolWithdraw.mockRejectedValue(dbError);
+
+        await expect(
+          service.assignReward('pool-1', 'issue-1', '50', 'GRECIPIENT'),
+        ).rejects.toThrow('connection terminated unexpectedly');
+
+        expect(poolRepo.increment).toHaveBeenCalledWith(
+          { id: 'pool-1' },
+          'balance',
+          50,
+        );
+      });
+
+      it('restores the exact numeric amount that was decremented', async () => {
+        escrowService.poolWithdraw.mockRejectedValue(new Error('tx failed'));
+
+        await expect(
+          service.assignReward('pool-1', 'issue-1', '12.5', 'GRECIPIENT'),
+        ).rejects.toThrow();
+
+        // Number('12.5') === 12.5 — must match what the decrement used
+        expect(poolRepo.increment).toHaveBeenCalledWith(
+          { id: 'pool-1' },
+          'balance',
+          12.5,
+        );
+      });
+
+      it('does NOT call increment when poolWithdraw succeeds', async () => {
+        escrowService.poolWithdraw.mockResolvedValue({ id: 'payment-1' });
+
+        await service.assignReward('pool-1', 'issue-1', '30', 'GRECIPIENT', 'user-1');
+
+        expect(poolRepo.increment).not.toHaveBeenCalled();
+      });
+
+      it('rethrows the original poolWithdraw error after restoring balance', async () => {
+        const originalError = new BadRequestException('recipient mismatch');
+        escrowService.poolWithdraw.mockRejectedValue(originalError);
+
+        const thrown = await service
+          .assignReward('pool-1', 'issue-1', '10', 'GRECIPIENT')
+          .catch((e) => e);
+
+        // The caller sees the original error, not a wrapped one
+        expect(thrown).toBe(originalError);
+        // And the balance was still restored
+        expect(poolRepo.increment).toHaveBeenCalledWith(
+          { id: 'pool-1' },
+          'balance',
+          10,
+        );
+      });
+
+      it('does NOT decrement at all when assertPoolWithdrawPreconditions rejects before the decrement', async () => {
+        // Cheap pre-decrement validation fires — no balance should be touched
+        escrowService.assertPoolWithdrawPreconditions.mockRejectedValue(
+          new BadRequestException('recipientAddress does not match Stellar address'),
+        );
+
+        await expect(
+          service.assignReward('pool-1', 'issue-1', '10', 'GSTALE_ADDRESS', 'user-1'),
+        ).rejects.toThrow('recipientAddress does not match Stellar address');
+
+        // The atomic decrement was never attempted
+        expect(mockQueryBuilder.execute).not.toHaveBeenCalled();
+        // And no restoration increment is needed (nothing was decremented)
+        expect(poolRepo.increment).not.toHaveBeenCalled();
+      });
     });
   });
 });
