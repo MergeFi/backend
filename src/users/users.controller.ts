@@ -1,7 +1,10 @@
 import {
   Body,
   Controller,
+  Delete,
   Get,
+  HttpCode,
+  HttpStatus,
   Param,
   ParseUUIDPipe,
   Patch,
@@ -50,5 +53,16 @@ export class UsersController {
     @Body() dto: SetStellarAddressDto,
   ) {
     return this.usersService.setStellarAddress(id, dto.stellarAddress);
+  }
+
+  @ApiBearerAuth()
+  @UseGuards(JwtAuthGuard)
+  @Delete(':id/stellar-address')
+  @HttpCode(HttpStatus.NO_CONTENT)
+  async clearStellarAddress(@Param('id', new ParseUUIDPipe()) id: string) {
+    // The wallet-disconnect path: PATCH with { stellarAddress: null } was
+    // rejected by the address-validator every time, so the backend kept the
+    // old address and the wallet "reconnected" on the next sync (#714).
+    await this.usersService.setStellarAddress(id, null);
   }
 }
