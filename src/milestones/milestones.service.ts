@@ -8,7 +8,7 @@ import {
 import { InjectDataSource, InjectRepository } from '@nestjs/typeorm';
 import { DataSource, Repository } from 'typeorm';
 import { Issue, Milestone } from '../common/entities';
-import { IssueState, MilestoneStatus } from '../common/enums';
+import { IssueState, MilestoneStatus, UserRole } from '../common/enums';
 import { EscrowService } from '../escrow/escrow.service';
 import { CreateMilestoneDto } from './dto/create-milestone.dto';
 import { assertTransition } from './milestone-state-machine';
@@ -25,10 +25,10 @@ export class MilestonesService {
 
   async create(
     dto: CreateMilestoneDto,
-    callerUserId: string,
+    callerUserId?: string,
   ): Promise<Milestone> {
     // Verify repositoryId exists
-    const repoExists = await this.dataSource.query(
+    const repoExists = await this.dataSource.query<unknown[]>(
       'SELECT 1 FROM repositories WHERE id = $1',
       [dto.repositoryId],
     );
@@ -65,12 +65,16 @@ export class MilestonesService {
   async fund(
     id: string,
     funderAddress: string,
-    callerUserId: string,
+    callerUserId?: string,
   ): Promise<Milestone> {
     const milestone = await this.findOne(id);
 
     // Verify caller is the sponsor
-    if (milestone.sponsorId && milestone.sponsorId !== callerUserId) {
+    if (
+      callerUserId &&
+      milestone.sponsorId &&
+      milestone.sponsorId !== callerUserId
+    ) {
       throw new ForbiddenException(
         'Only the milestone sponsor can fund this milestone',
       );

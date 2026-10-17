@@ -1,10 +1,12 @@
 import { Test, TestingModule } from '@nestjs/testing';
+import { getRepositoryToken } from '@nestjs/typeorm';
 import { plainToInstance } from 'class-transformer';
 import { validate } from 'class-validator';
 import { MilestonesController } from './milestones.controller';
 import { MilestonesService } from './milestones.service';
 import { CreateMilestoneDto } from './dto/create-milestone.dto';
 import { AssetType, MilestoneStatus } from '../common/enums';
+import { IdempotencyKey } from '../common/entities/idempotency-key.entity';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
 
@@ -18,22 +20,35 @@ describe('MilestonesController', () => {
     addIssue: jest.Mock;
     resolveIssue: jest.Mock;
     allocateBudget: jest.Mock;
+    close: jest.Mock;
   };
 
   beforeEach(async () => {
     milestonesService = {
-      create: jest.fn().mockResolvedValue({ id: 'm1', status: MilestoneStatus.OPEN }),
-      findOne: jest.fn().mockResolvedValue({ id: 'm1', status: MilestoneStatus.OPEN }),
+      create: jest
+        .fn()
+        .mockResolvedValue({ id: 'm1', status: MilestoneStatus.OPEN }),
+      findOne: jest
+        .fn()
+        .mockResolvedValue({ id: 'm1', status: MilestoneStatus.OPEN }),
       list: jest.fn().mockResolvedValue([]),
-      fund: jest.fn().mockResolvedValue({ id: 'm1', status: MilestoneStatus.FUNDED }),
+      fund: jest
+        .fn()
+        .mockResolvedValue({ id: 'm1', status: MilestoneStatus.FUNDED }),
       addIssue: jest.fn().mockResolvedValue({ id: 'm1' }),
       resolveIssue: jest.fn().mockResolvedValue({ id: 'm1' }),
       allocateBudget: jest.fn().mockResolvedValue({ id: 'm1' }),
+      close: jest
+        .fn()
+        .mockResolvedValue({ id: 'm1', status: MilestoneStatus.CLOSED }),
     };
 
     const module: TestingModule = await Test.createTestingModule({
       controllers: [MilestonesController],
-      providers: [{ provide: MilestonesService, useValue: milestonesService }],
+      providers: [
+        { provide: MilestonesService, useValue: milestonesService },
+        { provide: getRepositoryToken(IdempotencyKey), useValue: {} },
+      ],
     })
       .overrideGuard(JwtAuthGuard)
       .useValue({ canActivate: () => true })
@@ -45,7 +60,7 @@ describe('MilestonesController', () => {
   });
 
   describe('create', () => {
-    it('calls milestonesService.create with the provided DTO', async () => {
+    it('calls milestonesService.create with the provided DTO and forwarded userId', async () => {
       const dto = {
         repositoryId: '00000000-0000-0000-0000-000000000001',
         title: 'Test Milestone',
@@ -55,7 +70,7 @@ describe('MilestonesController', () => {
 
       await controller.create(dto);
 
-      expect(milestonesService.create).toHaveBeenCalledWith(dto);
+      expect(milestonesService.create).toHaveBeenCalledWith(dto, undefined);
     });
   });
 
@@ -79,7 +94,11 @@ describe('MilestonesController', () => {
     it('calls milestonesService.fund with id and funderAddress', async () => {
       await controller.fund('m1', { funderAddress: 'GFUNDER' });
 
-      expect(milestonesService.fund).toHaveBeenCalledWith('m1', 'GFUNDER');
+      expect(milestonesService.fund).toHaveBeenCalledWith(
+        'm1',
+        'GFUNDER',
+        undefined,
+      );
     });
   });
 
@@ -98,7 +117,12 @@ describe('MilestonesController', () => {
         recipientId: 'u1',
       });
 
-      expect(milestonesService.resolveIssue).toHaveBeenCalledWith('m1', 'i1', 'GADDR', 'u1');
+      expect(milestonesService.resolveIssue).toHaveBeenCalledWith(
+        'm1',
+        'i1',
+        'GADDR',
+        'u1',
+      );
     });
   });
 
@@ -107,6 +131,20 @@ describe('MilestonesController', () => {
       await controller.allocateBudget('m1');
 
       expect(milestonesService.allocateBudget).toHaveBeenCalledWith('m1');
+    });
+  });
+
+  describe('close', () => {
+    it('calls milestonesService.close with the route param and caller userId', async () => {
+      await controller.close('m1', { user: { userId: 'user-1' } } as any);
+
+      expect(milestonesService.close).toHaveBeenCalledWith('m1', 'user-1');
+    });
+
+    it('forwards undefined userId when request has no authenticated user', async () => {
+      await controller.close('m1');
+
+      expect(milestonesService.close).toHaveBeenCalledWith('m1', undefined);
     });
   });
 

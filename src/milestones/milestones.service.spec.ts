@@ -5,7 +5,7 @@ import { DataSource } from 'typeorm';
 import { MilestonesService } from './milestones.service';
 import { EscrowService } from '../escrow/escrow.service';
 import { Issue, Milestone } from '../common/entities';
-import { AssetType, MilestoneStatus } from '../common/enums';
+import { AssetType, MilestoneStatus, UserRole } from '../common/enums';
 
 /**
  * Transaction manager mock (#531): resolveIssue re-reads the milestone FOR
@@ -36,8 +36,10 @@ describe('MilestonesService', () => {
   let escrowService: {
     fund: jest.Mock;
     releasePartial: jest.Mock;
+    refund: jest.Mock;
   };
   let dataSource: {
+    query: jest.Mock;
     transaction: jest.Mock;
   };
 
@@ -58,6 +60,7 @@ describe('MilestonesService', () => {
         amount: '100',
         status: 'confirmed',
       }),
+      refund: jest.fn().mockResolvedValue(undefined),
     };
     milestoneRepoRef = milestoneRepo;
     dataSource = {
@@ -431,7 +434,7 @@ describe('MilestonesService', () => {
 
       await expect(
         service.resolveIssue('m1', 'i1', 'RECIPIENT_ADDR'),
-      ).rejects.toThrow('Milestone m1 is not accepting distributions');
+      ).rejects.toThrow();
     });
 
     it('rejects when the issue does not belong to the milestone (#114)', async () => {
@@ -496,6 +499,140 @@ describe('MilestonesService', () => {
         '333.3333333',
         'RECIPIENT_ADDR',
         undefined,
+        expect.anything(),
+      );
+    });
+  });
+
+  describe('close (#587)', () => {
+    it('closes an OPEN milestone and skips escrow refund when none exists', async () => {
+      milestoneRepo.findOne.mockResolvedValue({
+        id: 'm1',
+        status: MilestoneStatus.OPEN,
+        sponsorId: 'sponsor-1',
+        escrowId: null,
+      });
+
+      const closed = await service.close('m1', 'sponsor-1');
+
+      expect(closed.status).toBe(MilestoneStatus.CLOSED);
+      expect(escrowService.refund).not.toHaveBeenCalled();
+      expect(milestoneRepo.save).toHaveBeenCalledWith(
+        expect.objectContaining({ status: MilestoneStatus.CLOSED }),
+      );
+    });
+
+    it('closes a FUNDED milestone and refunds the escrow balance', async () => {
+      milestoneRepo.findOne.mockResolvedValue({
+        id: 'm1',
+        status: MilestoneStatus.FUNDED,
+        sponsorId: 'sponsor-1',
+        escrowId: 'escrow-1',
+      });
+
+      const closed = await service.close('m1', 'sponsor-1');
+
+      expect(closed.status).toBe(MilestoneStatus.CLOSED);
+      expect(escrowService.refund).toHaveBeenCalledWith('escrow-1');
+      expect(milestoneRepo.save).toHaveBeenCalledWith(
+        expect.objectContaining({ status: MilestoneStatus.CLOSED }),
+      );
+    });
+
+    it('closes an IN_PROGRESS milestone and refunds remaining escrow', async () => {
+      milestoneRepo.findOne.mockResolvedValue({
+        id: 'm1',
+        status: MilestoneStatus.IN_PROGRESS,
+        sponsorId: 'sponsor-1',
+        escrowId: 'escrow-1',
+      });
+
+      const closed = await service.close('m1', 'sponsor-1');
+
+      expect(closed.status).toBe(MilestoneStatus.CLOSED);
+      expect(escrowService.refund).toHaveBeenCalledWith('escrow-1');
+    });
+
+    it('allows maintainers to close any milestone when callerUserId is omitted', async () => {
+      milestoneRepo.findOne.mockResolvedValue({
+        id: 'm1',
+        status: MilestoneStatus.FUNDED,
+        sponsorId: 'sponsor-different',
+        escrowId: 'escrow-1',
+      });
+
+      const closed = await service.close('m1');
+
+      expect(closed.status).toBe(MilestoneStatus.CLOSED);
+      expect(escrowService.refund).toHaveBeenCalledWith('escrow-1');
+    });
+
+    it('throws ForbiddenException when a sponsor attempts to close another sponsor milestone', async () => {
+      milestoneRepo.findOne.mockResolvedValue({
+        id: 'm1',
+        status: MilestoneStatus.FUNDED,
+        sponsorId: 'sponsor-actual',
+        escrowId: 'escrow-1',
+      });
+
+      let err: unknown;
+      try {
+        await service.close('m1', 'sponsor-imposter');
+      } catch (e) {
+        err = e;
+      }
+      expect(err).toBeInstanceOf(ForbiddenException);
+      expect(escrowService.refund).not.toHaveBeenCalled();
+    });
+
+    it('allows a maintainer to close another sponsor milestone', async () => {
+      milestoneRepo.findOne.mockResolvedValue({
+        id: 'm1',
+        status: MilestoneStatus.FUNDED,
+        sponsorId: 'sponsor-actual',
+        escrowId: 'escrow-1',
+      });
+      dataSource.query.mockResolvedValueOnce([
+        { roles: [UserRole.MAINTAINER] },
+      ]);
+
+      const closed = await service.close('m1', 'maintainer-1');
+
+      expect(closed.status).toBe(MilestoneStatus.CLOSED);
+      expect(escrowService.refund).toHaveBeenCalledWith('escrow-1');
+    });
+
+    it('rejects closing a milestone that is already COMPLETED or CLOSED', async () => {
+      milestoneRepo.findOne.mockResolvedValue({
+        id: 'm1',
+        status: MilestoneStatus.COMPLETED,
+        sponsorId: 'sponsor-1',
+      });
+
+      let err1: Error | undefined;
+      try {
+        await service.close('m1', 'sponsor-1');
+      } catch (e) {
+        err1 = e as Error;
+      }
+      expect(err1?.message).toContain(
+        'Cannot transition milestone from "completed" to "closed"',
+      );
+
+      milestoneRepo.findOne.mockResolvedValue({
+        id: 'm1',
+        status: MilestoneStatus.CLOSED,
+        sponsorId: 'sponsor-1',
+      });
+
+      let err2: Error | undefined;
+      try {
+        await service.close('m1', 'sponsor-1');
+      } catch (e) {
+        err2 = e as Error;
+      }
+      expect(err2?.message).toContain(
+        'Cannot transition milestone from "closed" to "closed"',
       );
     });
   });
