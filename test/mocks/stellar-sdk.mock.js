@@ -46,7 +46,12 @@ module.exports = {
   Keypair,
   TransactionBuilder,
   BASE_FEE: '100',
-  Networks: { TESTNET: 'Test SDF Network ; September 2015', PUBLIC: 'Public Global Stellar Network ; September 2015' },
+  Networks: {
+    TESTNET: 'Test SDF Network ; September 2015',
+    PUBLIC: 'Public Global Stellar Network ; September 2015',
+    FUTURENET: 'Test SDF Future Network ; October 2022',
+    STANDALONE: 'Standalone Network ; February 2017',
+  },
   nativeToScVal: (v) => v,
   scValToNative: (v) => v,
   rpc: {
@@ -62,6 +67,9 @@ module.exports = {
       }
       async getTransaction() {
         return { status: 'SUCCESS', ledger: 1 };
+      }
+      async getNetwork() {
+        return { passphrase: 'Test SDF Network ; September 2015' };
       }
     },
     Api: {
