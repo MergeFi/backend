@@ -99,6 +99,19 @@ export class EscrowService {
     escrow.onChainId = this.resolveOnChainId(input);
     const deadline = this.resolveDeadline(input);
     escrow.deadline = deadline;
+    // Collision-check before funding — a derived id that already exists on a
+    // live (or terminated-but-reusable) escrow would either fail fund() with
+    // AlreadyFunded or silently reuse a dead escrow's key + stale contribution
+    // records (#609). Refuse to fund over an existing on-chain key.
+    const collision = await this.escrowRepo.findOne({
+      where: { onChainId: escrow.onChainId },
+    });
+    if (collision) {
+      throw new BadRequestException(
+        `On-chain key collision: ${escrow.onChainId} already funds escrow ` +
+          `${collision.id} — refusing to reuse a live escrow key`,
+      );
+    }
     await this.escrowRepo.save(escrow);
 
     let result: ContractInvocationResult;
@@ -651,14 +664,24 @@ export class EscrowService {
     );
   }
 
-  /** Deterministic FNV-1a-64 hash of a non-numeric reference into a `u64` string. */
+  /**
+   * Deterministic FNV-1a-64 hash of a non-numeric reference into a `u64`
+   * string. The high bit (1<<63) is SET on every derived id — real
+   * GitHub-issue-keyed escrows use the raw numeric issue id (< 2^63), so
+   * namespacing derived UUID-keys into the high half of u64 makes a collision
+   * between a derived key and a real issue key structurally impossible (#609).
+   * Without it a milestone/pool UUID that happened to hash to a live
+   * GitHub-issue key would collide with that escrow's fund/refund path.
+   */
   private deriveOnChainId(seed: string): string {
     let hash = 14695981039346656037n;
     for (let i = 0; i < seed.length; i++) {
       hash ^= BigInt(seed.charCodeAt(i));
       hash = BigInt.asUintN(64, hash * 1099511628211n);
     }
-    return hash.toString();
+    // Set the top bit — derived ids live in [2^63, 2^64), real GitHub issue
+    // ids in [0, 2^63), so the two key-spaces can never overlap.
+    return (hash | (1n << 63n)).toString();
   }
 
   /**
