@@ -41,14 +41,15 @@ describe('UsersController (#597)', () => {
   // The self-only check (#39) — anyone setting ANOTHER user's stellar-address
   // (the on-chain payout recipient) is a payout-hijack. Must 403.
   it("setStellarAddress rejects setting another user's address", async () => {
+    usersService.setStellarAddress = jest.fn();
     const req = { user: { userId: 'attacker' } } as never;
-    await expect(
+    expect(() =>
       controller.setStellarAddress(
         'victim-id',
         { stellarAddress: 'GABC' } as never,
         req,
       ),
-    ).rejects.toBeInstanceOf(ForbiddenException);
+    ).toThrow(ForbiddenException);
     expect(usersService.setStellarAddress).not.toHaveBeenCalled();
   });
 
