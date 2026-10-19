@@ -4,7 +4,7 @@ import { getRepositoryToken } from '@nestjs/typeorm';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { BountiesService } from './bounties.service';
 import { EscrowService } from '../escrow/escrow.service';
-import { Bounty, Team, User } from '../common/entities';
+import { Bounty, Issue, Team, User } from '../common/entities';
 import { AssetType, BountyDifficulty, BountyStatus } from '../common/enums';
 import { InvalidBountyTransitionError } from './bounty-state-machine';
 
@@ -19,6 +19,7 @@ describe('BountiesService', () => {
   };
   let userRepo: { findOne: jest.Mock; find: jest.Mock };
   let teamRepo: { findOne: jest.Mock };
+  let issueRepo: { findOne: jest.Mock };
   let escrowService: {
     fund: jest.Mock;
     release: jest.Mock;
@@ -40,6 +41,7 @@ describe('BountiesService', () => {
     };
     userRepo = { findOne: jest.fn(), find: jest.fn() };
     teamRepo = { findOne: jest.fn() };
+    issueRepo = { findOne: jest.fn().mockResolvedValue({ id: 'issue-1' }) };
     escrowService = {
       fund: jest.fn().mockResolvedValue({ id: 'escrow-1', status: 'locked' }),
       release: jest.fn().mockResolvedValue(undefined),
@@ -53,6 +55,7 @@ describe('BountiesService', () => {
         { provide: getRepositoryToken(Bounty), useValue: bountyRepo },
         { provide: getRepositoryToken(User), useValue: userRepo },
         { provide: getRepositoryToken(Team), useValue: teamRepo },
+        { provide: getRepositoryToken(Issue), useValue: issueRepo },
         { provide: EscrowService, useValue: escrowService },
         { provide: EventEmitter2, useValue: { emit: jest.fn() } },
       ],
@@ -62,13 +65,17 @@ describe('BountiesService', () => {
   });
 
   it('creates a bounty in OPEN status', async () => {
-    const bounty = await service.create({
-      issueId: 'issue-1',
-      sponsorId: 'sponsor-1',
-      amount: '100',
-      asset: AssetType.USDC,
-      difficulty: BountyDifficulty.INTERMEDIATE,
-    });
+    userRepo.findOne.mockResolvedValue({ id: 'sponsor-1' });
+    const bounty = await service.create(
+      {
+        issueId: 'issue-1',
+        sponsorId: 'sponsor-1',
+        amount: '100',
+        asset: AssetType.USDC,
+        difficulty: BountyDifficulty.INTERMEDIATE,
+      },
+      'sponsor-1',
+    );
     expect(bounty.status).toBe(BountyStatus.OPEN);
   });
 
@@ -81,7 +88,7 @@ describe('BountiesService', () => {
       sponsorId: 'sponsor-1',
     });
 
-    const bounty = await service.fund('b1', 'GFUNDER');
+    const bounty = await service.fund('b1', 'GFUNDER', 'sponsor-1');
 
     expect(escrowService.fund).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -105,7 +112,7 @@ describe('BountiesService', () => {
       issue: { githubIssueId: '2891234567' },
     });
 
-    await service.fund('b1', 'GFUNDER');
+    await service.fund('b1', 'GFUNDER', 'sponsor-1');
 
     expect(escrowService.fund).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -119,8 +126,9 @@ describe('BountiesService', () => {
     bountyRepo.findOne.mockResolvedValue({
       id: 'b1',
       status: BountyStatus.FUNDED,
+      sponsorId: 'sponsor-1',
     });
-    await expect(service.fund('b1', 'GFUNDER')).rejects.toThrow(
+    await expect(service.fund('b1', 'GFUNDER', 'sponsor-1')).rejects.toThrow(
       InvalidBountyTransitionError,
     );
   });
