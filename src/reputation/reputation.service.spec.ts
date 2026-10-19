@@ -23,6 +23,7 @@ describe('ReputationService', () => {
     save: jest.fn((entity) => Promise.resolve({ id: 'snap-1', ...entity })),
     findOne: jest.fn(),
     find: jest.fn(),
+    findAndCount: jest.fn(),
   };
 
   beforeEach(async () => {
@@ -94,14 +95,14 @@ describe('ReputationService', () => {
   });
 
   it('paginates history with a default/max limit', async () => {
-    mockSnapshotRepo.find.mockResolvedValue([]);
+    mockSnapshotRepo.findAndCount.mockResolvedValue([[], 0]);
     await service.history('user-1');
-    expect(mockSnapshotRepo.find).toHaveBeenCalledWith(
+    expect(mockSnapshotRepo.findAndCount).toHaveBeenCalledWith(
       expect.objectContaining({ take: 50, skip: 0 }),
     );
 
     await service.history('user-1', { limit: 1000, offset: 10 });
-    expect(mockSnapshotRepo.find).toHaveBeenCalledWith(
+    expect(mockSnapshotRepo.findAndCount).toHaveBeenCalledWith(
       expect.objectContaining({ take: 100, skip: 10 }),
     );
   });
