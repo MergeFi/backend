@@ -1,7 +1,7 @@
 import { ApiProperty } from '@nestjs/swagger';
-import { Type } from 'class-transformer';
+import { Transform } from 'class-transformer';
 import {
-  IsDateString,
+  IsDate,
   IsOptional,
   IsString,
   IsUUID,
@@ -89,7 +89,9 @@ export class FundEscrowDto {
       'ISO 8601 refund-deadline passed to escrow::fund (defaults to the configured window)',
   })
   @IsOptional()
-  @IsDateString()
-  @Type(() => Date)
+  @Transform(({ value }) =>
+    value === undefined || value instanceof Date ? value : new Date(value),
+  )
+  @IsDate()
   deadline?: Date;
 }

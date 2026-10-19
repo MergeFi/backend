@@ -132,12 +132,15 @@ describe('GithubWebhooksController — header extraction and response shape (#31
 
   it('is declared with a 202 HTTP status for the accepted delivery', () => {
     // @HttpCode(202) tells Nest to answer 202 instead of POST's default 201.
-    // Property-key form — referencing prototype.handle trips unbound-method
-    // (#606).
+    // The decorator stores it on the method function itself, so read the
+    // descriptor value rather than referencing prototype.handle (that trips
+    // unbound-method, #606).
     const httpCode = Reflect.getMetadata(
       '__httpCode__',
-      GithubWebhooksController.prototype,
-      'handle',
+      Object.getOwnPropertyDescriptor(
+        GithubWebhooksController.prototype,
+        'handle',
+      )?.value,
     );
     expect(httpCode).toBe(202);
   });
