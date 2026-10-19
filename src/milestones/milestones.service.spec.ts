@@ -1,11 +1,12 @@
 import { Test, TestingModule } from '@nestjs/testing';
-import { BadRequestException } from '@nestjs/common';
+import { BadRequestException, ForbiddenException } from '@nestjs/common';
 import { getRepositoryToken } from '@nestjs/typeorm';
 import { DataSource } from 'typeorm';
 import { MilestonesService } from './milestones.service';
 import { EscrowService } from '../escrow/escrow.service';
 import { Issue, Milestone } from '../common/entities';
 import { AssetType, MilestoneStatus } from '../common/enums';
+import { InvalidMilestoneTransitionError } from './milestone-state-machine';
 
 describe('MilestonesService', () => {
   let service: MilestonesService;
@@ -21,6 +22,7 @@ describe('MilestonesService', () => {
   let escrowService: {
     fund: jest.Mock;
     releasePartial: jest.Mock;
+    refund: jest.Mock;
   };
   let dataSource: {
     transaction: jest.Mock;
@@ -43,6 +45,7 @@ describe('MilestonesService', () => {
         amount: '100',
         status: 'confirmed',
       }),
+      refund: jest.fn().mockResolvedValue(undefined),
     };
     dataSource = {
       transaction: jest.fn().mockImplementation((fn: Function) =>
@@ -75,7 +78,7 @@ describe('MilestonesService', () => {
         sponsorId: 'sponsor-1',
       });
 
-      const milestone = await service.fund('m1', 'GFUNDER');
+      const milestone = await service.fund('m1', 'GFUNDER', 'sponsor-1');
 
       expect(milestone.status).toBe(MilestoneStatus.FUNDED);
       expect(milestone.escrowId).toBe('escrow-1');
@@ -90,7 +93,7 @@ describe('MilestonesService', () => {
         sponsorId: 'sponsor-1',
       });
 
-      await service.fund('m1', 'GFUNDER');
+      await service.fund('m1', 'GFUNDER', 'sponsor-1');
 
       expect(escrowService.fund).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -110,7 +113,7 @@ describe('MilestonesService', () => {
         sponsorId: null,
       });
 
-      await service.fund('m2', 'GFUNDER');
+      await service.fund('m2', 'GFUNDER', 'sponsor-1');
 
       expect(escrowService.fund).toHaveBeenCalledWith(
         expect.objectContaining({ sponsorId: null }),
@@ -123,7 +126,7 @@ describe('MilestonesService', () => {
         status: MilestoneStatus.FUNDED,
       });
 
-      await expect(service.fund('m1', 'GFUNDER')).rejects.toThrow(
+      await expect(service.fund('m1', 'GFUNDER', 'sponsor-1')).rejects.toThrow(
         'Milestone m1 is not OPEN (current: funded)',
       );
     });
@@ -263,6 +266,7 @@ describe('MilestonesService', () => {
         '250.0000000',
         'RECIPIENT_ADDR',
         'user-1',
+        expect.anything(),
       );
       expect(payment.id).toBe('payment-1');
       expect(dataSource.transaction).toHaveBeenCalled();
@@ -341,7 +345,7 @@ describe('MilestonesService', () => {
 
       await expect(
         service.resolveIssue('m1', 'i1', 'RECIPIENT_ADDR'),
-      ).rejects.toThrow('Milestone m1 is not accepting distributions');
+      ).rejects.toThrow(InvalidMilestoneTransitionError);
     });
 
     it('rejects when the issue does not belong to the milestone (#114)', async () => {
@@ -406,7 +410,53 @@ describe('MilestonesService', () => {
         '333.3333333',
         'RECIPIENT_ADDR',
         undefined,
+        expect.anything(),
       );
+    });
+  });
+
+  describe('close', () => {
+    it('refunds the escrow and moves the milestone to CLOSED', async () => {
+      milestoneRepo.findOne.mockResolvedValue({
+        id: 'm1',
+        status: MilestoneStatus.FUNDED,
+        escrowId: 'escrow-1',
+        sponsorId: 'sponsor-1',
+      });
+
+      const closed = await service.close('m1', 'sponsor-1');
+
+      expect(escrowService.refund).toHaveBeenCalledWith('escrow-1');
+      expect(closed.status).toBe(MilestoneStatus.CLOSED);
+      expect(milestoneRepo.save).toHaveBeenCalled();
+    });
+
+    it('rejects a caller that is not the milestone sponsor (#587)', async () => {
+      milestoneRepo.findOne.mockResolvedValue({
+        id: 'm1',
+        status: MilestoneStatus.FUNDED,
+        escrowId: 'escrow-1',
+        sponsorId: 'sponsor-1',
+      });
+
+      await expect(service.close('m1', 'mallory')).rejects.toThrow(
+        ForbiddenException,
+      );
+      expect(escrowService.refund).not.toHaveBeenCalled();
+    });
+
+    it('skips the escrow refund when nothing was funded', async () => {
+      milestoneRepo.findOne.mockResolvedValue({
+        id: 'm1',
+        status: MilestoneStatus.OPEN,
+        escrowId: null,
+        sponsorId: 'sponsor-1',
+      });
+
+      const closed = await service.close('m1', 'sponsor-1');
+
+      expect(escrowService.refund).not.toHaveBeenCalled();
+      expect(closed.status).toBe(MilestoneStatus.CLOSED);
     });
   });
 });
