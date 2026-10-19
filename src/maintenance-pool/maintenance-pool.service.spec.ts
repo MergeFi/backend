@@ -302,6 +302,7 @@ describe('MaintenancePoolService', () => {
     it('rejects when the pool has no funded escrow yet', async () => {
       poolRepo.findOne.mockResolvedValue({
         id: 'pool-1',
+        status: MaintenancePoolStatus.ACTIVE,
         balance: '100',
         escrowId: null,
       });
@@ -315,6 +316,7 @@ describe('MaintenancePoolService', () => {
     it('rejects when the requested amount exceeds the pool balance', async () => {
       poolRepo.findOne.mockResolvedValue({
         id: 'pool-1',
+        status: MaintenancePoolStatus.ACTIVE,
         balance: '50',
         escrowId: 'escrow-1',
       });
@@ -337,6 +339,7 @@ describe('MaintenancePoolService', () => {
     it('releases the reward and atomically decrements the balance', async () => {
       poolRepo.findOne.mockResolvedValue({
         id: 'pool-1',
+        status: MaintenancePoolStatus.ACTIVE,
         balance: '100',
         escrowId: 'escrow-1',
       });
@@ -373,6 +376,7 @@ describe('MaintenancePoolService', () => {
     it('rejects a reward for a non-maintenance issue before releasing funds', async () => {
       poolRepo.findOne.mockResolvedValue({
         id: 'pool-1',
+        status: MaintenancePoolStatus.ACTIVE,
         balance: '100',
         escrowId: 'escrow-1',
       });
@@ -391,6 +395,7 @@ describe('MaintenancePoolService', () => {
     it('rejects an issue outside the pool repository', async () => {
       poolRepo.findOne.mockResolvedValue({
         id: 'pool-1',
+        status: MaintenancePoolStatus.ACTIVE,
         repositoryId: 'repository-1',
         balance: '100',
         escrowId: 'escrow-1',
@@ -410,6 +415,7 @@ describe('MaintenancePoolService', () => {
     it('rejects when the issue has already received a reward from this pool (#273)', async () => {
       poolRepo.findOne.mockResolvedValue({
         id: 'pool-1',
+        status: MaintenancePoolStatus.ACTIVE,
         balance: '100',
         escrowId: 'escrow-1',
       });
@@ -437,9 +443,14 @@ describe('MaintenancePoolService', () => {
     // time — not a value cached from an earlier read — and neither
     // decrement is lost.
     it('two concurrent assignReward calls both apply — no lost decrement (#51)', async () => {
-      const sharedPoolRow: { balance: string; escrowId: string } = {
+      const sharedPoolRow: {
+        balance: string;
+        escrowId: string;
+        status: MaintenancePoolStatus;
+      } = {
         balance: '1000.0000000',
         escrowId: 'escrow-1',
+        status: MaintenancePoolStatus.ACTIVE,
       };
       poolRepo.findOne.mockImplementation(() =>
         Promise.resolve({ id: 'pool-1', ...sharedPoolRow }),

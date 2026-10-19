@@ -1,5 +1,7 @@
+import type { Request } from 'express';
 import { ArgumentMetadata, ParseUUIDPipe } from '@nestjs/common';
 import { Test, TestingModule } from '@nestjs/testing';
+import { getRepositoryToken } from '@nestjs/typeorm';
 import { plainToInstance } from 'class-transformer';
 import { validate } from 'class-validator';
 import { BountiesController } from './bounties.controller';
@@ -9,6 +11,7 @@ import { ClaimBountyDto } from './dto/claim-bounty.dto';
 import { AssetType, BountyDifficulty, BountyStatus } from '../common/enums';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
+import { IdempotencyKey } from '../common/entities/idempotency-key.entity';
 
 describe('BountiesController', () => {
   let controller: BountiesController;
@@ -47,7 +50,13 @@ describe('BountiesController', () => {
 
     const module: TestingModule = await Test.createTestingModule({
       controllers: [BountiesController],
-      providers: [{ provide: BountiesService, useValue: bountiesService }],
+      providers: [
+        { provide: BountiesService, useValue: bountiesService },
+        {
+          provide: getRepositoryToken(IdempotencyKey),
+          useValue: { findOne: jest.fn(), save: jest.fn(), create: jest.fn() },
+        },
+      ],
     })
       .overrideGuard(JwtAuthGuard)
       .useValue({ canActivate: () => true })
@@ -68,9 +77,11 @@ describe('BountiesController', () => {
         difficulty: BountyDifficulty.INTERMEDIATE,
       };
 
-      await controller.create(dto);
+      await controller.create(dto, {
+        user: { userId: 'sponsor-1' },
+      } as unknown as Request);
 
-      expect(bountiesService.create).toHaveBeenCalledWith(dto);
+      expect(bountiesService.create).toHaveBeenCalledWith(dto, 'sponsor-1');
     });
   });
 
@@ -84,15 +95,23 @@ describe('BountiesController', () => {
 
   describe('fund', () => {
     it('calls bountiesService.fund with id and funderAddress', async () => {
-      await controller.fund('b1', { funderAddress: 'GFUNDER' });
+      await controller.fund('b1', { funderAddress: 'GFUNDER' }, {
+        user: { userId: 'sponsor-1' },
+      } as unknown as Request);
 
-      expect(bountiesService.fund).toHaveBeenCalledWith('b1', 'GFUNDER');
+      expect(bountiesService.fund).toHaveBeenCalledWith(
+        'b1',
+        'GFUNDER',
+        'sponsor-1',
+      );
     });
   });
 
   describe('claim', () => {
-    it('calls bountiesService.claim with id and contributorId', async () => {
-      await controller.claim('b1', { contributorId: 'contributor-1' });
+    it('calls bountiesService.claim with id and the authenticated user id', async () => {
+      await controller.claim('b1', {
+        user: { userId: 'contributor-1' },
+      } as unknown as Request);
 
       expect(bountiesService.claim).toHaveBeenCalledWith('b1', 'contributor-1');
     });
@@ -116,9 +135,14 @@ describe('BountiesController', () => {
 
   describe('refund', () => {
     it('calls bountiesService.refund with the route param', async () => {
-      await controller.refund('b1');
+      await controller.refund('b1', {
+        user: { userId: 'sponsor-1' },
+      } as unknown as Request);
 
-      expect(bountiesService.refund).toHaveBeenCalledWith('b1');
+      expect(bountiesService.refund).toHaveBeenCalledWith(
+        'b1',
+        'sponsor-1',
+      );
     });
   });
 

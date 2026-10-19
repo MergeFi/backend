@@ -5,7 +5,7 @@ import {
   NotFoundException,
   Optional,
 } from '@nestjs/common';
-import { BadRequestException, Injectable, NotFoundException, Optional } from '@nestjs/common';
+import { BadRequestException, Injectable, NotFoundException, NotImplementedException, Optional } from '@nestjs/common';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { InjectRepository } from '@nestjs/typeorm';
 import { In, Repository } from 'typeorm';
@@ -106,22 +106,21 @@ export class BountiesService {
     assertTransition(bounty.status, BountyStatus.CLAIMED);
 
     // Verify caller is claiming for themselves
-    bounty.claimedById = callerUserId;
     const contributor = await this.userRepo.findOne({
-      where: { id: contributorId },
+      where: { id: callerUserId },
     });
     if (!contributor) {
       throw new BadRequestException(
-        `Contributor ${contributorId} does not correspond to a known user`,
+        `Contributor ${callerUserId} does not correspond to a known user`,
       );
     }
     if (!contributor.stellarAddress) {
       throw new BadRequestException(
-        `Contributor ${contributorId} has no linked Stellar address`,
+        `Contributor ${callerUserId} has no linked Stellar address`,
       );
     }
 
-    bounty.claimedById = contributorId;
+    bounty.claimedById = callerUserId;
     bounty.status = BountyStatus.CLAIMED;
     bounty.claimedAt = new Date();
     return this.bountyRepo.save(bounty);
@@ -295,11 +294,26 @@ export class BountiesService {
     return qb.getMany();
   }
 
-  approve(id: string) {
-    return Promise.resolve({ id, status: 'approved' });
+  /**
+   * Not implemented yet (#253, #533). This used to resolve
+   * `{ id, status: 'approved' }` without reading or writing anything, so the
+   * route reported success for an approval that never happened. It now
+   * answers 501 until the real approval flow exists.
+   */
+  approve(id: string): Promise<never> {
+    return Promise.reject(
+      new NotImplementedException(
+        `Bounty approval is not implemented yet (bounty ${id})`,
+      ),
+    );
   }
 
-  reject(id: string) {
-    return Promise.resolve({ id, status: 'rejected' });
+  /** Not implemented yet (#253, #533) — see `approve`. */
+  reject(id: string): Promise<never> {
+    return Promise.reject(
+      new NotImplementedException(
+        `Bounty rejection is not implemented yet (bounty ${id})`,
+      ),
+    );
   }
 }

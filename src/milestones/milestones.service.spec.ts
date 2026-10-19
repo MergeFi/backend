@@ -6,6 +6,7 @@ import { MilestonesService } from './milestones.service';
 import { EscrowService } from '../escrow/escrow.service';
 import { Issue, Milestone } from '../common/entities';
 import { AssetType, MilestoneStatus } from '../common/enums';
+import { InvalidMilestoneTransitionError } from './milestone-state-machine';
 
 describe('MilestonesService', () => {
   let service: MilestonesService;
@@ -75,7 +76,7 @@ describe('MilestonesService', () => {
         sponsorId: 'sponsor-1',
       });
 
-      const milestone = await service.fund('m1', 'GFUNDER');
+      const milestone = await service.fund('m1', 'GFUNDER', 'sponsor-1');
 
       expect(milestone.status).toBe(MilestoneStatus.FUNDED);
       expect(milestone.escrowId).toBe('escrow-1');
@@ -90,7 +91,7 @@ describe('MilestonesService', () => {
         sponsorId: 'sponsor-1',
       });
 
-      await service.fund('m1', 'GFUNDER');
+      await service.fund('m1', 'GFUNDER', 'sponsor-1');
 
       expect(escrowService.fund).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -110,7 +111,7 @@ describe('MilestonesService', () => {
         sponsorId: null,
       });
 
-      await service.fund('m2', 'GFUNDER');
+      await service.fund('m2', 'GFUNDER', 'sponsor-1');
 
       expect(escrowService.fund).toHaveBeenCalledWith(
         expect.objectContaining({ sponsorId: null }),
@@ -123,7 +124,7 @@ describe('MilestonesService', () => {
         status: MilestoneStatus.FUNDED,
       });
 
-      await expect(service.fund('m1', 'GFUNDER')).rejects.toThrow(
+      await expect(service.fund('m1', 'GFUNDER', 'sponsor-1')).rejects.toThrow(
         'Milestone m1 is not OPEN (current: funded)',
       );
     });
@@ -263,6 +264,7 @@ describe('MilestonesService', () => {
         '250.0000000',
         'RECIPIENT_ADDR',
         'user-1',
+        expect.anything(),
       );
       expect(payment.id).toBe('payment-1');
       expect(dataSource.transaction).toHaveBeenCalled();
@@ -341,7 +343,7 @@ describe('MilestonesService', () => {
 
       await expect(
         service.resolveIssue('m1', 'i1', 'RECIPIENT_ADDR'),
-      ).rejects.toThrow('Milestone m1 is not accepting distributions');
+      ).rejects.toThrow(InvalidMilestoneTransitionError);
     });
 
     it('rejects when the issue does not belong to the milestone (#114)', async () => {
@@ -406,6 +408,7 @@ describe('MilestonesService', () => {
         '333.3333333',
         'RECIPIENT_ADDR',
         undefined,
+        expect.anything(),
       );
     });
   });
