@@ -1,3 +1,4 @@
+import type { Request } from 'express';
 import { Test, TestingModule } from '@nestjs/testing';
 import { plainToInstance } from 'class-transformer';
 import { validate } from 'class-validator';
@@ -5,8 +6,10 @@ import { MilestonesController } from './milestones.controller';
 import { MilestonesService } from './milestones.service';
 import { CreateMilestoneDto } from './dto/create-milestone.dto';
 import { AssetType, MilestoneStatus } from '../common/enums';
+import { getRepositoryToken } from '@nestjs/typeorm';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
+import { IdempotencyKey } from '../common/entities/idempotency-key.entity';
 
 describe('MilestonesController', () => {
   let controller: MilestonesController;
@@ -33,7 +36,13 @@ describe('MilestonesController', () => {
 
     const module: TestingModule = await Test.createTestingModule({
       controllers: [MilestonesController],
-      providers: [{ provide: MilestonesService, useValue: milestonesService }],
+      providers: [
+        { provide: MilestonesService, useValue: milestonesService },
+        {
+          provide: getRepositoryToken(IdempotencyKey),
+          useValue: { findOne: jest.fn(), save: jest.fn(), create: jest.fn() },
+        },
+      ],
     })
       .overrideGuard(JwtAuthGuard)
       .useValue({ canActivate: () => true })
@@ -53,9 +62,14 @@ describe('MilestonesController', () => {
         asset: AssetType.USDC,
       };
 
-      await controller.create(dto);
+      await controller.create(dto, {
+        user: { userId: 'sponsor-1' },
+      } as unknown as Request);
 
-      expect(milestonesService.create).toHaveBeenCalledWith(dto);
+      expect(milestonesService.create).toHaveBeenCalledWith(
+        dto,
+        'sponsor-1',
+      );
     });
   });
 
@@ -77,9 +91,15 @@ describe('MilestonesController', () => {
 
   describe('fund', () => {
     it('calls milestonesService.fund with id and funderAddress', async () => {
-      await controller.fund('m1', { funderAddress: 'GFUNDER' });
+      await controller.fund('m1', { funderAddress: 'GFUNDER' }, {
+        user: { userId: 'sponsor-1' },
+      } as unknown as Request);
 
-      expect(milestonesService.fund).toHaveBeenCalledWith('m1', 'GFUNDER');
+      expect(milestonesService.fund).toHaveBeenCalledWith(
+        'm1',
+        'GFUNDER',
+        'sponsor-1',
+      );
     });
   });
 
