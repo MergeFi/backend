@@ -20,10 +20,12 @@ const validPR = {
 const validIssue = {
   action: 'opened',
   issue: {
+    id: 987654,
     number: 7,
     title: 'the issue',
     state: 'open',
     updated_at: '2024-01-01T00:00:00Z',
+    html_url: 'https://github.com/o/r/issues/7',
   },
   repository: { id: 1, full_name: 'o/r', html_url: 'https://github.com/o/r' },
 };
