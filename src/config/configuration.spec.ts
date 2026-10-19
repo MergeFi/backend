@@ -10,6 +10,7 @@ describe('configuration (#601)', () => {
   });
 
   it('uses dev defaults when env is unset', () => {
+    delete process.env.NODE_ENV;
     delete process.env.PORT;
     const cfg = configuration();
     expect(cfg.env).toBe('development');
