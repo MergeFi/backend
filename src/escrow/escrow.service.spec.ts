@@ -123,7 +123,10 @@ describe('EscrowService', () => {
       expect(args[0]).toEqual(u64(4242n));
       expect(args[1]).toBe('GABC...FUNDER');
       expect(args[3]).toBe(1_000_000_000n);
-      expect(typeof args[4]).toBe('bigint');
+      // deadline is u64 in the ABI too — wrapped exactly like issue_id.
+      expect(args[4]).toEqual(
+        u64(BigInt(Math.floor((escrow.deadline as Date).getTime() / 1000))),
+      );
       expect(escrow.status).toBe(EscrowStatus.LOCKED);
       expect(escrow.fundTxHash).toBe('tx-hash-123');
     });
