@@ -115,7 +115,10 @@ describe('EscrowController', () => {
     });
 
     it('release() returns the service escrow without metadata', async () => {
-      const result = await controller.release('escrow-1', 'GRECIPIENT', 'user-1');
+      const result = await controller.release('escrow-1', {
+        recipientAddress: 'GRECIPIENT',
+        recipientId: 'user-1',
+      });
 
       expect(mockEscrowService.release).toHaveBeenCalledWith(
         'escrow-1',
@@ -142,7 +145,7 @@ describe('EscrowController', () => {
         { recipientAddress: 'GB', percentage: 50 },
       ];
 
-      const result = await controller.splitRelease('escrow-1', recipients);
+      const result = await controller.splitRelease('escrow-1', { recipients });
 
       expect(mockEscrowService.splitRelease).toHaveBeenCalledWith(
         'escrow-1',
@@ -210,11 +213,11 @@ describe('EscrowController', () => {
 
     it('release() is restricted to MAINTAINER and refund() to MAINTAINER/SPONSOR', () => {
       expect(Reflect.getMetadata(ROLES_KEY, handlerFor('release'))).toEqual([
-        'MAINTAINER',
+        'maintainer',
       ]);
       expect(Reflect.getMetadata(ROLES_KEY, handlerFor('refund'))).toEqual([
-        'MAINTAINER',
-        'SPONSOR',
+        'maintainer',
+        'sponsor',
       ]);
     });
 
@@ -235,15 +238,15 @@ describe('EscrowController', () => {
     const base = {
       amount: '100.0000000',
       asset: AssetType.USDC,
-      funderAddress: 'GABCDEFGHIJKLMNOPQRSTUVWXYZ234567abcdefghijklmn',
-      bountyId: '00000000-0000-0000-0000-000000000001',
+      funderAddress: 'GAVDFIZJHGGR3JR3TKFYO6GMQIPTQQSG6RL4R33XATU37LNWSLXU6OWH',
+      bountyId: '11111111-1111-4111-8111-111111111111',
     };
 
     it('accepts onChainIssueId, sponsorId and deadline', async () => {
       const dto = plainToInstance(FundEscrowDto, {
         ...base,
         onChainIssueId: '4242',
-        sponsorId: '00000000-0000-0000-0000-000000000002',
+        sponsorId: '22222222-2222-4222-8222-222222222222',
         deadline: '2026-12-31T00:00:00.000Z',
       });
       const errors = await validate(dto);
@@ -299,7 +302,7 @@ describe('EscrowController', () => {
       const dto = plainToInstance(FundEscrowDto, {
         ...base,
         onChainIssueId: '4242',
-        sponsorId: '00000000-0000-0000-0000-000000000002',
+        sponsorId: '22222222-2222-4222-8222-222222222222',
         deadline: '2026-12-31T00:00:00.000Z',
       });
       mockEscrowService.fund.mockResolvedValueOnce({ id: 'escrow-1' });
@@ -307,7 +310,7 @@ describe('EscrowController', () => {
       expect(mockEscrowService.fund).toHaveBeenCalledWith(
         expect.objectContaining({
           onChainIssueId: '4242',
-          sponsorId: '00000000-0000-0000-0000-000000000002',
+          sponsorId: '22222222-2222-4222-8222-222222222222',
           deadline: new Date('2026-12-31T00:00:00.000Z'),
         }),
       );
