@@ -1,7 +1,10 @@
 import { ConfigService } from '@nestjs/config';
 import { nativeToScVal, rpc } from '@stellar/stellar-sdk';
 import { AssetType } from '../common/enums';
-import { AppConfig } from '../config/configuration';
+import {
+  AppConfig,
+  defaultPassphraseForNetwork,
+} from '../config/configuration';
 import {
   SOROBAN_TX_TIMEOUT_SECONDS,
   SorobanClientService,
@@ -77,6 +80,93 @@ describe('SorobanClientService', () => {
           treasurySecret: 'SSECRET',
         }).isConfigured(),
       ).toBe(true);
+    });
+  });
+
+  describe('onModuleInit and network passphrase verification (#611)', () => {
+    it('skips verification when not configured (dry-run mode)', async () => {
+      const service = makeService();
+      const getNetworkSpy = jest.spyOn(
+        (service as unknown as { server: rpc.Server }).server,
+        'getNetwork',
+      );
+
+      await expect(service.onModuleInit()).resolves.toBeUndefined();
+      expect(getNetworkSpy).not.toHaveBeenCalled();
+    });
+
+    it('passes when configured and RPC endpoint passphrase matches', async () => {
+      const service = makeService({
+        escrowContractId: 'CCONTRACT',
+        treasurySecret: 'SSECRET',
+        networkPassphrase: 'Test SDF Network ; September 2015',
+      });
+      jest
+        .spyOn(
+          (service as unknown as { server: rpc.Server }).server,
+          'getNetwork',
+        )
+        .mockResolvedValueOnce({
+          passphrase: 'Test SDF Network ; September 2015',
+        } as unknown as rpc.Api.GetNetworkResponse);
+
+      await expect(service.onModuleInit()).resolves.toBeUndefined();
+    });
+
+    it('throws when configured and RPC endpoint passphrase mismatches', async () => {
+      const service = makeService({
+        escrowContractId: 'CCONTRACT',
+        treasurySecret: 'SSECRET',
+        network: 'mainnet',
+        networkPassphrase: 'Test SDF Network ; September 2015',
+      });
+      jest
+        .spyOn(
+          (service as unknown as { server: rpc.Server }).server,
+          'getNetwork',
+        )
+        .mockResolvedValueOnce({
+          passphrase: 'Public Global Stellar Network ; September 2015',
+        } as unknown as rpc.Api.GetNetworkResponse);
+
+      await expect(service.onModuleInit()).rejects.toThrow(
+        /STELLAR_NETWORK_PASSPHRASE mismatch/,
+      );
+    });
+  });
+
+  describe('defaultPassphraseForNetwork (#611)', () => {
+    it('returns PUBLIC for mainnet or public', () => {
+      expect(defaultPassphraseForNetwork('mainnet')).toBe(
+        'Public Global Stellar Network ; September 2015',
+      );
+      expect(defaultPassphraseForNetwork('public')).toBe(
+        'Public Global Stellar Network ; September 2015',
+      );
+    });
+
+    it('returns TESTNET for testnet or undefined', () => {
+      expect(defaultPassphraseForNetwork('testnet')).toBe(
+        'Test SDF Network ; September 2015',
+      );
+      expect(defaultPassphraseForNetwork()).toBe(
+        'Test SDF Network ; September 2015',
+      );
+    });
+
+    it('returns FUTURENET for futurenet', () => {
+      expect(defaultPassphraseForNetwork('futurenet')).toBe(
+        'Test SDF Future Network ; October 2022',
+      );
+    });
+
+    it('returns STANDALONE for standalone or local', () => {
+      expect(defaultPassphraseForNetwork('standalone')).toBe(
+        'Standalone Network ; February 2017',
+      );
+      expect(defaultPassphraseForNetwork('local')).toBe(
+        'Standalone Network ; February 2017',
+      );
     });
   });
 
