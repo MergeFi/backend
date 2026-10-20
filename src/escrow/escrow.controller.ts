@@ -35,7 +35,12 @@ export class EscrowController {
   @Idempotent('escrow.fund')
   @Post('fund')
   async fund(@Body() dto: FundEscrowDto) {
-    return toPublicEscrow(await this.escrowService.fund(dto));
+    return toPublicEscrow(
+      await this.escrowService.fund({
+        ...dto,
+        deadline: dto.deadline ? new Date(dto.deadline) : null,
+      }),
+    );
   }
 
   @ApiOperation({ summary: 'Get an escrow by id' })

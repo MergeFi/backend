@@ -49,9 +49,7 @@ export class ReputationController {
   @Get(':userId')
   latest(
     @Param('userId', new ParseUUIDPipe()) userId: string,
-    @CurrentUser() user: AuthenticatedUser,
   ) {
-    this.assertOwner(user, userId);
     return this.reputationService.getLatest(userId);
   }
 
@@ -66,11 +64,9 @@ export class ReputationController {
   @ApiQuery({ name: 'offset', required: false })
   history(
     @Param('userId', new ParseUUIDPipe()) userId: string,
-    @CurrentUser() user: AuthenticatedUser,
     @Query('limit') limit?: string,
     @Query('offset') offset?: string,
   ) {
-    this.assertOwner(user, userId);
     return this.reputationService.history(userId, {
       limit: parseOptionalInt(limit),
       offset: parseOptionalInt(offset),
