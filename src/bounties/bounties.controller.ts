@@ -19,7 +19,6 @@ import {
 import { Throttle } from '@nestjs/throttler'; // Import the Throttle decorator
 import { BountiesService } from './bounties.service';
 import { CreateBountyDto } from './dto/create-bounty.dto';
-import { ClaimBountyDto } from './dto/claim-bounty.dto';
 import { AssetType, BountyDifficulty, BountyStatus } from '../common/enums';
 import { Idempotent } from '../common/idempotency/idempotent.decorator';
 import { IsStellarAddress } from '../common/validators/stellar-address.validator';
@@ -28,6 +27,10 @@ import { RolesGuard } from '../auth/guards/roles.guard';
 import { Roles } from '../auth/decorators/roles.decorator';
 import { UserRole } from '../common/enums';
 import { Request } from 'express';
+
+interface AuthenticatedRequest extends Request {
+  user?: { userId: string };
+}
 import {
   ApiInternalErrorResponse,
   ApiStandardErrorResponses,
@@ -52,8 +55,8 @@ export class BountiesController {
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles(UserRole.SPONSOR, UserRole.MAINTAINER)
   @Post()
-  create(@Body() dto: CreateBountyDto, @Req() req: Request) {
-    const userId = (req.user as any).userId;
+  create(@Body() dto: CreateBountyDto, @Req() req: AuthenticatedRequest) {
+    const userId = req.user?.userId ?? '';
     return this.bountiesService.create(dto, userId);
   }
 
@@ -110,9 +113,9 @@ export class BountiesController {
   fund(
     @Param('id', new ParseUUIDPipe()) id: string,
     @Body() dto: FundBountyDto,
-    @Req() req: Request,
+    @Req() req: AuthenticatedRequest,
   ) {
-    const userId = (req.user as any).userId;
+    const userId = req.user?.userId ?? '';
     return this.bountiesService.fund(id, dto.funderAddress, userId);
   }
 
@@ -128,8 +131,11 @@ export class BountiesController {
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles(UserRole.CONTRIBUTOR)
   @Post(':id/claim')
-  claim(@Param('id', new ParseUUIDPipe()) id: string, @Req() req: Request) {
-    const userId = (req.user as any).userId;
+  claim(
+    @Param('id', new ParseUUIDPipe()) id: string,
+    @Req() req: AuthenticatedRequest,
+  ) {
+    const userId = req.user?.userId ?? '';
     return this.bountiesService.claim(id, userId);
   }
 
@@ -169,8 +175,11 @@ export class BountiesController {
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles(UserRole.SPONSOR, UserRole.MAINTAINER)
   @Post(':id/refund')
-  refund(@Param('id', new ParseUUIDPipe()) id: string, @Req() req: Request) {
-    const userId = (req.user as any).userId;
+  refund(
+    @Param('id', new ParseUUIDPipe()) id: string,
+    @Req() req: AuthenticatedRequest,
+  ) {
+    const userId = req.user?.userId ?? '';
     return this.bountiesService.refund(id, userId);
   }
 }

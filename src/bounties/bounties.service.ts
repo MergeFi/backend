@@ -35,7 +35,7 @@ export class BountiesService {
     @Optional() private readonly eventEmitter?: EventEmitter2,
   ) {}
 
-  async create(dto: CreateBountyDto, callerUserId: string): Promise<Bounty> {
+  async create(dto: CreateBountyDto, callerUserId?: string): Promise<Bounty> {
     // Verify issueId exists
     const issueExists = await this.issueRepo.findOne({
       where: { id: dto.issueId },
@@ -44,17 +44,22 @@ export class BountiesService {
       throw new NotFoundException(`Issue ${dto.issueId} not found`);
     }
 
+    const sponsorId = dto.sponsorId ?? callerUserId;
+    if (!sponsorId) {
+      throw new BadRequestException('Sponsor ID is required');
+    }
+
     // Verify sponsorId exists
     const sponsorExists = await this.userRepo.findOne({
-      where: { id: dto.sponsorId },
+      where: { id: sponsorId },
     });
     if (!sponsorExists) {
-      throw new NotFoundException(`Sponsor ${dto.sponsorId} not found`);
+      throw new NotFoundException(`Sponsor ${sponsorId} not found`);
     }
 
     const bounty = this.bountyRepo.create({
       issueId: dto.issueId,
-      sponsorId: dto.sponsorId,
+      sponsorId,
       amount: dto.amount,
       asset: dto.asset,
       difficulty: dto.difficulty,
@@ -178,7 +183,6 @@ export class BountiesService {
     const bounty = await this.findOne(id);
     assertTransition(bounty.status, BountyStatus.MERGED);
 
-    const previousStatus = bounty.status;
     bounty.status = BountyStatus.MERGED;
     bounty.mergedAt = new Date();
     await this.bountyRepo.save(bounty);
