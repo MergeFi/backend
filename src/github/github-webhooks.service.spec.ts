@@ -10,7 +10,6 @@ import * as sigUtil from './webhook-signature.util';
 
 describe('GithubWebhooksService', () => {
   let service: GithubWebhooksService;
-  let webhookEventRepo: { create: jest.Mock; save: jest.Mock };
   let webhookEventRepo: {
     create: jest.Mock;
     save: jest.Mock;
@@ -39,6 +38,7 @@ describe('GithubWebhooksService', () => {
       // No delivery recorded yet unless a test says otherwise (#308).
       findOne: jest.fn().mockResolvedValue(null),
     };
+    issueRepo = { findOne: jest.fn().mockResolvedValue(null) };
     bountyRepo = { findOne: jest.fn() };
     bountiesService = {
       markInReview: jest.fn().mockResolvedValue(undefined),
@@ -49,7 +49,9 @@ describe('GithubWebhooksService', () => {
       findRepositoryByGithubId: jest.fn().mockResolvedValue({
         id: 'repo-uuid-1',
       }),
-      findIssueByRepoAndNumber: jest.fn(),
+      findIssueByRepoAndNumber: jest.fn((_repoId: string, number: number) =>
+        issueRepo.findOne({ where: { number } }),
+      ),
       upsertIssueRecord: jest.fn(),
     };
 
@@ -264,11 +266,11 @@ describe('GithubWebhooksService', () => {
       byNumber: Record<number, { bountyId: string; status: string }>,
     ) {
       syncService.findIssueByRepoAndNumber.mockImplementation(
-        ({ where }: { where: { number: number } }) => {
-          const entry = byNumber[where.number];
+        (_repoId: string, issueNumber: number) => {
+          const entry = byNumber[issueNumber];
           return Promise.resolve(
             entry
-              ? { id: `issue-${where.number}`, bounty: { id: entry.bountyId } }
+              ? { id: `issue-${issueNumber}`, bounty: { id: entry.bountyId } }
               : null,
           );
         },
@@ -869,6 +871,9 @@ describe('GithubWebhooksService', () => {
 
       expect(bountiesService.markInReview).not.toHaveBeenCalled();
       expect(bountiesService.markMergedAndRelease).not.toHaveBeenCalled();
+    });
+  });
+
   // #308: a redelivered X-GitHub-Delivery used to hit the unique constraint
   // on webhook_events.deliveryId and escape handleEvent as a 500, so every
   // redelivery of that event failed forever.
