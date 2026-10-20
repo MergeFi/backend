@@ -152,6 +152,26 @@ export class SorobanClientService {
     return this.stellar.escrowDeadlineSeconds;
   }
 
+  /**
+   * Queries the on-chain escrow contract for an existing escrow under `issue_id` (#609).
+   * Returns null in dry-run mode, when unconfigured, or when no escrow is found.
+   */
+  async getEscrow(issueId: bigint, contractId?: string): Promise<unknown> {
+    if (!this.isConfigured()) {
+      return null;
+    }
+    try {
+      const result = await this.invoke(
+        'get_escrow',
+        [u64(issueId)],
+        contractId ? { contractId } : {},
+      );
+      return result.returnValue;
+    } catch {
+      return null;
+    }
+  }
+
   private getTreasuryKeypair(): Keypair | null {
     if (!this.stellar.treasurySecret) return null;
     return Keypair.fromSecret(this.stellar.treasurySecret);
