@@ -1,15 +1,17 @@
 import type { Request } from 'express';
 import { ArgumentMetadata, ParseUUIDPipe } from '@nestjs/common';
 import { Test, TestingModule } from '@nestjs/testing';
+import { getRepositoryToken } from '@nestjs/typeorm';
 import { plainToInstance } from 'class-transformer';
 import { validate } from 'class-validator';
 import { BountiesController } from './bounties.controller';
 import { BountiesService } from './bounties.service';
 import { CreateBountyDto } from './dto/create-bounty.dto';
-import { ClaimBountyDto } from './dto/claim-bounty.dto';
 import { AssetType, BountyDifficulty, BountyStatus } from '../common/enums';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
+import { IdempotencyInterceptor } from '../common/idempotency/idempotency.interceptor';
+import { IdempotencyKey } from '../common/entities/idempotency-key.entity';
 
 describe('BountiesController', () => {
   let controller: BountiesController;
@@ -48,7 +50,14 @@ describe('BountiesController', () => {
 
     const module: TestingModule = await Test.createTestingModule({
       controllers: [BountiesController],
-      providers: [{ provide: BountiesService, useValue: bountiesService }],
+      providers: [
+        { provide: BountiesService, useValue: bountiesService },
+        IdempotencyInterceptor,
+        {
+          provide: getRepositoryToken(IdempotencyKey),
+          useValue: { findOne: jest.fn(), save: jest.fn() },
+        },
+      ],
     })
       .overrideGuard(JwtAuthGuard)
       .useValue({ canActivate: () => true })
@@ -69,9 +78,9 @@ describe('BountiesController', () => {
         difficulty: BountyDifficulty.INTERMEDIATE,
       };
 
-      await controller.create(dto);
+      await controller.create(dto, { user: { userId: 'u1' } } as any);
 
-      expect(bountiesService.create).toHaveBeenCalledWith(dto);
+      expect(bountiesService.create).toHaveBeenCalledWith(dto, 'u1');
     });
   });
 
@@ -85,9 +94,13 @@ describe('BountiesController', () => {
 
   describe('fund', () => {
     it('calls bountiesService.fund with id and funderAddress', async () => {
-      await controller.fund('b1', { funderAddress: 'GFUNDER' });
+      await controller.fund(
+        'b1',
+        { funderAddress: 'GFUNDER' },
+        { user: { userId: 'u1' } } as any,
+      );
 
-      expect(bountiesService.fund).toHaveBeenCalledWith('b1', 'GFUNDER');
+      expect(bountiesService.fund).toHaveBeenCalledWith('b1', 'GFUNDER', 'u1');
     });
   });
 
@@ -107,6 +120,20 @@ describe('BountiesController', () => {
 
       expect(bountiesService.approve).toHaveBeenCalledWith('b1');
     });
+
+    it('is documented in Swagger as deprecated and not implemented (#613)', () => {
+      const handler = (
+        BountiesController.prototype as unknown as Record<
+          string,
+          (...args: unknown[]) => unknown
+        >
+      )['approve'];
+      const apiOperation = Reflect.getMetadata('swagger/apiOperation', handler);
+      expect(apiOperation).toMatchObject({
+        deprecated: true,
+        description: 'Not implemented',
+      });
+    });
   });
 
   describe('reject', () => {
@@ -115,13 +142,27 @@ describe('BountiesController', () => {
 
       expect(bountiesService.reject).toHaveBeenCalledWith('b1');
     });
+
+    it('is documented in Swagger as deprecated and not implemented (#613)', () => {
+      const handler = (
+        BountiesController.prototype as unknown as Record<
+          string,
+          (...args: unknown[]) => unknown
+        >
+      )['reject'];
+      const apiOperation = Reflect.getMetadata('swagger/apiOperation', handler);
+      expect(apiOperation).toMatchObject({
+        deprecated: true,
+        description: 'Not implemented',
+      });
+    });
   });
 
   describe('refund', () => {
     it('calls bountiesService.refund with the route param', async () => {
-      await controller.refund('b1');
+      await controller.refund('b1', { user: { userId: 'u1' } } as any);
 
-      expect(bountiesService.refund).toHaveBeenCalledWith('b1');
+      expect(bountiesService.refund).toHaveBeenCalledWith('b1', 'u1');
     });
   });
 

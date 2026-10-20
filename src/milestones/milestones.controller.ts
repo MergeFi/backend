@@ -134,7 +134,11 @@ export class MilestonesController {
     );
   }
 
-  @ApiOperation({ summary: 'Allocate the milestone budget' })
+  @ApiOperation({
+    summary: 'Allocate the milestone budget',
+    description: 'Not implemented',
+    deprecated: true,
+  })
   @ApiBearerAuth()
   @ApiStandardErrorResponses()
   @Idempotent('milestone.allocateBudget')

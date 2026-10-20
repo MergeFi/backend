@@ -19,7 +19,6 @@ import {
 import { Throttle } from '@nestjs/throttler'; // Import the Throttle decorator
 import { BountiesService } from './bounties.service';
 import { CreateBountyDto } from './dto/create-bounty.dto';
-import { ClaimBountyDto } from './dto/claim-bounty.dto';
 import { AssetType, BountyDifficulty, BountyStatus } from '../common/enums';
 import { Idempotent } from '../common/idempotency/idempotent.decorator';
 import { IsStellarAddress } from '../common/validators/stellar-address.validator';
@@ -133,7 +132,11 @@ export class BountiesController {
     return this.bountiesService.claim(id, userId);
   }
 
-  @ApiOperation({ summary: 'Approve a claimed bounty' })
+  @ApiOperation({
+    summary: 'Approve a claimed bounty',
+    description: 'Not implemented',
+    deprecated: true,
+  })
   @ApiBearerAuth()
   @ApiStandardErrorResponses()
   @Idempotent('bounty.approve')
@@ -144,7 +147,11 @@ export class BountiesController {
     return this.bountiesService.approve(id);
   }
 
-  @ApiOperation({ summary: 'Reject a claimed bounty' })
+  @ApiOperation({
+    summary: 'Reject a claimed bounty',
+    description: 'Not implemented',
+    deprecated: true,
+  })
   @ApiBearerAuth()
   @ApiStandardErrorResponses()
   @Idempotent('bounty.reject')
