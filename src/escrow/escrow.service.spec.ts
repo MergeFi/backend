@@ -851,6 +851,31 @@ describe('EscrowService', () => {
       expect(payment.amount).toBe('10.0000000');
     });
 
+    it('records maintenanceIssueId on the payment when provided (#458)', async () => {
+      escrowRepo.findOne.mockResolvedValue(lockedPoolEscrow());
+      userRepo.find.mockResolvedValue([
+        { id: 'user-1', stellarAddress: 'GRECIPIENT' },
+      ]);
+
+      await service.poolWithdraw(
+        'escrow-pool',
+        '10.0000000',
+        'GRECIPIENT',
+        'user-1',
+        'issue-42',
+      );
+
+      expect(paymentRepo.save).toHaveBeenCalledWith(
+        expect.objectContaining({
+          escrowId: 'escrow-pool',
+          recipientId: 'user-1',
+          recipientAddress: 'GRECIPIENT',
+          amount: '10.0000000',
+          maintenanceIssueId: 'issue-42',
+        }),
+      );
+    });
+
     it('leaves the escrow row LOCKED after a withdraw (pool is not closed out)', async () => {
       escrowRepo.findOne.mockResolvedValue(lockedPoolEscrow());
 

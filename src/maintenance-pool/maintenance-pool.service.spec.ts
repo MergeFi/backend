@@ -289,6 +289,13 @@ describe('MaintenancePoolService', () => {
 
   describe('assignReward', () => {
     beforeEach(() => {
+      // Default mock for poolRepo.findOne - active pool with escrow
+      poolRepo.findOne.mockResolvedValue({
+        id: 'pool-1',
+        status: MaintenancePoolStatus.ACTIVE,
+        balance: '100',
+        escrowId: 'escrow-1',
+      });
       // Default mock for paymentRepo.createQueryBuilder - returns null (no existing payment)
       const mockPaymentQueryBuilder = {
         innerJoin: jest.fn().mockReturnThis(),
@@ -299,9 +306,24 @@ describe('MaintenancePoolService', () => {
       paymentRepo.createQueryBuilder.mockReturnValue(mockPaymentQueryBuilder);
     });
 
+    it('rejects when the pool is not ACTIVE (#276)', async () => {
+      poolRepo.findOne.mockResolvedValue({
+        id: 'pool-1',
+        status: MaintenancePoolStatus.PAUSED,
+        balance: '100',
+        escrowId: 'escrow-1',
+      });
+
+      await expect(
+        service.assignReward('pool-1', 'issue-1', '10', 'GRECIPIENT'),
+      ).rejects.toThrow(BadRequestException);
+      expect(escrowService.poolWithdraw).not.toHaveBeenCalled();
+    });
+
     it('rejects when the pool has no funded escrow yet', async () => {
       poolRepo.findOne.mockResolvedValue({
         id: 'pool-1',
+        status: MaintenancePoolStatus.ACTIVE,
         balance: '100',
         escrowId: null,
       });
@@ -315,6 +337,7 @@ describe('MaintenancePoolService', () => {
     it('rejects when the requested amount exceeds the pool balance', async () => {
       poolRepo.findOne.mockResolvedValue({
         id: 'pool-1',
+        status: MaintenancePoolStatus.ACTIVE,
         balance: '50',
         escrowId: 'escrow-1',
       });
@@ -337,6 +360,7 @@ describe('MaintenancePoolService', () => {
     it('releases the reward and atomically decrements the balance', async () => {
       poolRepo.findOne.mockResolvedValue({
         id: 'pool-1',
+        status: MaintenancePoolStatus.ACTIVE,
         balance: '100',
         escrowId: 'escrow-1',
       });
@@ -364,6 +388,7 @@ describe('MaintenancePoolService', () => {
         '30',
         'GRECIPIENT',
         'user-1',
+        'issue-1',
       );
       expect(payment).toEqual({ id: 'payment-1' });
       // Verify the atomic balance check was called
@@ -373,6 +398,7 @@ describe('MaintenancePoolService', () => {
     it('rejects a reward for a non-maintenance issue before releasing funds', async () => {
       poolRepo.findOne.mockResolvedValue({
         id: 'pool-1',
+        status: MaintenancePoolStatus.ACTIVE,
         balance: '100',
         escrowId: 'escrow-1',
       });
@@ -391,6 +417,7 @@ describe('MaintenancePoolService', () => {
     it('rejects an issue outside the pool repository', async () => {
       poolRepo.findOne.mockResolvedValue({
         id: 'pool-1',
+        status: MaintenancePoolStatus.ACTIVE,
         repositoryId: 'repository-1',
         balance: '100',
         escrowId: 'escrow-1',
@@ -407,9 +434,10 @@ describe('MaintenancePoolService', () => {
       expect(escrowService.poolWithdraw).not.toHaveBeenCalled();
     });
 
-    it('rejects when the issue has already received a reward from this pool (#273)', async () => {
+    it('rejects when the issue has already received a reward from this pool (#273, #458)', async () => {
       poolRepo.findOne.mockResolvedValue({
         id: 'pool-1',
+        status: MaintenancePoolStatus.ACTIVE,
         balance: '100',
         escrowId: 'escrow-1',
       });
@@ -425,7 +453,219 @@ describe('MaintenancePoolService', () => {
       await expect(
         service.assignReward('pool-1', 'issue-1', '10', 'GRECIPIENT', 'user-1'),
       ).rejects.toThrow(ConflictException);
+
+      expect(mockPaymentQueryBuilder.innerJoin).toHaveBeenCalledWith(
+        'payment.escrow',
+        'escrow',
+      );
+      expect(mockPaymentQueryBuilder.where).toHaveBeenCalledWith(
+        'escrow.maintenancePoolId = :poolId',
+        { poolId: 'pool-1' },
+      );
+      expect(mockPaymentQueryBuilder.andWhere).toHaveBeenCalledWith(
+        'payment.maintenanceIssueId = :issueId',
+        { issueId: 'issue-1' },
+      );
       expect(escrowService.poolWithdraw).not.toHaveBeenCalled();
+    });
+
+    it('rejects when the same issue is rewarded a second time with a different recipient (409) (#458)', async () => {
+      poolRepo.findOne.mockResolvedValue({
+        id: 'pool-1',
+        status: MaintenancePoolStatus.ACTIVE,
+        balance: '100',
+        escrowId: 'escrow-1',
+      });
+
+      // First call: payment query returns null, payment succeeds
+      // Second call: payment query returns existing payment for issue-1
+      const mockPaymentQueryBuilder = {
+        innerJoin: jest.fn().mockReturnThis(),
+        where: jest.fn().mockReturnThis(),
+        andWhere: jest.fn().mockReturnThis(),
+        getOne: jest
+          .fn()
+          .mockResolvedValueOnce(null)
+          .mockResolvedValueOnce({
+            id: 'payment-1',
+            maintenanceIssueId: 'issue-1',
+          }),
+      };
+      paymentRepo.createQueryBuilder.mockReturnValue(mockPaymentQueryBuilder);
+
+      const mockBalanceQueryBuilder = {
+        update: jest.fn().mockReturnThis(),
+        set: jest.fn().mockReturnThis(),
+        where: jest.fn().mockReturnThis(),
+        setParameter: jest.fn().mockReturnThis(),
+        execute: jest.fn().mockResolvedValue({ affected: 1 }),
+      };
+      poolRepo.createQueryBuilder.mockReturnValue(mockBalanceQueryBuilder);
+      escrowService.poolWithdraw.mockResolvedValue({ id: 'payment-1' });
+
+      // First call with recipient A succeeds
+      await expect(
+        service.assignReward(
+          'pool-1',
+          'issue-1',
+          '10',
+          'GRECIPIENT_A',
+          'user-A',
+        ),
+      ).resolves.toEqual({ id: 'payment-1' });
+
+      // Second call for the same issue with recipient B fails with ConflictException (409)
+      await expect(
+        service.assignReward(
+          'pool-1',
+          'issue-1',
+          '10',
+          'GRECIPIENT_B',
+          'user-B',
+        ),
+      ).rejects.toThrow(ConflictException);
+    });
+
+    it('allows two different issues to be rewarded to the same recipient (#458)', async () => {
+      poolRepo.findOne.mockResolvedValue({
+        id: 'pool-1',
+        status: MaintenancePoolStatus.ACTIVE,
+        balance: '100',
+        escrowId: 'escrow-1',
+      });
+
+      issueRepo.findOne.mockImplementation(({ where: { id } }: any) =>
+        Promise.resolve({
+          id,
+          isMaintenanceType: true,
+          repositoryId: 'repository-1',
+        }),
+      );
+
+      // Payment query returns null for both issue-1 and issue-2
+      const mockPaymentQueryBuilder = {
+        innerJoin: jest.fn().mockReturnThis(),
+        where: jest.fn().mockReturnThis(),
+        andWhere: jest.fn().mockReturnThis(),
+        getOne: jest.fn().mockResolvedValue(null),
+      };
+      paymentRepo.createQueryBuilder.mockReturnValue(mockPaymentQueryBuilder);
+
+      const mockBalanceQueryBuilder = {
+        update: jest.fn().mockReturnThis(),
+        set: jest.fn().mockReturnThis(),
+        where: jest.fn().mockReturnThis(),
+        setParameter: jest.fn().mockReturnThis(),
+        execute: jest.fn().mockResolvedValue({ affected: 1 }),
+      };
+      poolRepo.createQueryBuilder.mockReturnValue(mockBalanceQueryBuilder);
+      escrowService.poolWithdraw
+        .mockResolvedValueOnce({ id: 'payment-1' })
+        .mockResolvedValueOnce({ id: 'payment-2' });
+
+      // Both calls for the same recipient ('user-1') on different issues succeed
+      const payment1 = await service.assignReward(
+        'pool-1',
+        'issue-1',
+        '10',
+        'GRECIPIENT_1',
+        'user-1',
+      );
+      const payment2 = await service.assignReward(
+        'pool-1',
+        'issue-2',
+        '20',
+        'GRECIPIENT_1',
+        'user-1',
+      );
+
+      expect(payment1).toEqual({ id: 'payment-1' });
+      expect(payment2).toEqual({ id: 'payment-2' });
+      expect(escrowService.poolWithdraw).toHaveBeenCalledTimes(2);
+      expect(escrowService.poolWithdraw).toHaveBeenNthCalledWith(
+        1,
+        'escrow-1',
+        '10',
+        'GRECIPIENT_1',
+        'user-1',
+        'issue-1',
+      );
+      expect(escrowService.poolWithdraw).toHaveBeenNthCalledWith(
+        2,
+        'escrow-1',
+        '20',
+        'GRECIPIENT_1',
+        'user-1',
+        'issue-2',
+      );
+    });
+
+    it('rejects anonymous payout when issue was already rewarded (#458)', async () => {
+      poolRepo.findOne.mockResolvedValue({
+        id: 'pool-1',
+        status: MaintenancePoolStatus.ACTIVE,
+        balance: '100',
+        escrowId: 'escrow-1',
+      });
+      const mockPaymentQueryBuilder = {
+        innerJoin: jest.fn().mockReturnThis(),
+        where: jest.fn().mockReturnThis(),
+        andWhere: jest.fn().mockReturnThis(),
+        getOne: jest.fn().mockResolvedValue({ id: 'existing-payment' }),
+      };
+      paymentRepo.createQueryBuilder.mockReturnValue(mockPaymentQueryBuilder);
+
+      // No recipientId passed (anonymous payout)
+      await expect(
+        service.assignReward('pool-1', 'issue-1', '10', 'GRECIPIENT'),
+      ).rejects.toThrow(ConflictException);
+
+      expect(mockPaymentQueryBuilder.andWhere).toHaveBeenCalledWith(
+        'payment.maintenanceIssueId = :issueId',
+        { issueId: 'issue-1' },
+      );
+      expect(escrowService.poolWithdraw).not.toHaveBeenCalled();
+    });
+
+    it('catches unique constraint violation on concurrent insert and rolls back balance (#458)', async () => {
+      poolRepo.findOne.mockResolvedValue({
+        id: 'pool-1',
+        status: MaintenancePoolStatus.ACTIVE,
+        balance: '100',
+        escrowId: 'escrow-1',
+      });
+      const mockPaymentQueryBuilder = {
+        innerJoin: jest.fn().mockReturnThis(),
+        where: jest.fn().mockReturnThis(),
+        andWhere: jest.fn().mockReturnThis(),
+        getOne: jest.fn().mockResolvedValue(null),
+      };
+      paymentRepo.createQueryBuilder.mockReturnValue(mockPaymentQueryBuilder);
+
+      const mockBalanceQueryBuilder = {
+        update: jest.fn().mockReturnThis(),
+        set: jest.fn().mockReturnThis(),
+        where: jest.fn().mockReturnThis(),
+        setParameter: jest.fn().mockReturnThis(),
+        execute: jest.fn().mockResolvedValue({ affected: 1 }),
+      };
+      poolRepo.createQueryBuilder.mockReturnValue(mockBalanceQueryBuilder);
+
+      const uniqueViolationError = new Error(
+        'duplicate key value violates unique constraint "UQ_payment_escrow_maintenance_issue"',
+      );
+      (uniqueViolationError as any).code = '23505';
+      escrowService.poolWithdraw.mockRejectedValue(uniqueViolationError);
+
+      await expect(
+        service.assignReward('pool-1', 'issue-1', '10', 'GRECIPIENT', 'user-1'),
+      ).rejects.toThrow(ConflictException);
+
+      expect(poolRepo.increment).toHaveBeenCalledWith(
+        { id: 'pool-1' },
+        'balance',
+        10,
+      );
     });
 
     // Regression test for #51 (MaintenancePool.balance was a hand-maintained
@@ -437,7 +677,8 @@ describe('MaintenancePoolService', () => {
     // time — not a value cached from an earlier read — and neither
     // decrement is lost.
     it('two concurrent assignReward calls both apply — no lost decrement (#51)', async () => {
-      const sharedPoolRow: { balance: string; escrowId: string } = {
+      const sharedPoolRow = {
+        status: MaintenancePoolStatus.ACTIVE,
         balance: '1000.0000000',
         escrowId: 'escrow-1',
       };
@@ -457,7 +698,7 @@ describe('MaintenancePoolService', () => {
 
       await Promise.all([
         service.assignReward('pool-1', 'issue-1', '100', 'GRECIPIENT_A'),
-        service.assignReward('pool-1', 'issue-1', '200', 'GRECIPIENT_B'),
+        service.assignReward('pool-1', 'issue-2', '200', 'GRECIPIENT_B'),
       ]);
 
       // Both calls should have succeeded (atomic check passed)

@@ -18,4 +18,22 @@ describe('Payment entity indexes', () => {
       ]),
     );
   });
+
+  // #458: unique index on (escrowId, maintenanceIssueId) closes concurrent-call
+  // double-payout races for maintenance pool rewards.
+  it('indexes (escrowId, maintenanceIssueId) as unique UQ_payment_escrow_maintenance_issue', () => {
+    const indexes = getMetadataArgsStorage().indices.filter(
+      (index) => index.target === Payment,
+    );
+
+    expect(indexes).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          name: 'UQ_payment_escrow_maintenance_issue',
+          columns: ['escrowId', 'maintenanceIssueId'],
+          unique: true,
+        }),
+      ]),
+    );
+  });
 });

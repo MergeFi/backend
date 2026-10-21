@@ -10,6 +10,7 @@ import {
 } from 'typeorm';
 import { Escrow } from './escrow.entity';
 import { User } from './user.entity';
+import { Issue } from './issue.entity';
 import { AssetType, PaymentStatus } from '../enums';
 
 /**
@@ -22,9 +23,18 @@ import { AssetType, PaymentStatus } from '../enums';
  * payout — a hot path on every milestone-driven incremental release
  * (#307). The same gap class as `IDX_escrow_sponsor_status` (#97) and the
  * `Bounty.claimedById` index (#148).
+ *
+ * `UQ_payment_escrow_maintenance_issue` prevents duplicate payouts for the
+ * same maintenance issue from the same pool's escrow, closing concurrent-call
+ * races (#458).
  */
 @Entity('payments')
 @Index('IDX_payment_escrow', ['escrowId'])
+@Index(
+  'UQ_payment_escrow_maintenance_issue',
+  ['escrowId', 'maintenanceIssueId'],
+  { unique: true },
+)
 export class Payment {
   @PrimaryGeneratedColumn('uuid')
   id: string;
@@ -50,6 +60,13 @@ export class Payment {
 
   @Column({ type: 'varchar', nullable: true })
   recipientAddress: string | null;
+
+  @ManyToOne(() => Issue, { onDelete: 'SET NULL', nullable: true })
+  @JoinColumn()
+  maintenanceIssue: Issue | null;
+
+  @Column({ type: 'varchar', nullable: true })
+  maintenanceIssueId: string | null;
 
   @Column({ type: 'decimal', precision: 20, scale: 7 })
   amount: string;
