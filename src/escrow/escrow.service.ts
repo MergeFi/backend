@@ -409,6 +409,7 @@ export class EscrowService {
     amount: string,
     recipientAddress: string,
     recipientId?: string,
+    maintenanceIssueId?: string,
   ): Promise<Payment> {
     const escrow = await this.getOrThrow(escrowId);
     this.assertLocked(escrow);
@@ -432,6 +433,7 @@ export class EscrowService {
         asset: escrow.asset,
         status: PaymentStatus.CONFIRMED,
         txHash: result.txHash,
+        maintenanceIssueId: maintenanceIssueId ?? null,
       }),
     );
   }

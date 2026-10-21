@@ -146,20 +146,13 @@ export class MaintenancePoolService {
       throw new BadRequestException(`Pool ${id} has no funded escrow yet`);
     }
 
-    // Guard against double/triple payout for the same issue (#273).
-    const existingPayment = await this.paymentRepo.findOne({
-      where: {
-        recipientId: recipientId ?? null,
-      },
-    });
+    // Guard against double/triple payout for the same issue (#273, #458).
     // Check if there's already a payment for this issue from this pool's escrow.
     const existingPoolPayment = await this.paymentRepo
       .createQueryBuilder('payment')
       .innerJoin('payment.escrow', 'escrow')
       .where('escrow.maintenancePoolId = :poolId', { poolId: id })
-      .andWhere('payment.recipientId = :recipientId', {
-        recipientId: recipientId ?? null,
-      })
+      .andWhere('payment.maintenanceIssueId = :issueId', { issueId })
       .getOne();
     if (existingPoolPayment) {
       throw new ConflictException(
@@ -188,14 +181,33 @@ export class MaintenancePoolService {
     // not a milestone-style fixed lock that gets partially released and then
     // closed out — so pay the reward via the pool contract's `withdraw`,
     // leaving the escrow LOCKED for the next reward (#163).
-    const payment = await this.escrowService.poolWithdraw(
-      pool.escrowId,
-      amount,
-      recipientAddress,
-      recipientId,
-    );
-
-    return payment;
+    try {
+      const payment = await this.escrowService.poolWithdraw(
+        pool.escrowId,
+        amount,
+        recipientAddress,
+        recipientId,
+        issueId,
+      );
+      return payment;
+    } catch (err) {
+      if (
+        (err as any)?.code === '23505' ||
+        (err as any)?.driverError?.code === '23505' ||
+        /unique/i.test((err as any)?.message)
+      ) {
+        // Rollback balance decrement if concurrent insert hit unique constraint (#458)
+        await this.poolRepo.increment(
+          { id: pool.id },
+          'balance',
+          Number(amount),
+        );
+        throw new ConflictException(
+          `Issue ${issueId} has already received a reward from pool ${id}`,
+        );
+      }
+      throw err;
+    }
   }
 
   async list(): Promise<MaintenancePool[]> {
