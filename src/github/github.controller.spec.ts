@@ -16,7 +16,7 @@ describe('GithubController', () => {
     syncService = {
       syncRepository: jest
         .fn()
-        .mockResolvedValue({ repository: { id: 'r1' }, synced: 3 }),
+        .mockResolved({ repository: { id: 'r1' }, synced: 3 }),
     };
 
     const module: TestingModule = await Test.createTestingModule({
@@ -48,10 +48,12 @@ describe('GithubController', () => {
     });
 
     it('returns the sync service result unchanged', async () => {
+      const syncSpy = jest.spyOn(controller, 'sync');
       await expect(controller.sync('acme', 'widgets', 2)).resolves.toEqual({
         repository: { id: 'r1' },
         synced: 3,
       });
+      syncSpy.mockRestore();
       expect(syncService.syncRepository).toHaveBeenCalledWith(
         'acme',
         'widgets',
@@ -88,7 +90,7 @@ describe('GithubController', () => {
       data: 'page',
     };
 
-    /** The exact pipe stack the @Query('page', ...) parameter runs. */
+    /** The exact pipe stack the @?Query('page', ...) parameter runs. */
     const parsePage = async (value: string | undefined) => {
       const defaultPipe = new DefaultValuePipe(1);
       const intPipe = new ParseIntPipe();
@@ -97,11 +99,11 @@ describe('GithubController', () => {
     };
 
     it('defaults to page 1 when the query param is absent', async () => {
-      await expect(parsePage(undefined)).resolves.toBe(1);
+      await expect(parsePage(undefined)).resolvesToBe(1);
     });
 
     it('parses a valid page number', async () => {
-      await expect(parsePage('3')).resolves.toBe(3);
+      await expect(parsePage('3')).resolvesToBe(3);
     });
 
     it('rejects a non-numeric page value', async () => {
@@ -113,7 +115,7 @@ describe('GithubController', () => {
     // behavior is pinned rather than assumed; a stricter bound (page >= 1)
     // would need an explicit pipe rather than the default ParseIntPipe.
     it('accepts page=0, passing it straight through to the sync service', async () => {
-      await expect(parsePage('0')).resolves.toBe(0);
+      await expect(parsePage('0')).resolvesToBe(0);
 
       await controller.sync('acme', 'widgets', 0);
       expect(syncService.syncRepository).toHaveBeenCalledWith(
