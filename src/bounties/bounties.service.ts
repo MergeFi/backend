@@ -274,27 +274,26 @@ export class BountiesService {
     return this.bountyRepo.save(bounty);
   }
 
-  /** Marks bounties whose deadline has passed and that were never merged as expired. */
+  /**
+   * Marks bounties whose deadline has passed and that were never merged as
+   * expired. The status filter and the write are a single conditional UPDATE,
+   * so a bounty advanced concurrently (e.g. CLAIMED -> IN_REVIEW/MERGED/PAID)
+   * is never overwritten with a stale status.
+   */
   async expireOverdue(): Promise<number> {
-    const overdue = await this.bountyRepo
-      .createQueryBuilder('bounty')
-      .where('bounty.deadline IS NOT NULL AND bounty.deadline < :now', {
-        now: new Date(),
-      })
-      .andWhere('bounty.status IN (:...statuses)', {
-        statuses: [
-          BountyStatus.OPEN,
-          BountyStatus.FUNDED,
-          BountyStatus.CLAIMED,
-        ],
-      })
-      .getMany();
-
-    for (const bounty of overdue) {
-      bounty.status = BountyStatus.EXPIRED;
-      await this.bountyRepo.save(bounty);
-    }
-    return overdue.length;
+    const expirable: BountyStatus[] = [
+      BountyStatus.OPEN,
+      BountyStatus.FUNDED,
+      BountyStatus.CLAIMED,
+    ];
+    const result = await this.bountyRepo
+      .createQueryBuilder()
+      .update(Bounty)
+      .set({ status: BountyStatus.EXPIRED })
+      .where('deadline IS NOT NULL AND deadline < :now', { now: new Date() })
+      .andWhere('status IN (:...statuses)', { statuses: expirable })
+      .execute();
+    return result.affected ?? 0;
   }
 
   async list(options: ListBountiesOptions = {}): Promise<Bounty[]> {
