@@ -1,6 +1,7 @@
 import {
   Body,
   Controller,
+  ForbiddenException,
   Get,
   Param,
   ParseUUIDPipe,
@@ -10,6 +11,8 @@ import {
 import { ApiBearerAuth, ApiProperty, ApiTags } from '@nestjs/swagger';
 import { UsersService } from './users.service';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
+import { CurrentUser } from '../common/decorators/current-user.decorator';
+import type { AuthenticatedUser } from '../common/decorators/current-user.decorator';
 import { IsStellarAddress } from '../common/validators/stellar-address.validator';
 import { ApiInternalErrorResponse } from '../common/swagger/api-common-responses.decorator';
 
@@ -48,7 +51,13 @@ export class UsersController {
   setStellarAddress(
     @Param('id', new ParseUUIDPipe()) id: string,
     @Body() dto: SetStellarAddressDto,
+    @CurrentUser() user: AuthenticatedUser,
   ) {
+    if (user && user.userId !== id) {
+      throw new ForbiddenException(
+        'You may only update your own Stellar address',
+      );
+    }
     return this.usersService.setStellarAddress(id, dto.stellarAddress);
   }
 }

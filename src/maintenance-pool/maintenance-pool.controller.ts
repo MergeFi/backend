@@ -81,6 +81,7 @@ export class MaintenancePoolController {
   }
 
   @ApiOperation({ summary: 'List maintenance pools' })
+  @Throttle({ long: { limit: 1000, ttl: 3600000 } })
   @Get()
   list() {
     return this.poolService.list();
@@ -88,6 +89,7 @@ export class MaintenancePoolController {
 
   @ApiOperation({ summary: 'Get a maintenance pool by id' })
   @ApiStandardErrorResponses()
+  @Throttle({ default: { limit: 120, ttl: 60000 } })
   @Get(':id')
   findOne(@Param('id', new ParseUUIDPipe()) id: string) {
     return this.poolService.findOne(id);

@@ -67,7 +67,14 @@ export class BountiesService {
   }
 
   async findOne(id: string): Promise<Bounty> {
-    const bounty = await this.bountyRepo.findOne({ where: { id } });
+    const bounty = await this.bountyRepo.findOne({
+      where: { id },
+      relations: {
+        issue: { repository: true },
+        claimedBy: true,
+        team: { splits: true },
+      },
+    });
     if (!bounty) throw new NotFoundException(`Bounty ${id} not found`);
     return bounty;
   }
@@ -294,7 +301,10 @@ export class BountiesService {
     const qb = this.bountyRepo
       .createQueryBuilder('bounty')
       .leftJoinAndSelect('bounty.issue', 'issue')
-      .leftJoinAndSelect('issue.repository', 'repository');
+      .leftJoinAndSelect('issue.repository', 'repository')
+      .leftJoinAndSelect('bounty.claimedBy', 'claimedBy')
+      .leftJoinAndSelect('bounty.team', 'team')
+      .leftJoinAndSelect('team.splits', 'splits');
 
     if (options.status) {
       qb.andWhere('bounty.status = :status', { status: options.status });

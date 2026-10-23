@@ -46,7 +46,10 @@ export class MaintenancePoolService {
   }
 
   async findOne(id: string): Promise<MaintenancePool> {
-    const pool = await this.poolRepo.findOne({ where: { id } });
+    const pool = await this.poolRepo.findOne({
+      where: { id },
+      relations: { repository: true },
+    });
     if (!pool) throw new NotFoundException(`Maintenance pool ${id} not found`);
     return pool;
   }
@@ -196,6 +199,8 @@ export class MaintenancePoolService {
   }
 
   async list(): Promise<MaintenancePool[]> {
-    return this.poolRepo.find();
+    return this.poolRepo.find({
+      relations: { repository: true },
+    });
   }
 }

@@ -89,6 +89,7 @@ export class BountiesController {
 
   @ApiOperation({ summary: 'Get a bounty by id' })
   @ApiStandardErrorResponses()
+  @Throttle({ default: { limit: 120, ttl: 60000 } })
   @Get(':id')
   findOne(@Param('id', new ParseUUIDPipe()) id: string) {
     return this.bountiesService.findOne(id);
