@@ -14,6 +14,11 @@ import { BountiesService } from './bounties.service';
  * This is deliberately independent of (and runs prior to) any on-chain
  * auto-refund follow-up for expired FUNDED bounties (#26): the local status
  * flip has to happen regardless.
+ *
+ * Concurrency note: `expireOverdue()` performs a single conditional UPDATE
+ * that only touches rows still in OPEN/FUNDED/CLAIMED at write time, so a
+ * bounty advanced concurrently by a webhook (e.g. CLAIMED -> IN_REVIEW ->
+ * MERGED/PAID) is never clobbered back to EXPIRED.
  */
 @Injectable()
 export class BountyExpiryScheduler {
