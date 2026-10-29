@@ -180,6 +180,12 @@ export class UsersService {
     return toPublicUser(await this.userRepo.save(user));
   }
 
+  async clearStellarAddress(userId: string): Promise<PublicUserDto> {
+    const user = await this.findOneRaw(userId);
+    user.stellarAddress = null;
+    return toPublicUser(await this.userRepo.save(user));
+  }
+
   async list(): Promise<PublicUserDto[]> {
     const users = await this.userRepo.find();
     return users.map(toPublicUser);

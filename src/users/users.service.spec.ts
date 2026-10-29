@@ -320,6 +320,29 @@ describe('UsersService', () => {
     });
   });
 
+  describe('clearStellarAddress', () => {
+    it('throws NotFoundException when the user does not exist', async () => {
+      userRepo.findOne.mockResolvedValue(null);
+      await expect(service.clearStellarAddress('missing')).rejects.toThrow(
+        NotFoundException,
+      );
+    });
+
+    it('sets stellarAddress to null and persists the change (#714)', async () => {
+      userRepo.findOne.mockResolvedValue({
+        id: 'u1',
+        stellarAddress: 'GLINKEDADDRESS',
+      });
+
+      const user = await service.clearStellarAddress('u1');
+
+      expect(user.stellarAddress).toBeNull();
+      expect(userRepo.save).toHaveBeenCalledWith(
+        expect.objectContaining({ id: 'u1', stellarAddress: null }),
+      );
+    });
+  });
+
   describe('list', () => {
     it('returns every user mapped to its public shape', async () => {
       userRepo.find = jest.fn().mockResolvedValue([

@@ -1,8 +1,11 @@
 import {
   Body,
   Controller,
+  Delete,
   ForbiddenException,
   Get,
+  HttpCode,
+  HttpStatus,
   Param,
   ParseUUIDPipe,
   Patch,
@@ -59,5 +62,25 @@ export class UsersController {
       );
     }
     return this.usersService.setStellarAddress(id, dto.stellarAddress);
+  }
+
+  // #714: disconnect() was sending PATCH { stellarAddress: null } which the
+  // @IsStellarAddress() validator on SetStellarAddressDto always rejects with
+  // 400. A dedicated DELETE route accepts no body and sets the column to null,
+  // keeping the PATCH route strictly typed for real addresses.
+  @ApiBearerAuth()
+  @UseGuards(JwtAuthGuard)
+  @Delete(':id/stellar-address')
+  @HttpCode(HttpStatus.OK)
+  clearStellarAddress(
+    @Param('id', new ParseUUIDPipe()) id: string,
+    @CurrentUser() user: AuthenticatedUser,
+  ) {
+    if (user && user.userId !== id) {
+      throw new ForbiddenException(
+        'You may only update your own Stellar address',
+      );
+    }
+    return this.usersService.clearStellarAddress(id);
   }
 }
