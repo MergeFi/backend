@@ -12,6 +12,7 @@ describe('UsersController', () => {
     list: jest.Mock;
     findById: jest.Mock;
     setStellarAddress: jest.Mock;
+    clearStellarAddress: jest.Mock;
   };
 
   const mockPublicUser: PublicUserDto = {
@@ -32,6 +33,9 @@ describe('UsersController', () => {
         ...mockPublicUser,
         stellarAddress: 'GBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBWHF',
       }),
+      clearStellarAddress: jest
+        .fn()
+        .mockResolvedValue({ ...mockPublicUser, stellarAddress: null }),
     };
 
     const module: TestingModule = await Test.createTestingModule({
@@ -92,5 +96,34 @@ describe('UsersController', () => {
     ).toThrow(ForbiddenException);
 
     expect(usersService.setStellarAddress).not.toHaveBeenCalled();
+  });
+
+  describe('clearStellarAddress (DELETE :id/stellar-address) (#714)', () => {
+    it('clears the stellar address for the authenticated user', async () => {
+      const caller: AuthenticatedUser = {
+        userId: 'user-1',
+        username: 'alice',
+        roles: [UserRole.CONTRIBUTOR],
+      };
+
+      const result = await controller.clearStellarAddress('user-1', caller);
+
+      expect(result.stellarAddress).toBeNull();
+      expect(usersService.clearStellarAddress).toHaveBeenCalledWith('user-1');
+    });
+
+    it('throws 403 ForbiddenException when trying to clear another user address', async () => {
+      const caller: AuthenticatedUser = {
+        userId: 'user-2',
+        username: 'bob',
+        roles: [UserRole.CONTRIBUTOR],
+      };
+
+      expect(() =>
+        controller.clearStellarAddress('user-1', caller),
+      ).toThrow(ForbiddenException);
+
+      expect(usersService.clearStellarAddress).not.toHaveBeenCalled();
+    });
   });
 });
