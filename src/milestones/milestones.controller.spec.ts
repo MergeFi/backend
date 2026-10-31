@@ -53,7 +53,7 @@ describe('MilestonesController', () => {
         asset: AssetType.USDC,
       };
 
-      await controller.create(dto);
+      await controller.create(dto, { user: { userId: "u1" } } as any);
 
       expect(milestonesService.create).toHaveBeenCalledWith(dto);
     });
@@ -77,7 +77,7 @@ describe('MilestonesController', () => {
 
   describe('fund', () => {
     it('calls milestonesService.fund with id and funderAddress', async () => {
-      await controller.fund('m1', { funderAddress: 'GFUNDER' });
+      await controller.fund('m1', { funderAddress: 'GFUNDER' }, { user: { userId: 'u1' } } as any);
 
       expect(milestonesService.fund).toHaveBeenCalledWith('m1', 'GFUNDER');
     });

@@ -129,7 +129,7 @@ export async function queryPayoutHeatmap(
       .select(PAYMENT_UTC_DATE_SQL, 'date')
       .addSelect('COUNT(*)', 'count')
       .where('payment.recipientId = :userId', { userId })
-      .andWhere('payment.status = :paid', { paid: PaymentStatus.PAID });
+      .andWhere('payment.status = :paid', { paid: PaymentStatus.CONFIRMED });
 
     if (range.from) {
       pQb.andWhere('payment.createdAt >= :from', { from: range.from });
@@ -178,7 +178,7 @@ export async function queryTopClients(
         "COALESCE(SUM(payment.amount) FILTER (WHERE payment.status = :paid AND payment.recipientId = :userId AND escrow.sponsorId IS NOT NULL), 0)",
         'totalPaid',
       )
-      .setParameter('paid', PaymentStatus.PAID)
+      .setParameter('paid', PaymentStatus.CONFIRMED)
       .setParameter('userId', userId)
       .groupBy('escrow.sponsorId')
       .orderBy('totalPaid', 'DESC')
@@ -260,7 +260,7 @@ export async function queryContributorCoreStats(
             "COALESCE(SUM(payment.amount) FILTER (WHERE payment.status = :paid AND payment.recipientId = :userId), 0)",
             'totalPaid',
           )
-          .setParameter('paid', PaymentStatus.PAID)
+          .setParameter('paid', PaymentStatus.CONFIRMED)
           .setParameter('userId', userId)
           .getRawOne<{ totalPaid: string }>()
       : Promise.resolve({ totalPaid: '0' }),

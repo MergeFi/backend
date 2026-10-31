@@ -5,8 +5,6 @@ import { plainToInstance } from 'class-transformer';
 import { validate } from 'class-validator';
 import { EscrowController } from './escrow.controller';
 import { EscrowService } from './escrow.service';
-import { FundEscrowDto } from './dto/fund-escrow.dto';
-import { AssetType } from '../common/enums';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
 import { ROLES_KEY } from '../auth/decorators/roles.decorator';
@@ -15,7 +13,7 @@ import { IDEMPOTENCY_SCOPE_KEY } from '../common/idempotency/idempotent.decorato
 import { IdempotencyKey } from '../common/entities/idempotency-key.entity';
 import type { Escrow } from '../common/entities';
 import { AssetType, EscrowStatus, PaymentStatus } from '../common/enums';
-import type { FundEscrowDto } from './dto/fund-escrow.dto';
+import { FundEscrowDto } from './dto/fund-escrow.dto';
 import type { SplitRecipientDto } from './dto/split-release.dto';
 
 // These tests call the REAL EscrowController methods off a compiled Nest
@@ -27,7 +25,7 @@ import type { SplitRecipientDto } from './dto/split-release.dto';
 describe('EscrowController', () => {
   let controller: EscrowController;
 
-  const escrowRow = (overrides: Partial<EscrowEntity> = {}) =>
+  const escrowRow = (overrides: Partial<Escrow> = {}) =>
     ({
       id: 'escrow-1',
       amount: '10.0000000',
@@ -115,7 +113,7 @@ describe('EscrowController', () => {
     });
 
     it('release() returns the service escrow without metadata', async () => {
-      const result = await controller.release('escrow-1', 'GRECIPIENT', 'user-1');
+      const result = await controller.release('escrow-1', { recipientAddress: 'GRECIPIENT', recipientId: 'user-1' } as any);
 
       expect(mockEscrowService.release).toHaveBeenCalledWith(
         'escrow-1',
@@ -142,7 +140,7 @@ describe('EscrowController', () => {
         { recipientAddress: 'GB', percentage: 50 },
       ];
 
-      const result = await controller.splitRelease('escrow-1', recipients);
+      const result = await controller.splitRelease('escrow-1', { recipients } as any);
 
       expect(mockEscrowService.splitRelease).toHaveBeenCalledWith(
         'escrow-1',

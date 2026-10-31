@@ -10,14 +10,13 @@ import * as sigUtil from './webhook-signature.util';
 
 describe('GithubWebhooksService', () => {
   let service: GithubWebhooksService;
-  let webhookEventRepo: { create: jest.Mock; save: jest.Mock };
   let webhookEventRepo: {
     create: jest.Mock;
     save: jest.Mock;
     findOne: jest.Mock;
   };
-  let issueRepo: { findOne: jest.Mock };
-  let bountyRepo: { findOne: jest.Mock };
+  let issueRepo!: { findOne: jest.Mock };
+  let bountyRepo!: { findOne: jest.Mock };
   let bountiesService: {
     markInReview: jest.Mock;
     markMergedAndRelease: jest.Mock;
@@ -869,6 +868,9 @@ describe('GithubWebhooksService', () => {
 
       expect(bountiesService.markInReview).not.toHaveBeenCalled();
       expect(bountiesService.markMergedAndRelease).not.toHaveBeenCalled();
+    });
+  });
+
   // #308: a redelivered X-GitHub-Delivery used to hit the unique constraint
   // on webhook_events.deliveryId and escape handleEvent as a 500, so every
   // redelivery of that event failed forever.

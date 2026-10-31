@@ -48,7 +48,7 @@ describe('TeamsController', () => {
         members: [{ userId: 'u1', percentage: 100 }],
       };
 
-      await controller.create(dto);
+      await controller.create(dto, { userId: "u1" } as any);
 
       expect(teamsService.create).toHaveBeenCalledWith(dto);
     });
@@ -65,7 +65,7 @@ describe('TeamsController', () => {
   describe('updateSplits', () => {
     it('calls teamsService.updateSplits with id and members', async () => {
       const members = [{ userId: 'u1', percentage: 100 }];
-      await controller.updateSplits('t1', members);
+      await controller.updateSplits('t1', { splits: members } as any);
 
       expect(teamsService.updateSplits).toHaveBeenCalledWith('t1', members);
     });

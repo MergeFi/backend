@@ -319,13 +319,16 @@ export class GithubWebhooksService {
       // step, matching the merged-PR branch's original behaviour (#47).
       requiredStatus: BountyStatus.CLAIMED,
       alsoProcessOtherStatuses: true,
-      preAction: (bounty) =>
-        this.bountiesService.markInReview(
+      preAction: async (bounty) => {
+        await this.bountiesService.markInReview(
           bounty.id,
           payload.pull_request.html_url,
           payload.pull_request.number,
-        ),
-      action: (bounty) => this.bountiesService.markMergedAndRelease(bounty.id),
+        );
+      },
+      action: async (bounty) => {
+        await this.bountiesService.markMergedAndRelease(bounty.id);
+      },
     });
   }
 
@@ -513,12 +516,13 @@ export class GithubWebhooksService {
 
     return this.processLinkedIssues(issueNumbers, payload, {
       requiredStatus: BountyStatus.CLAIMED,
-      action: (bounty) =>
-        this.bountiesService.markInReview(
+      action: async (bounty) => {
+        await this.bountiesService.markInReview(
           bounty.id,
           payload.pull_request.html_url,
           payload.pull_request.number,
-        ),
+        );
+      },
     });
   }
 
@@ -543,7 +547,9 @@ export class GithubWebhooksService {
 
     return this.processLinkedIssues(issueNumbers, payload, {
       requiredStatus: BountyStatus.IN_REVIEW,
-      action: (bounty) => this.bountiesService.markPrClosedWithoutMerge(bounty.id),
+      action: async (bounty) => {
+        await this.bountiesService.markPrClosedWithoutMerge(bounty.id);
+      },
     });
   }
 }

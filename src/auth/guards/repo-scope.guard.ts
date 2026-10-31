@@ -20,6 +20,7 @@ interface AuthenticatedRequest extends Request<{
   owner?: string;
   repo?: string;
 }> {
+
   user?: { userId: string };
 }
 

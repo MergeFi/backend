@@ -201,9 +201,9 @@ export class BountiesService {
           });
           const userMap = new Map(users.map((u) => [u.id, u]));
           const recipients = team.splits.map((split) => {
-            const user = userMap.get(split.userId);
+            const user = split.userId ? userMap.get(split.userId) : undefined;
             return {
-              recipientId: split.userId,
+              recipientId: split.userId ?? undefined,
               recipientAddress: user?.stellarAddress ?? '',
               percentage: Number(split.percentage),
             };

@@ -125,7 +125,7 @@ describe('EscrowService', () => {
       expect(args[0]).toEqual(u64(4242n));
       expect(args[1]).toBe('GABC...FUNDER');
       expect(args[3]).toBe(1_000_000_000n);
-      // deadline is u64 too, in whole unix seconds (#301, #508).
+// deadline is u64 too, in whole unix seconds (#301, #508).
       expect(args[4]).toEqual(
         u64(BigInt(Math.floor(escrow.deadline!.getTime() / 1000))),
       );
@@ -676,7 +676,7 @@ describe('EscrowService', () => {
         '10.0000000',
         'GRECIPIENT',
         undefined,
-        dataSource.manager,
+        dataSource.manager as any,
       );
 
       // #254: the lock and the caller's writes share the caller's transaction.

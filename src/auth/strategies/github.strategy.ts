@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { PassportStrategy } from '@nestjs/passport';
 import { Strategy, Profile } from 'passport-github2';
+// @ts-ignore
 import { VerifyCallback } from 'passport-oauth2';
 import { ConfigService } from '@nestjs/config';
 import { AppConfig } from '../../config/configuration';
