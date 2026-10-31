@@ -18,6 +18,7 @@ import {
   ContractInvocationResult,
   SorobanClientService,
   u64,
+  SorobanPendingError,
 } from './soroban-client.service';
 import {
   apportionBasisPoints,
@@ -120,6 +121,18 @@ export class EscrowService {
         this.contractOpts(escrow),
       );
     } catch (err) {
+      if (err instanceof SorobanPendingError) {
+        // Submitted but not finalized when polling ran out: the funds may
+        // still lock. Keep PENDING with the hash so reconciliation (#371) or
+        // a retry resolves it via getTransaction(hash) — marking FAILED here
+        // invites a client retry that locks funds twice (#527).
+        escrow.fundTxHash = err.txHash;
+        escrow.metadata = {
+          pending: { txHash: err.txHash, at: new Date().toISOString() },
+        };
+        await this.escrowRepo.save(escrow);
+        throw err;
+      }
       // Only reached when the *contract call* failed: nothing was locked
       // on-chain, so FAILED is the truthful state.
       escrow.status = EscrowStatus.FAILED;

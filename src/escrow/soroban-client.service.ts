@@ -15,6 +15,30 @@ import {
 import { AssetType } from '../common/enums';
 import { AppConfig } from '../config/configuration';
 
+/** Transaction time bound set on every invocation (`setTimeout`), in seconds. */
+export const SOROBAN_TX_TIMEOUT_SECONDS = 60;
+const POLL_DELAY_MS = 2000;
+/**
+ * Poll at least as long as the transaction's time bound (+1 attempt), so a
+ * timeout really means "outcome still unknown at expiry", not "gave up early" (#527).
+ */
+const POLL_ATTEMPTS =
+  Math.ceil((SOROBAN_TX_TIMEOUT_SECONDS * 1000) / POLL_DELAY_MS) + 1;
+
+/**
+ * The transaction was accepted (`sendTransaction` → PENDING) but had not
+ * finalized when polling ran out. Its outcome is unknown, not failed: it may
+ * still be included, so callers must not treat this as "nothing happened" (#527).
+ */
+export class SorobanPendingError extends Error {
+  constructor(public readonly txHash: string) {
+    super(
+      `Timed out waiting for Soroban transaction ${txHash} to finalize; outcome unknown`,
+    );
+    this.name = 'SorobanPendingError';
+  }
+}
+
 export interface ContractInvocationResult {
   txHash: string;
   ledger: number | null;
@@ -185,7 +209,7 @@ export class SorobanClientService {
       networkPassphrase: this.networkPassphrase,
     })
       .addOperation(contract.call(method, ...scArgs))
-      .setTimeout(60)
+      .setTimeout(SOROBAN_TX_TIMEOUT_SECONDS)
       .build();
 
     const simulated = await this.server.simulateTransaction(tx);
@@ -223,8 +247,8 @@ export class SorobanClientService {
 
   private async pollTransaction(
     hash: string,
-    attempts = 10,
-    delayMs = 2000,
+    attempts = POLL_ATTEMPTS,
+    delayMs = POLL_DELAY_MS,
   ): Promise<rpc.Api.GetTransactionResponse> {
     for (let i = 0; i < attempts; i++) {
       const res = await this.server.getTransaction(hash);
@@ -233,9 +257,7 @@ export class SorobanClientService {
       }
       await new Promise((resolve) => setTimeout(resolve, delayMs));
     }
-    throw new Error(
-      `Timed out waiting for Soroban transaction ${hash} to finalize`,
-    );
+    throw new SorobanPendingError(hash);
   }
 
   private toScVal(value: unknown): xdr.ScVal {

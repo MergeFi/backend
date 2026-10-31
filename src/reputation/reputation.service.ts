@@ -1,4 +1,5 @@
 import { Injectable } from '@nestjs/common';
+import { OnEvent } from '@nestjs/event-emitter';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { Bounty, Payment, ReputationSnapshot } from '../common/entities';
@@ -33,6 +34,21 @@ export class ReputationService {
       this.paymentRepo,
     );
 
+    const latest = await this.getLatest(userId);
+    if (
+      latest &&
+      latest.totalEarnings === stats.lifetimeEarnings.toFixed(7) &&
+      latest.mergedPrCount === stats.mergedCount &&
+      latest.openBountiesClaimed === stats.openBountiesClaimed &&
+      latest.completionRate === stats.completionRate.toFixed(2) &&
+      latest.avgReviewTimeHours === stats.avgReviewTimeHours.toFixed(2) &&
+      latest.onTimeDeliveryPercentage === stats.onTimeDeliveryPercentage.toFixed(2) &&
+      JSON.stringify(latest.languages) === JSON.stringify(stats.languages) &&
+      JSON.stringify(latest.orgsContributedTo) === JSON.stringify(stats.orgs)
+    ) {
+      return latest;
+    }
+
     const snapshot = this.snapshotRepo.create({
       userId,
       totalEarnings: stats.lifetimeEarnings.toFixed(7),
@@ -48,10 +64,21 @@ export class ReputationService {
   }
 
   async getLatest(userId: string): Promise<ReputationSnapshot | null> {
-    return this.snapshotRepo.findOne({
+    const existing = await this.snapshotRepo.findOne({
       where: { userId },
       order: { computedAt: 'DESC' },
     });
+    if (!existing) {
+      return this.computeAndSave(userId);
+    }
+    return existing;
+  }
+
+  @OnEvent('reputation.recompute')
+  async handleRecompute(payload: { userId: string }): Promise<void> {
+    if (payload?.userId) {
+      await this.computeAndSave(payload.userId);
+    }
   }
 
   async history(

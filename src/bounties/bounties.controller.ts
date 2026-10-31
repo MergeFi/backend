@@ -89,6 +89,7 @@ export class BountiesController {
 
   @ApiOperation({ summary: 'Get a bounty by id' })
   @ApiStandardErrorResponses()
+  @Throttle({ default: { limit: 120, ttl: 60000 } })
   @Get(':id')
   findOne(@Param('id', new ParseUUIDPipe()) id: string) {
     return this.bountiesService.findOne(id);
@@ -156,7 +157,9 @@ export class BountiesController {
 
   @ApiOperation({
     summary: 'Refund a bounty to its funder',
-    description: 'Rate-limited to 1 request/second.',
+    description:
+      "Allowed for the bounty's sponsor or the maintainer of the bounty's repository; " +
+      'funds always return to the original funder. Rate-limited to 1 request/second.',
   })
   @ApiBearerAuth()
   @ApiStandardErrorResponses()

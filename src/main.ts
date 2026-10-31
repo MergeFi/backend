@@ -4,12 +4,26 @@ import { Logger, ValidationPipe } from '@nestjs/common';
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
 import helmet from 'helmet';
 import { AppModule } from './app.module';
-import { AppConfig } from './config/configuration';
+import configuration, { AppConfig } from './config/configuration';
 import { assertRequiredConfig } from './config/validate-required-config';
 import { GlobalExceptionFilter } from './common/filters/global-exception.filter';
 import { resolveLogLevels, startupMessage } from './config/log-levels';
 
-async function bootstrap() {
+export async function bootstrap() {
+  // Fail fast and loudly if *any* required-in-production secret is missing —
+  // not just JWT_SECRET. An empty GITHUB_WEBHOOK_SECRET, TREASURY_SECRET,
+  // ESCROW_CONTRACT_ID, GITHUB_CLIENT_SECRET or a default DATABASE_URL all
+  // otherwise let the app boot "healthy" while silently misbehaving (#153).
+  //
+  // This must run before NestFactory.create (#551): creating the app already
+  // connects TypeORM (falling back to postgres:postgres@localhost), builds the
+  // Octokit client and starts the schedulers, so a misconfigured production
+  // pod used to hang or die on a DB error that hid this list. Validate the
+  // same `configuration()` the ConfigModule loads: importing AppModule above
+  // already ran ConfigModule.forRoot, which merges `.env` into process.env
+  // synchronously, so the raw env is complete here.
+  assertRequiredConfig(configuration());
+
   // rawBody: true preserves the raw request buffer on req.rawBody, which the
   // GitHub webhooks controller needs to verify the HMAC-SHA256 signature.
   const app = await NestFactory.create(AppModule, { rawBody: true });
@@ -19,18 +33,6 @@ async function bootstrap() {
   const env = configService.get('env', { infer: true });
   const logLevel = configService.get('logLevel', { infer: true });
   app.useLogger(resolveLogLevels(logLevel || 'log'));
-
-  // Fail fast and loudly if *any* required-in-production secret is missing —
-  // not just JWT_SECRET. An empty GITHUB_WEBHOOK_SECRET, TREASURY_SECRET,
-  // ESCROW_CONTRACT_ID, GITHUB_CLIENT_SECRET or a default DATABASE_URL all
-  // otherwise let the app boot "healthy" while silently misbehaving (#153).
-  assertRequiredConfig({
-    env,
-    jwt: configService.get('jwt', { infer: true }),
-    github: configService.get('github', { infer: true }),
-    stellar: configService.get('stellar', { infer: true }),
-    database: configService.get('database', { infer: true }),
-  });
 
   app.use(helmet());
   app.enableCors({
@@ -70,4 +72,8 @@ async function bootstrap() {
   // LOG_LEVEL and any logger/transport installed via app.useLogger (#362).
   new Logger('Bootstrap').log(startupMessage(env, port));
 }
-void bootstrap();
+// Only boot when run as the entry point (`node dist/main`, `nest start`), so
+// tests can import bootstrap() without starting the app.
+if (require.main === module) {
+  void bootstrap();
+}

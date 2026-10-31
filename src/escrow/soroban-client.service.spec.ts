@@ -2,7 +2,12 @@ import { ConfigService } from '@nestjs/config';
 import { nativeToScVal, rpc } from '@stellar/stellar-sdk';
 import { AssetType } from '../common/enums';
 import { AppConfig } from '../config/configuration';
-import { SorobanClientService, u64 } from './soroban-client.service';
+import {
+  SOROBAN_TX_TIMEOUT_SECONDS,
+  SorobanClientService,
+  SorobanPendingError,
+  u64,
+} from './soroban-client.service';
 
 jest.mock('@stellar/stellar-sdk', () => ({
   ...jest.requireActual('@stellar/stellar-sdk'),
@@ -240,7 +245,7 @@ describe('SorobanClientService', () => {
       expect(result.ledger).toBe(9);
     });
 
-    it('times out after exhausting all attempts when the transaction stays NOT_FOUND', async () => {
+    it('polls for the full tx time bound, then throws SorobanPendingError (#527)', async () => {
       const getTxSpy = jest
         .spyOn(rpc.Server.prototype, 'getTransaction')
         .mockResolvedValue(txResponse({ status: 'NOT_FOUND' }));
@@ -249,11 +254,15 @@ describe('SorobanClientService', () => {
         () => null,
         (err: Error) => err,
       );
-      await jest.advanceTimersByTimeAsync(21_000);
+      await jest.advanceTimersByTimeAsync(
+        SOROBAN_TX_TIMEOUT_SECONDS * 1000 + 5_000,
+      );
       const err = await settled;
 
-      expect(getTxSpy).toHaveBeenCalledTimes(10);
-      expect(err).toBeInstanceOf(Error);
+      // 60s time bound at 2s per poll, plus one final attempt past expiry.
+      expect(getTxSpy).toHaveBeenCalledTimes(31);
+      expect(err).toBeInstanceOf(SorobanPendingError);
+      expect((err as SorobanPendingError).txHash).toBe('mock-hash');
       expect((err as Error).message).toContain(
         'Timed out waiting for Soroban transaction mock-hash to finalize',
       );

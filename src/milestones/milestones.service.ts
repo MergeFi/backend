@@ -3,6 +3,7 @@ import {
   ForbiddenException,
   Injectable,
   NotFoundException,
+  NotImplementedException,
 } from '@nestjs/common';
 import { InjectDataSource, InjectRepository } from '@nestjs/typeorm';
 import { DataSource, Repository } from 'typeorm';
@@ -180,12 +181,36 @@ export class MilestonesService {
       );
     }
 
-    const unresolvedCount = openIssues.length;
-    const remainingBudget =
-      Number(milestone.budget) - Number(milestone.distributed);
-    const share = Math.min(remainingBudget / unresolvedCount, remainingBudget);
-
     return this.dataSource.transaction(async (mgr) => {
+      // Lock the milestone row and re-read `distributed` and the open issues
+      // under that lock (#531). Reading them before the transaction let two
+      // concurrent resolutions for different issues both start from the same
+      // `distributed`, so the second write lost the first share while the
+      // Payment ledger recorded both. releasePartial only locks the escrow.
+      const locked = await mgr.findOne(Milestone, {
+        where: { id: milestoneId },
+        lock: { mode: 'pessimistic_write' },
+      });
+      if (!locked) {
+        throw new NotFoundException(`Milestone ${milestoneId} not found`);
+      }
+      const lockedOpen = (
+        await mgr.find(Issue, { where: { milestoneId } })
+      ).filter((i) => i.state === IssueState.OPEN);
+      if (!lockedOpen.some((i) => i.id === issueId)) {
+        throw new BadRequestException(
+          `Issue ${issueId} has already been resolved for milestone ${milestoneId}`,
+        );
+      }
+
+      const unresolvedCount = lockedOpen.length;
+      const remainingBudget =
+        Number(locked.budget) - Number(locked.distributed);
+      const share = Math.min(
+        remainingBudget / unresolvedCount,
+        remainingBudget,
+      );
+
       const payment = await this.escrowService.releasePartial(
         milestone.escrowId!,
         share.toFixed(7),
@@ -194,9 +219,9 @@ export class MilestonesService {
         mgr,
       );
 
-      const newDistributed = (Number(milestone.distributed) + share).toFixed(7);
+      const newDistributed = (Number(locked.distributed) + share).toFixed(7);
       const newStatus =
-        Number(newDistributed) >= Number(milestone.budget) - 1e-7
+        Number(newDistributed) >= Number(locked.budget) - 1e-7
           ? MilestoneStatus.COMPLETED
           : MilestoneStatus.IN_PROGRESS;
       await mgr.update(Milestone, milestoneId, {
@@ -214,10 +239,43 @@ export class MilestonesService {
   }
 
   async list(): Promise<Milestone[]> {
-    return this.milestoneRepo.find();
+    return this.milestoneRepo.find({
+      relations: { repository: true, issues: true },
+    });
   }
 
-  allocateBudget(id: string) {
-    return Promise.resolve({ id, status: 'budget_allocated' });
+  /**
+   * Not implemented yet (#253, #533). This used to resolve
+   * `{ id, status: 'budget_allocated' }` without touching storage or the
+   * milestones contract, so the route reported an allocation that never
+   * happened. It now answers 501 until it is wired to the contract's
+   * `allocate`.
+   */
+  allocateBudget(id: string): Promise<never> {
+    return Promise.reject(
+      new NotImplementedException(
+        `Milestone budget allocation is not implemented yet (milestone ${id})`,
+      ),
+    );
+  }
+
+  async close(id: string, userId: string): Promise<Milestone> {
+    const milestone = await this.findOne(id);
+    if (!milestone) {
+      throw new NotFoundException(`Milestone ${id} not found`);
+    }
+
+    assertTransition(milestone.status, MilestoneStatus.CLOSED);
+
+    if (milestone.escrowId) {
+      try {
+        await this.escrowService.refund(milestone.escrowId);
+      } catch (err) {
+        // Escrow may already be refunded or partially released
+      }
+    }
+
+    milestone.status = MilestoneStatus.CLOSED;
+    return this.milestoneRepo.save(milestone);
   }
 }

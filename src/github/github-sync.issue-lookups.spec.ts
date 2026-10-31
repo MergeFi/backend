@@ -3,7 +3,6 @@ import { getRepositoryToken } from '@nestjs/typeorm';
 import { NotFoundException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { EventEmitter2 } from '@nestjs/event-emitter';
-import { Octokit } from '@octokit/rest';
 import { GithubSyncService } from './github-sync.service';
 import { GITHUB_OCTOKIT } from './octokit.provider';
 import { Issue, Repository } from '../common/entities';
@@ -17,7 +16,12 @@ import { IssueState } from '../common/enums';
  */
 describe('GithubSyncService — issue lookups (#311)', () => {
   let service: GithubSyncService;
-  let issueRepo: { findOne: jest.Mock; create: jest.Mock; save: jest.Mock; merge: jest.Mock };
+  let issueRepo: {
+    findOne: jest.Mock;
+    create: jest.Mock;
+    save: jest.Mock;
+    merge: jest.Mock;
+  };
   let repositoryRepo: { findOne: jest.Mock };
 
   beforeEach(async () => {
@@ -40,7 +44,7 @@ describe('GithubSyncService — issue lookups (#311)', () => {
         },
         { provide: getRepositoryToken(Issue), useValue: issueRepo },
         { provide: getRepositoryToken(Repository), useValue: repositoryRepo },
-        { provide: GITHUB_OCTOKIT, useValue: { octokit: {} as unknown as Octokit } },
+        { provide: GITHUB_OCTOKIT, useValue: {} },
         { provide: EventEmitter2, useValue: { emit: jest.fn() } },
       ],
     }).compile();
@@ -54,7 +58,9 @@ describe('GithubSyncService — issue lookups (#311)', () => {
       issueRepo.findOne.mockResolvedValue(issue);
 
       await expect(service.findIssueByGithubId('555')).resolves.toBe(issue);
-      expect(issueRepo.findOne).toHaveBeenCalledWith({ where: { githubIssueId: '555' } });
+      expect(issueRepo.findOne).toHaveBeenCalledWith({
+        where: { githubIssueId: '555' },
+      });
     });
 
     it('throws NotFoundException when the issue is not tracked', async () => {
@@ -73,12 +79,16 @@ describe('GithubSyncService — issue lookups (#311)', () => {
     it('returns the issue when tracked', async () => {
       const issue = { id: 'issue-1' } as Issue;
       issueRepo.findOne.mockResolvedValue(issue);
-      await expect(service.findIssueByGithubIdOrNull('555')).resolves.toBe(issue);
+      await expect(service.findIssueByGithubIdOrNull('555')).resolves.toBe(
+        issue,
+      );
     });
 
     it('returns null instead of throwing for an untracked issue', async () => {
       issueRepo.findOne.mockResolvedValue(null);
-      await expect(service.findIssueByGithubIdOrNull('999')).resolves.toBeNull();
+      await expect(
+        service.findIssueByGithubIdOrNull('999'),
+      ).resolves.toBeNull();
     });
   });
 
@@ -103,7 +113,10 @@ describe('GithubSyncService — issue lookups (#311)', () => {
     });
 
     it('loads requested relations so a caller can use them', async () => {
-      const issue = { id: 'issue-1', bounty: { id: 'bounty-1' } } as unknown as Issue;
+      const issue = {
+        id: 'issue-1',
+        bounty: { id: 'bounty-1' },
+      } as unknown as Issue;
       issueRepo.findOne.mockResolvedValue(issue);
 
       await service.findIssueByRepoAndNumber('repo-uuid-1', 42, {

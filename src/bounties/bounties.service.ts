@@ -3,6 +3,7 @@ import {
   ForbiddenException,
   Injectable,
   NotFoundException,
+  NotImplementedException,
   Optional,
 } from '@nestjs/common';
 import { EventEmitter2 } from '@nestjs/event-emitter';
@@ -36,13 +37,17 @@ export class BountiesService {
 
   async create(dto: CreateBountyDto, callerUserId: string): Promise<Bounty> {
     // Verify issueId exists
-    const issueExists = await this.issueRepo.findOne({ where: { id: dto.issueId } });
+    const issueExists = await this.issueRepo.findOne({
+      where: { id: dto.issueId },
+    });
     if (!issueExists) {
       throw new NotFoundException(`Issue ${dto.issueId} not found`);
     }
 
     // Verify sponsorId exists
-    const sponsorExists = await this.userRepo.findOne({ where: { id: dto.sponsorId } });
+    const sponsorExists = await this.userRepo.findOne({
+      where: { id: dto.sponsorId },
+    });
     if (!sponsorExists) {
       throw new NotFoundException(`Sponsor ${dto.sponsorId} not found`);
     }
@@ -62,13 +67,24 @@ export class BountiesService {
   }
 
   async findOne(id: string): Promise<Bounty> {
-    const bounty = await this.bountyRepo.findOne({ where: { id } });
+    const bounty = await this.bountyRepo.findOne({
+      where: { id },
+      relations: {
+        issue: { repository: true },
+        claimedBy: true,
+        team: { splits: true },
+      },
+    });
     if (!bounty) throw new NotFoundException(`Bounty ${id} not found`);
     return bounty;
   }
 
   /** Sponsor funds the bounty: locks the amount in the escrow contract and moves OPEN -> FUNDED. */
-  async fund(id: string, funderAddress: string, callerUserId: string): Promise<Bounty> {
+  async fund(
+    id: string,
+    funderAddress: string,
+    callerUserId: string,
+  ): Promise<Bounty> {
     const bounty = await this.bountyRepo.findOne({
       where: { id },
       relations: { issue: true },
@@ -77,7 +93,9 @@ export class BountiesService {
 
     // Verify caller is the sponsor (or admin - admin role checked by guard)
     if (bounty.sponsorId !== callerUserId) {
-      throw new ForbiddenException('Only the bounty sponsor can fund this bounty');
+      throw new ForbiddenException(
+        'Only the bounty sponsor can fund this bounty',
+      );
     }
 
     assertTransition(bounty.status, BountyStatus.FUNDED);
@@ -104,8 +122,7 @@ export class BountiesService {
     const bounty = await this.findOne(id);
     assertTransition(bounty.status, BountyStatus.CLAIMED);
 
-    // Verify caller is claiming for themselves
-    bounty.claimedById = callerUserId;
+    // The claimant is always the authenticated caller (#469); never a client-supplied id.
     const contributor = await this.userRepo.findOne({
       where: { id: callerUserId },
     });
@@ -222,12 +239,29 @@ export class BountiesService {
   }
 
   /** Sponsor (or admin/expiry job) reclaims escrowed funds. */
+  /**
+   * Refunds a bounty to its funder. Allowed for the bounty's sponsor and for
+   * the maintainer of the repository the bounty's issue belongs to, e.g. to
+   * unwind an abandoned bounty (#545). The route admits SPONSOR and
+   * MAINTAINER, but a maintainer of some *other* repository is still
+   * rejected. Safe to open up: escrow refunds always pay the original funder,
+   * never the caller.
+   */
   async refund(id: string, callerUserId: string): Promise<Bounty> {
-    const bounty = await this.findOne(id);
+    const bounty = await this.bountyRepo.findOne({
+      where: { id },
+      relations: { issue: { repository: true } },
+    });
+    if (!bounty) throw new NotFoundException(`Bounty ${id} not found`);
 
-    // Verify caller is the sponsor
-    if (bounty.sponsorId !== callerUserId) {
-      throw new ForbiddenException('Only the bounty sponsor can refund this bounty');
+    const isSponsor = bounty.sponsorId === callerUserId;
+    const isRepoMaintainer =
+      !!bounty.issue?.repository?.maintainerId &&
+      bounty.issue.repository.maintainerId === callerUserId;
+    if (!isSponsor && !isRepoMaintainer) {
+      throw new ForbiddenException(
+        "Only the bounty sponsor or the repository's maintainer can refund this bounty",
+      );
     }
 
     assertTransition(bounty.status, BountyStatus.REFUNDED);
@@ -267,7 +301,10 @@ export class BountiesService {
     const qb = this.bountyRepo
       .createQueryBuilder('bounty')
       .leftJoinAndSelect('bounty.issue', 'issue')
-      .leftJoinAndSelect('issue.repository', 'repository');
+      .leftJoinAndSelect('issue.repository', 'repository')
+      .leftJoinAndSelect('bounty.claimedBy', 'claimedBy')
+      .leftJoinAndSelect('bounty.team', 'team')
+      .leftJoinAndSelect('team.splits', 'splits');
 
     if (options.status) {
       qb.andWhere('bounty.status = :status', { status: options.status });
@@ -294,11 +331,26 @@ export class BountiesService {
     return qb.getMany();
   }
 
-  approve(id: string) {
-    return Promise.resolve({ id, status: 'approved' });
+  /**
+   * Not implemented yet (#253, #533). This used to resolve
+   * `{ id, status: 'approved' }` without reading or writing anything, so the
+   * route reported success for an approval that never happened. It now
+   * answers 501 until the real approval flow exists.
+   */
+  approve(id: string): Promise<never> {
+    return Promise.reject(
+      new NotImplementedException(
+        `Bounty approval is not implemented yet (bounty ${id})`,
+      ),
+    );
   }
 
-  reject(id: string) {
-    return Promise.resolve({ id, status: 'rejected' });
+  /** Not implemented yet (#253, #533) — see `approve`. */
+  reject(id: string): Promise<never> {
+    return Promise.reject(
+      new NotImplementedException(
+        `Bounty rejection is not implemented yet (bounty ${id})`,
+      ),
+    );
   }
 }

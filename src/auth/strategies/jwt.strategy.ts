@@ -11,7 +11,7 @@ export interface JwtPayload {
   username: string;
 }
 
-function cookieExtractor(req: Request): string | null {
+export function cookieExtractor(req: Request): string | null {
   if (!req) return null;
   // If cookie-parser is installed, req.cookies will be populated.
   const cookies = (req as unknown as { cookies?: Record<string, string> })

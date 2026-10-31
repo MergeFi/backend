@@ -1,11 +1,26 @@
 import { Test, TestingModule } from '@nestjs/testing';
-import { BadRequestException } from '@nestjs/common';
+import { BadRequestException, NotImplementedException } from '@nestjs/common';
 import { getRepositoryToken } from '@nestjs/typeorm';
 import { DataSource } from 'typeorm';
 import { MilestonesService } from './milestones.service';
 import { EscrowService } from '../escrow/escrow.service';
 import { Issue, Milestone } from '../common/entities';
 import { AssetType, MilestoneStatus } from '../common/enums';
+
+/**
+ * Transaction manager mock (#531): resolveIssue re-reads the milestone FOR
+ * UPDATE and its issues inside the transaction. By default both mirror
+ * whatever milestoneRepo.findOne currently resolves to.
+ */
+let milestoneRepoRef: { findOne: jest.Mock };
+function makeMgr(locked?: { budget: string; distributed: string; issues: Array<{ id: string; state: string }> }) {
+  const read = async () => locked ?? (await milestoneRepoRef.findOne());
+  return {
+    findOne: jest.fn(read),
+    find: jest.fn(async () => (await read())?.issues ?? []),
+    update: jest.fn(),
+  };
+}
 
 describe('MilestonesService', () => {
   let service: MilestonesService;
@@ -44,12 +59,9 @@ describe('MilestonesService', () => {
         status: 'confirmed',
       }),
     };
+    milestoneRepoRef = milestoneRepo;
     dataSource = {
-      transaction: jest.fn().mockImplementation((fn: Function) =>
-        fn({
-          update: jest.fn(),
-        }),
-      ),
+      transaction: jest.fn().mockImplementation((fn: Function) => fn(makeMgr())),
     };
 
     const module: TestingModule = await Test.createTestingModule({
@@ -263,6 +275,7 @@ describe('MilestonesService', () => {
         '250.0000000',
         'RECIPIENT_ADDR',
         'user-1',
+        expect.anything(),
       );
       expect(payment.id).toBe('payment-1');
       expect(dataSource.transaction).toHaveBeenCalled();
@@ -281,7 +294,7 @@ describe('MilestonesService', () => {
       await service.resolveIssue('m1', 'i1', 'RECIPIENT_ADDR');
 
       const txFn = dataSource.transaction.mock.calls[0][0];
-      const mockMgr = { update: jest.fn() };
+      const mockMgr = makeMgr();
       await txFn(mockMgr);
 
       expect(mockMgr.update).toHaveBeenCalledWith(
@@ -308,7 +321,7 @@ describe('MilestonesService', () => {
       await service.resolveIssue('m1', 'i1', 'RECIPIENT_ADDR');
 
       const transactionFn = dataSource.transaction.mock.calls[0][0];
-      const mockMgr = { update: jest.fn() };
+      const mockMgr = makeMgr();
       await transactionFn(mockMgr);
 
       expect(mockMgr.update).toHaveBeenCalledWith(
@@ -316,6 +329,83 @@ describe('MilestonesService', () => {
         'm1',
         expect.objectContaining({ status: MilestoneStatus.IN_PROGRESS }),
       );
+    });
+
+    it('computes the share from the locked milestone row, not the pre-transaction read (#531)', async () => {
+      // Pre-transaction read: nothing distributed, two open issues.
+      milestoneRepo.findOne.mockResolvedValue({
+        id: 'm1',
+        status: MilestoneStatus.FUNDED,
+        escrowId: 'escrow-1',
+        budget: '500',
+        distributed: '0',
+        issues: [
+          { id: 'i1', state: 'open' },
+          { id: 'i2', state: 'open' },
+        ],
+      });
+      // A concurrent resolution of i2 committed first: under the lock the
+      // milestone already shows 250 distributed and only i1 open.
+      const mgr = makeMgr({
+        budget: '500',
+        distributed: '250',
+        issues: [
+          { id: 'i1', state: 'open' },
+          { id: 'i2', state: 'closed' },
+        ],
+      });
+      dataSource.transaction.mockImplementationOnce((fn: Function) => fn(mgr));
+
+      await service.resolveIssue('m1', 'i1', 'RECIPIENT_ADDR');
+
+      expect(mgr.findOne).toHaveBeenCalledWith(Milestone, {
+        where: { id: 'm1' },
+        lock: { mode: 'pessimistic_write' },
+      });
+      expect(escrowService.releasePartial).toHaveBeenCalledWith(
+        'escrow-1',
+        '250.0000000',
+        'RECIPIENT_ADDR',
+        undefined,
+        mgr,
+      );
+      // 250 + 250, not the lost-update 0 + 250.
+      expect(mgr.update).toHaveBeenCalledWith(
+        Milestone,
+        'm1',
+        expect.objectContaining({
+          distributed: '500.0000000',
+          status: MilestoneStatus.COMPLETED,
+        }),
+      );
+    });
+
+    it('rejects when the issue was resolved concurrently, before paying out (#531)', async () => {
+      milestoneRepo.findOne.mockResolvedValue({
+        id: 'm1',
+        status: MilestoneStatus.FUNDED,
+        escrowId: 'escrow-1',
+        budget: '500',
+        distributed: '0',
+        issues: [
+          { id: 'i1', state: 'open' },
+          { id: 'i2', state: 'open' },
+        ],
+      });
+      const mgr = makeMgr({
+        budget: '500',
+        distributed: '250',
+        issues: [
+          { id: 'i1', state: 'closed' },
+          { id: 'i2', state: 'open' },
+        ],
+      });
+      dataSource.transaction.mockImplementationOnce((fn: Function) => fn(mgr));
+
+      await expect(
+        service.resolveIssue('m1', 'i1', 'RECIPIENT_ADDR'),
+      ).rejects.toThrow('Issue i1 has already been resolved for milestone m1');
+      expect(escrowService.releasePartial).not.toHaveBeenCalled();
     });
 
     it('rejects when milestone has no escrow', async () => {
@@ -406,6 +496,14 @@ describe('MilestonesService', () => {
         '333.3333333',
         'RECIPIENT_ADDR',
         undefined,
+      );
+    });
+  });
+
+  describe('allocateBudget (#533)', () => {
+    it('answers 501 instead of reporting a fake allocation', async () => {
+      await expect(service.allocateBudget('m1')).rejects.toBeInstanceOf(
+        NotImplementedException,
       );
     });
   });

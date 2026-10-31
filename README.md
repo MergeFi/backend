@@ -238,7 +238,7 @@ docker compose up --build
 - **Hot Reloading**: The codebase is mounted into the container using a bind mount. File changes on the host will automatically trigger application restarts.
 - **Node Modules Isolation**: The container uses an anonymous volume for `/usr/src/app/node_modules`. This prevents Windows/Host compiled node packages from contaminating the Linux-native container.
 - **Services**:
-  - The API is served at `http://localhost:3000/api` (Swagger docs at `http://localhost:3000/api/docs`).
+  - The API is served at `http://localhost:4000/api` (Swagger docs at `http://localhost:4000/api/docs`).
   - PostgreSQL is mapped to port `5432` on your localhost with credentials `postgres:postgres` and database name `mergefi`.
 
 ### 2. Local Development Natively on Host

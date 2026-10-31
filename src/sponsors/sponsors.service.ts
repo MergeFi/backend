@@ -39,19 +39,25 @@ export class SponsorsService {
     sponsorId: string,
     options: SponsorDashboardOptions = {},
   ): Promise<Bounty[]> {
-    return this.bountyRepo
-      .createQueryBuilder('bounty')
-      .where('bounty.sponsorId = :sponsorId', { sponsorId })
-      .andWhere('bounty.status NOT IN (:...terminal)', {
-        terminal: [
-          BountyStatus.PAID,
-          BountyStatus.REFUNDED,
-          BountyStatus.EXPIRED,
-        ],
-      })
-      .take(options.limit ?? 20)
-      .skip(options.offset ?? 0)
-      .getMany();
+    return (
+      this.bountyRepo
+        .createQueryBuilder('bounty')
+        .where('bounty.sponsorId = :sponsorId', { sponsorId })
+        .andWhere('bounty.status NOT IN (:...terminal)', {
+          terminal: [
+            BountyStatus.PAID,
+            BountyStatus.REFUNDED,
+            BountyStatus.EXPIRED,
+          ],
+        })
+        // Postgres has no row order without ORDER BY, so offset pages could
+        // repeat or skip rows; id breaks createdAt ties (#279, #464, #573).
+        .orderBy('bounty.createdAt', 'DESC')
+        .addOrderBy('bounty.id', 'DESC')
+        .take(options.limit ?? 20)
+        .skip(options.offset ?? 0)
+        .getMany()
+    );
   }
 
   /**
@@ -83,16 +89,33 @@ export class SponsorsService {
    * bounty-funded escrows and depended on the parent Bounty row surviving;
    * this reads `Escrow.status`/`Escrow.sponsorId` directly, so it covers
    * milestone-funded escrows too and remains correct even if the parent
-   * bounty/milestone is later deleted (#27).
+   * bounty/milestone is later deleted (#27). Confirmed partial payouts are
+   * subtracted per escrow, so only the still-unpaid remainder counts (#575).
    */
   async budgetLocked(sponsorId: string): Promise<number> {
-    const row = await this.escrowRepo
+    // A milestone escrow stays LOCKED while releasePartial pays issues out of
+    // it, so its full `amount` is not all still locked: subtract what it has
+    // already paid (#575). Otherwise a 1,000 USDC escrow with 900 paid shows
+    // 1,000 locked and that 900 is double-counted with totalSpend. Grouped per
+    // escrow so the payment join can't multiply escrow amounts.
+    const rows = await this.escrowRepo
       .createQueryBuilder('escrow')
-      .select('COALESCE(SUM(escrow.amount), 0)', 'total')
+      .leftJoin('escrow.payments', 'payment', 'payment.status = :confirmed', {
+        confirmed: PaymentStatus.CONFIRMED,
+      })
+      .select('escrow.id', 'id')
+      .addSelect('escrow.amount', 'amount')
+      .addSelect('COALESCE(SUM(payment.amount), 0)', 'paid')
       .where('escrow.sponsorId = :sponsorId', { sponsorId })
       .andWhere('escrow.status = :status', { status: EscrowStatus.LOCKED })
-      .getRawOne<{ total: string }>();
-    return Number(row?.total ?? 0);
+      .groupBy('escrow.id')
+      .addGroupBy('escrow.amount')
+      .getRawMany<{ id: string; amount: string; paid: string }>();
+
+    return rows.reduce(
+      (sum, r) => sum + Math.max(Number(r.amount) - Number(r.paid), 0),
+      0,
+    );
   }
 
   async activeMilestones(
@@ -104,6 +127,8 @@ export class SponsorsService {
         { sponsorId, status: MilestoneStatus.FUNDED },
         { sponsorId, status: MilestoneStatus.IN_PROGRESS },
       ],
+      // Stable order for offset pagination (#573).
+      order: { createdAt: 'DESC', id: 'DESC' },
       take: options.limit ?? 20,
       skip: options.offset ?? 0,
     });
@@ -116,6 +141,8 @@ export class SponsorsService {
   ): Promise<Array<{ milestoneId: string; title: string; progress: number }>> {
     const milestones = await this.milestoneRepo.find({
       where: { sponsorId },
+      // Stable order for offset pagination (#573).
+      order: { createdAt: 'DESC', id: 'DESC' },
       take: options.limit ?? 20,
       skip: options.offset ?? 0,
     });
@@ -149,6 +176,8 @@ export class SponsorsService {
       .innerJoin('payment.escrow', 'escrow')
       .where('escrow.sponsorId = :sponsorId', { sponsorId })
       .orderBy('payment.createdAt', 'DESC')
+      // Tie-break equal timestamps so pages stay stable (#573).
+      .addOrderBy('payment.id', 'DESC')
       .take(options.limit ?? 20)
       .skip(options.offset ?? 0)
       .getMany();

@@ -18,7 +18,7 @@ import { ApiInternalErrorResponse } from '../common/swagger/api-common-responses
 
 const MAX_PAGE_LIMIT = 100;
 
-function validatePage(limit?: number, offset?: number) {
+export function validatePage(limit?: number, offset?: number) {
   if (limit !== undefined && (limit < 1 || limit > MAX_PAGE_LIMIT)) {
     throw new BadRequestException(`limit must be between 1 and ${MAX_PAGE_LIMIT}`);
   }

@@ -465,4 +465,50 @@ describe('IdempotencyInterceptor', () => {
       expect(next.handle).not.toHaveBeenCalled();
     });
   });
+
+  describe('when recording the COMPLETED outcome fails (#546)', () => {
+    it('retries the write and still caches the result', async () => {
+      const realUpdate = repo.update.bind(repo);
+      jest
+        .spyOn(repo, 'update')
+        .mockRejectedValueOnce(new Error('connection reset'))
+        .mockImplementation(realUpdate);
+      const next = createNext(() => of({ id: 'payment-1' }));
+      const context = createContext({ headers: { 'idempotency-key': KEY_A } });
+
+      const result = await lastValueFrom(
+        await interceptor.intercept(context, next),
+      );
+
+      expect(result).toEqual({ id: 'payment-1' });
+      expect(repo.rows[0].status).toBe(IdempotencyKeyStatus.COMPLETED);
+    });
+
+    it('returns the success, keeps the key, and a retry is rejected instead of re-executing', async () => {
+      jest.spyOn(repo, 'update').mockRejectedValue(new Error('pool exhausted'));
+      const deleteSpy = jest.spyOn(repo, 'delete');
+      const next = createNext(() => of({ id: 'payment-1' }));
+      const context = createContext({ headers: { 'idempotency-key': KEY_A } });
+
+      // The handler (money movement) succeeded, so the client gets its result.
+      const result = await lastValueFrom(
+        await interceptor.intercept(context, next),
+      );
+      expect(result).toEqual({ id: 'payment-1' });
+
+      // The key is not deleted: it stays PROCESSING.
+      expect(deleteSpy).not.toHaveBeenCalled();
+      expect(repo.rows).toHaveLength(1);
+      expect(repo.rows[0].status).toBe(IdempotencyKeyStatus.PROCESSING);
+
+      // A retry with the same key gets 409 and the handler does not run again.
+      await expect(
+        interceptor.intercept(
+          createContext({ headers: { 'idempotency-key': KEY_A } }),
+          next,
+        ),
+      ).rejects.toBeInstanceOf(ConflictException);
+      expect(next.handle).toHaveBeenCalledTimes(1);
+    });
+  });
 });

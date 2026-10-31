@@ -3,7 +3,11 @@ import { getRepositoryToken } from '@nestjs/typeorm';
 import { BadRequestException } from '@nestjs/common';
 import { DataSource } from 'typeorm';
 import { EscrowService } from './escrow.service';
-import { SorobanClientService, u64 } from './soroban-client.service';
+import {
+  SorobanClientService,
+  SorobanPendingError,
+  u64,
+} from './soroban-client.service';
 import { Escrow, Payment, User } from '../common/entities';
 import { AssetType, EscrowStatus, PaymentStatus } from '../common/enums';
 import { TOTAL_BASIS_POINTS } from './split-math.util';
@@ -75,9 +79,7 @@ describe('EscrowService', () => {
         entity === Escrow ? escrowRepo.findOne(options) : Promise.resolve(null),
       ),
       find: jest.fn((entity: unknown, options: unknown) =>
-        entity === Payment
-          ? paymentRepo.find(options)
-          : Promise.resolve([]),
+        entity === Payment ? paymentRepo.find(options) : Promise.resolve([]),
       ),
       save: jest.fn((entity: unknown, data: unknown) =>
         entity === Payment ? paymentRepo.save(data) : escrowRepo.save(data),
@@ -123,7 +125,10 @@ describe('EscrowService', () => {
       expect(args[0]).toEqual(u64(4242n));
       expect(args[1]).toBe('GABC...FUNDER');
       expect(args[3]).toBe(1_000_000_000n);
-      expect(args[4]).toEqual(expect.objectContaining({ __sorobanU64: expect.any(BigInt) }));
+// deadline is u64 too, in whole unix seconds (#301, #508).
+      expect(args[4]).toEqual(
+        u64(BigInt(Math.floor(escrow.deadline!.getTime() / 1000))),
+      );
       expect(escrow.status).toBe(EscrowStatus.LOCKED);
       expect(escrow.fundTxHash).toBe('tx-hash-123');
     });
@@ -218,6 +223,29 @@ describe('EscrowService', () => {
       );
     });
 
+    it('keeps the escrow PENDING with the tx hash when the poll times out (#527)', async () => {
+      soroban.invoke.mockRejectedValueOnce(new SorobanPendingError('tx-abc'));
+
+      await expect(
+        service.fund({
+          amount: '10',
+          asset: AssetType.XLM,
+          funderAddress: 'G...',
+          bountyId: 'bounty-1',
+        }),
+      ).rejects.toBeInstanceOf(SorobanPendingError);
+
+      const savedCalls = (
+        escrowRepo.save.mock.calls as [Partial<Escrow>][]
+      ).map((c) => c[0]);
+      const last = savedCalls[savedCalls.length - 1];
+      expect(last.status).toBe(EscrowStatus.PENDING);
+      expect(last.fundTxHash).toBe('tx-abc');
+      expect(savedCalls.every((e) => e.status !== EscrowStatus.FAILED)).toBe(
+        true,
+      );
+    });
+
     it('keeps the escrow LOCKED when the on-chain call succeeded but the local write failed (#302, #42)', async () => {
       // First save (the PENDING row) succeeds; the post-invoke save fails —
       // exactly the post-on-chain-success failure #42 describes.
@@ -238,12 +266,12 @@ describe('EscrowService', () => {
       const savedCalls = (
         escrowRepo.save.mock.calls as [Partial<Escrow>][]
       ).map((c) => c[0]);
-      expect(
-        savedCalls.some((e) => e.status === EscrowStatus.FAILED),
-      ).toBe(false);
-      expect(
-        savedCalls.every((e) => e.status !== EscrowStatus.FAILED),
-      ).toBe(true);
+      expect(savedCalls.some((e) => e.status === EscrowStatus.FAILED)).toBe(
+        false,
+      );
+      expect(savedCalls.every((e) => e.status !== EscrowStatus.FAILED)).toBe(
+        true,
+      );
 
       // The retry records the reconciliation marker (and keeps the LOCKED
       // status + tx hash) so a reconciliation job can find the row.
@@ -275,9 +303,9 @@ describe('EscrowService', () => {
       const savedCalls = (
         escrowRepo.save.mock.calls as [Partial<Escrow>][]
       ).map((c) => c[0]);
-      expect(
-        savedCalls.some((e) => e.status === EscrowStatus.FAILED),
-      ).toBe(false);
+      expect(savedCalls.some((e) => e.status === EscrowStatus.FAILED)).toBe(
+        false,
+      );
     });
 
     it.each([
@@ -569,15 +597,18 @@ describe('EscrowService', () => {
       escrowRepo.findOne.mockResolvedValue({ ...lockedEscrow });
       paymentRepo.find.mockResolvedValue([]);
       const order: string[] = [];
-      dataSource.manager.findOne.mockImplementation(
-        async () => {
-          order.push('locked-read');
-          return { ...lockedEscrow };
-        },
-      );
+      dataSource.manager.findOne.mockImplementation(async () => {
+        order.push('locked-read');
+        return { ...lockedEscrow };
+      });
       soroban.invoke.mockImplementation(async () => {
         order.push('invoke');
-        return { txHash: 'tx-1', ledger: 1, returnValue: null, status: 'SUCCESS' };
+        return {
+          txHash: 'tx-1',
+          ledger: 1,
+          returnValue: null,
+          status: 'SUCCESS',
+        };
       });
       paymentRepo.save.mockImplementation(async (data: Partial<Payment>) => {
         order.push('payment-write');
@@ -831,7 +862,9 @@ describe('EscrowService', () => {
     it('records a failed withdraw via the invokeOnLockedEscrow failure path (#89) and keeps the escrow LOCKED', async () => {
       const escrow = lockedPoolEscrow();
       escrowRepo.findOne.mockResolvedValue(escrow);
-      soroban.invoke.mockRejectedValueOnce(new Error('withdraw simulation failed'));
+      soroban.invoke.mockRejectedValueOnce(
+        new Error('withdraw simulation failed'),
+      );
 
       await expect(
         service.poolWithdraw('escrow-pool', '10.0000000', 'GRECIPIENT'),
@@ -902,7 +935,11 @@ describe('EscrowService', () => {
 
       expect(soroban.invoke).toHaveBeenCalledWith(
         'release',
-        expect.any(Array),
+        // issue_id is still u64-wrapped on the pinned-contract path (#301).
+        [
+          { __sorobanU64: expect.any(BigInt) as bigint },
+          [['GRECIPIENT', TOTAL_BASIS_POINTS]],
+        ],
         { contractId: 'CPINNED' },
       );
     });
@@ -996,6 +1033,38 @@ describe('EscrowService', () => {
       const recipients = args[1] as Array<[string, number]>;
       expect(recipients.map((r) => r[0])).toEqual(['GA', 'GB', 'GC']);
       expect(recipients.reduce((sum, r) => sum + r[1], 0)).toBe(10_000);
+    });
+
+    it('keeps the u64 key and records failures through the locking manager (#485)', async () => {
+      escrowRepo.findOne.mockResolvedValue({
+        id: 'escrow-485',
+        status: EscrowStatus.LOCKED,
+        amount: '100',
+        asset: AssetType.USDC,
+        bountyId: 'bounty-485',
+        onChainId: '4850',
+      });
+      paymentRepo.find.mockResolvedValue([]);
+      soroban.invoke.mockRejectedValueOnce(new Error('simulation failed'));
+
+      await expect(
+        service.splitRelease('escrow-485', [
+          { recipientAddress: 'GA', percentage: 50 },
+          { recipientAddress: 'GB', percentage: 50 },
+        ]),
+      ).rejects.toThrow('simulation failed');
+
+      // Both halves of the #301 / #303 merge must survive in invokeRelease.
+      const [, args] = soroban.invoke.mock.calls[0] as [string, unknown[]];
+      expect(args[0]).toEqual(u64(4850n));
+      expect(dataSource.manager.save).toHaveBeenCalledWith(
+        Escrow,
+        expect.objectContaining({
+          metadata: expect.objectContaining({
+            lastFailure: expect.objectContaining({ operation: 'splitRelease' }),
+          }),
+        }),
+      );
     });
 
     it('never invokes a split_release method (#161)', async () => {

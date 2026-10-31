@@ -4,6 +4,7 @@ import { GithubController } from './github.controller';
 import { GithubSyncService } from './github-sync.service';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
+import { RepoScopeGuard } from '../auth/guards/repo-scope.guard';
 import { ROLES_KEY } from '../auth/decorators/roles.decorator';
 import { UserRole } from '../common/enums';
 
@@ -25,6 +26,10 @@ describe('GithubController', () => {
       .overrideGuard(JwtAuthGuard)
       .useValue({ canActivate: () => true })
       .overrideGuard(RolesGuard)
+      .useValue({ canActivate: () => true })
+      // RepoScopeGuard injects the User/Repository repos and ConfigService;
+      // stub it like the other guards so the module bootstraps (#504).
+      .overrideGuard(RepoScopeGuard)
       .useValue({ canActivate: () => true })
       .compile();
 
@@ -56,13 +61,14 @@ describe('GithubController', () => {
   });
 
   describe('guard and role wiring (#62, #313)', () => {
-    it('is guarded by JwtAuthGuard and RolesGuard', () => {
+    it('is guarded by JwtAuthGuard, RolesGuard and RepoScopeGuard', () => {
       const guards = Reflect.getMetadata(
         '__guards__',
         GithubController.prototype.sync,
       );
 
-      expect(guards).toEqual([JwtAuthGuard, RolesGuard]);
+      // Order matters: RepoScopeGuard reads req.user set by JwtAuthGuard (#312).
+      expect(guards).toEqual([JwtAuthGuard, RolesGuard, RepoScopeGuard]);
     });
 
     it('restricts the route to the MAINTAINER role', () => {

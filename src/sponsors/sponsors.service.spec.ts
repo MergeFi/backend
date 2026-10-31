@@ -14,16 +14,26 @@ import {
  * returns the same object, and the two terminal methods resolve to
  * whatever the test configures via `result`.
  */
-function createMockQueryBuilder(result: { raw?: unknown; many?: unknown[] }) {
+function createMockQueryBuilder(result: {
+  raw?: unknown;
+  many?: unknown[];
+  rawMany?: unknown[];
+}) {
   const qb = {
     select: jest.fn().mockReturnThis(),
+    addSelect: jest.fn().mockReturnThis(),
+    leftJoin: jest.fn().mockReturnThis(),
+    groupBy: jest.fn().mockReturnThis(),
+    addGroupBy: jest.fn().mockReturnThis(),
     where: jest.fn().mockReturnThis(),
     andWhere: jest.fn().mockReturnThis(),
     innerJoin: jest.fn().mockReturnThis(),
     orderBy: jest.fn().mockReturnThis(),
+    addOrderBy: jest.fn().mockReturnThis(),
     take: jest.fn().mockReturnThis(),
     skip: jest.fn().mockReturnThis(),
     getRawOne: jest.fn().mockResolvedValue(result.raw),
+    getRawMany: jest.fn().mockResolvedValue(result.rawMany ?? []),
     getMany: jest.fn().mockResolvedValue(result.many ?? []),
   };
   return qb;
@@ -57,7 +67,12 @@ describe('SponsorsService', () => {
 
   describe('budgetLocked', () => {
     it('sums Escrow.amount directly, filtered by sponsorId and LOCKED status', async () => {
-      const qb = createMockQueryBuilder({ raw: { total: '1250.5000000' } });
+      const qb = createMockQueryBuilder({
+        rawMany: [
+          { id: 'e1', amount: '1000.0000000', paid: '0' },
+          { id: 'e2', amount: '250.5000000', paid: '0' },
+        ],
+      });
       escrowRepo.createQueryBuilder.mockReturnValue(qb);
 
       const total = await service.budgetLocked('sponsor-1');
@@ -73,7 +88,7 @@ describe('SponsorsService', () => {
     });
 
     it('does not query the Bounty table at all (no drifted-proxy risk)', async () => {
-      const qb = createMockQueryBuilder({ raw: { total: '0' } });
+      const qb = createMockQueryBuilder({ rawMany: [] });
       escrowRepo.createQueryBuilder.mockReturnValue(qb);
 
       await service.budgetLocked('sponsor-1');
@@ -82,7 +97,41 @@ describe('SponsorsService', () => {
     });
 
     it('returns 0 when there is no locked escrow for the sponsor', async () => {
-      const qb = createMockQueryBuilder({ raw: undefined });
+      const qb = createMockQueryBuilder({ rawMany: [] });
+      escrowRepo.createQueryBuilder.mockReturnValue(qb);
+
+      expect(await service.budgetLocked('sponsor-1')).toBe(0);
+    });
+
+    it('subtracts confirmed partial payouts from a still-LOCKED escrow (#575)', async () => {
+      // 1,000 USDC milestone escrow with 900 already paid out via
+      // releasePartial: only 100 is still locked, not 1,000.
+      const qb = createMockQueryBuilder({
+        rawMany: [
+          {
+            id: 'milestone-escrow',
+            amount: '1000.0000000',
+            paid: '900.0000000',
+          },
+          { id: 'bounty-escrow', amount: '50.0000000', paid: '0' },
+        ],
+      });
+      escrowRepo.createQueryBuilder.mockReturnValue(qb);
+
+      expect(await service.budgetLocked('sponsor-1')).toBe(150);
+      expect(qb.leftJoin).toHaveBeenCalledWith(
+        'escrow.payments',
+        'payment',
+        'payment.status = :confirmed',
+        { confirmed: PaymentStatus.CONFIRMED },
+      );
+      expect(qb.groupBy).toHaveBeenCalledWith('escrow.id');
+    });
+
+    it('never reports a negative remainder for an over-paid escrow (#575)', async () => {
+      const qb = createMockQueryBuilder({
+        rawMany: [{ id: 'e1', amount: '100.0000000', paid: '100.0000001' }],
+      });
       escrowRepo.createQueryBuilder.mockReturnValue(qb);
 
       expect(await service.budgetLocked('sponsor-1')).toBe(0);
@@ -252,6 +301,32 @@ describe('SponsorsService', () => {
           progress: 0,
         },
       ]);
+    });
+  });
+
+  describe('pagination order (#573)', () => {
+    it('activeBounties orders by createdAt DESC, id DESC before paginating', async () => {
+      const qb = createMockQueryBuilder({ many: [] });
+      bountyRepo.createQueryBuilder.mockReturnValue(qb);
+
+      await service.activeBounties('sponsor-1', { limit: 10, offset: 10 });
+
+      expect(qb.orderBy).toHaveBeenCalledWith('bounty.createdAt', 'DESC');
+      expect(qb.addOrderBy).toHaveBeenCalledWith('bounty.id', 'DESC');
+    });
+
+    it('activeMilestones and milestoneProgress pass a stable order to find()', async () => {
+      await service.activeMilestones('sponsor-1', { limit: 10, offset: 10 });
+      await service.milestoneProgress('sponsor-1', { limit: 10, offset: 10 });
+
+      for (const [args] of milestoneRepo.find.mock.calls) {
+        expect(args).toMatchObject({
+          order: { createdAt: 'DESC', id: 'DESC' },
+          take: 10,
+          skip: 10,
+        });
+      }
+      expect(milestoneRepo.find).toHaveBeenCalledTimes(2);
     });
   });
 });

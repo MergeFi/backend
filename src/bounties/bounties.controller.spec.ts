@@ -1,3 +1,4 @@
+import type { Request } from 'express';
 import { ArgumentMetadata, ParseUUIDPipe } from '@nestjs/common';
 import { Test, TestingModule } from '@nestjs/testing';
 import { plainToInstance } from 'class-transformer';
@@ -91,8 +92,10 @@ describe('BountiesController', () => {
   });
 
   describe('claim', () => {
-    it('calls bountiesService.claim with id and contributorId', async () => {
-      await controller.claim('b1', { user: { userId: 'contributor-1' } } as any);
+it('calls bountiesService.claim with id and the authenticated user id', async () => {
+      await controller.claim('b1', {
+        user: { userId: 'contributor-1' },
+      } as unknown as Request);
 
       expect(bountiesService.claim).toHaveBeenCalledWith('b1', 'contributor-1');
     });
