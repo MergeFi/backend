@@ -152,8 +152,14 @@ export class MilestonesService {
       throw new BadRequestException(
         `Milestone ${milestoneId} has not been funded yet`,
       );
+    if (
+      milestone.status !== MilestoneStatus.FUNDED &&
+      milestone.status !== MilestoneStatus.IN_PROGRESS
+    ) {
+      throw new BadRequestException(
+        `Milestone ${milestoneId} is not accepting distributions (status: ${milestone.status})`,
+      );
     }
-    assertTransition(milestone.status, MilestoneStatus.IN_PROGRESS);
 
     // Verify the issue belongs to this milestone (#114).
     const issue = milestone.issues.find((i) => i.id === issueId);
@@ -224,6 +230,9 @@ export class MilestonesService {
         Number(newDistributed) >= Number(locked.budget) - 1e-7
           ? MilestoneStatus.COMPLETED
           : MilestoneStatus.IN_PROGRESS;
+      if (newStatus !== locked.status) {
+        assertTransition(locked.status, newStatus);
+      }
       await mgr.update(Milestone, milestoneId, {
         distributed: newDistributed,
         status: newStatus,
