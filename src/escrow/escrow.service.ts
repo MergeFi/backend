@@ -345,7 +345,7 @@ export class EscrowService {
             this.soroban.invoke(
               'release_partial',
               [
-                escrow.milestoneId ?? escrow.bountyId ?? escrow.id,
+                this.onChainKeyFor(escrow),
                 recipientAddress,
                 this.toStroops(amount),
               ],
