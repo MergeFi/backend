@@ -463,5 +463,28 @@ describe('MaintenancePoolService', () => {
       // Both calls should have succeeded (atomic check passed)
       expect(mockQueryBuilder.execute).toHaveBeenCalledTimes(2);
     });
+    it('restores pool balance when poolWithdraw throws (#459)', async () => {
+      poolRepo.findOne.mockResolvedValue({
+        id: 'pool-1',
+        status: MaintenancePoolStatus.ACTIVE,
+        balance: 100,
+        escrowId: 'escrow-1',
+        repositoryId: 'repository-1',
+      });
+      escrowService.poolWithdraw.mockRejectedValue(
+        new Error('Escrow withdrawal simulation failed'),
+      );
+
+      await expect(
+        service.assignReward('pool-1', 'issue-1', '50', 'GABCD...'),
+      ).rejects.toThrow('Escrow withdrawal simulation failed');
+
+      expect(poolRepo.increment).toHaveBeenCalledWith(
+        { id: 'pool-1' },
+        'balance',
+        50,
+      );
+    });
+
   });
 });
