@@ -58,9 +58,13 @@ export class AuthController {
       // the URL at all. The handoff code remains the primary exchange mechanism.
       const isProd =
         this.configService.get('env', { infer: true }) === 'production';
+      const appUrl =
+        this.configService.get('appUrl', { infer: true }) ?? '';
+      const isSecure =
+        Boolean(req.secure) || appUrl.startsWith('https://') || isProd;
       res.cookie('access_token', accessToken, {
         httpOnly: true,
-        secure: isProd,
+        secure: isSecure,
         sameSite: 'lax',
         maxAge: 7 * 24 * 60 * 60 * 1000,
         path: '/',
