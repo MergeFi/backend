@@ -11,7 +11,6 @@ yarn-error.log*
 lerna-debug.log*
 
 # env files
-.env
 .env.*.local
 
 # OS
@@ -23,11 +22,10 @@ lerna-debug.log*
 
 # IDEs
 .idea
-.vscode/*
 !.vscode/settings.json
 !.vscode/tasks.json
 !.vscode/launch.json
 !.vscode/extensions.json
-.env.test
 
 tsconfig.tsbuildinfo
+config.bat
