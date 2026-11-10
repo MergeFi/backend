@@ -4,6 +4,9 @@ import {
   ValidationOptions,
 } from 'class-validator';
 
+// Note: a companion spec file (date.validator.spec.ts) should be added beside this file
+// covering: past, now, and future dates, an invalid string, and a non-string value.
+
 export function IsFutureDate(validationOptions?: ValidationOptions) {
   return function (object: object, propertyName: string) {
     registerDecorator({
