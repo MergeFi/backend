@@ -1,6 +1,7 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { getRepositoryToken } from '@nestjs/typeorm';
 import { BadRequestException, ForbiddenException, NotFoundException } from '@nestjs/common';
+import { DataSource } from 'typeorm';
 import { TeamsService } from './teams.service';
 import { Bounty, Team, TeamMemberSplit, User } from '../common/entities';
 import { BountyStatus, UserRole } from '../common/enums';
@@ -11,6 +12,7 @@ describe('TeamsService', () => {
   let splitRepo: { save: jest.Mock; create: jest.Mock; delete: jest.Mock };
   let bountyRepo: { findOne: jest.Mock; save: jest.Mock };
   let userRepo: { findOne: jest.Mock };
+  let dataSource: { transaction: jest.Mock };
 
   beforeEach(async () => {
     teamRepo = {
@@ -35,7 +37,23 @@ describe('TeamsService', () => {
       save: jest.fn((b: Partial<Bounty>) => Promise.resolve(b)),
     };
     userRepo = {
-      findOne: jest.fn(),
+      findOne: jest.fn().mockImplementation((opts) =>
+        Promise.resolve({ id: opts?.where?.id ?? 'u1' }),
+      ),
+    };
+    dataSource = {
+      transaction: jest.fn(async (cb) => {
+        const mgr = {
+          delete: jest.fn().mockResolvedValue(undefined),
+          create: jest.fn((entity, val) => val),
+          save: jest.fn((entity, val) =>
+            Array.isArray(val)
+              ? Promise.resolve(val.map((x) => ({ id: `split-${x.userId}`, ...x })))
+              : Promise.resolve({ id: `split-${val.userId}`, ...val }),
+          ),
+        };
+        return cb(mgr);
+      }),
     };
 
     const module: TestingModule = await Test.createTestingModule({
@@ -45,6 +63,7 @@ describe('TeamsService', () => {
         { provide: getRepositoryToken(TeamMemberSplit), useValue: splitRepo },
         { provide: getRepositoryToken(Bounty), useValue: bountyRepo },
         { provide: getRepositoryToken(User), useValue: userRepo },
+        { provide: DataSource, useValue: dataSource },
       ],
     }).compile();
 
@@ -132,6 +151,83 @@ describe('TeamsService', () => {
       await expect(service.findOne('missing')).rejects.toThrow(
         NotFoundException,
       );
+    });
+  });
+
+  describe('updateSplits', () => {
+    it('rejects via validateSplitPercentages when splits do not sum to 100', async () => {
+      teamRepo.findOne.mockResolvedValue({ id: 't1', splits: [] });
+
+      await expect(
+        service.updateSplits('t1', [{ userId: 'u1', percentage: 70 }]),
+      ).rejects.toThrow(
+        'team member split percentages must sum to 100, got 70.00',
+      );
+
+      expect(dataSource.transaction).not.toHaveBeenCalled();
+    });
+
+    it('throws NotFoundException when any member userId does not exist', async () => {
+      teamRepo.findOne.mockResolvedValue({ id: 't1', splits: [] });
+      userRepo.findOne.mockResolvedValue(null);
+
+      await expect(
+        service.updateSplits('t1', [{ userId: 'missing-user', percentage: 100 }]),
+      ).rejects.toThrow('User missing-user not found');
+
+      expect(dataSource.transaction).not.toHaveBeenCalled();
+    });
+
+    it('throws NotFoundException when the team does not exist', async () => {
+      teamRepo.findOne.mockResolvedValue(null);
+
+      await expect(
+        service.updateSplits('missing-team', [{ userId: 'u1', percentage: 100 }]),
+      ).rejects.toThrow(NotFoundException);
+
+      expect(dataSource.transaction).not.toHaveBeenCalled();
+    });
+
+    it('replaces splits atomically inside a transaction when percentages sum to 100 (#728)', async () => {
+      const existingTeam = { id: 't1', name: 'Team A', splits: [{ id: 's0' }] };
+      teamRepo.findOne.mockResolvedValue(existingTeam);
+
+      const updated = await service.updateSplits('t1', [
+        { userId: 'u1', role: 'lead', percentage: 60 },
+        { userId: 'u2', percentage: 40 },
+      ]);
+
+      expect(dataSource.transaction).toHaveBeenCalledTimes(1);
+      expect(updated.splits).toHaveLength(2);
+      expect(updated.splits).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            teamId: 't1',
+            userId: 'u1',
+            role: 'lead',
+            percentage: '60.00',
+          }),
+          expect.objectContaining({
+            teamId: 't1',
+            userId: 'u2',
+            role: null,
+            percentage: '40.00',
+          }),
+        ]),
+      );
+    });
+
+    it('propagates transaction failure and leaves original splits intact on error (#728)', async () => {
+      const existingTeam = { id: 't1', name: 'Team A', splits: [{ id: 's-original' }] };
+      teamRepo.findOne.mockResolvedValue(existingTeam);
+
+      dataSource.transaction.mockRejectedValueOnce(new Error('DB transaction failure'));
+
+      await expect(
+        service.updateSplits('t1', [{ userId: 'u1', percentage: 100 }]),
+      ).rejects.toThrow('DB transaction failure');
+
+      expect(dataSource.transaction).toHaveBeenCalledTimes(1);
     });
   });
 

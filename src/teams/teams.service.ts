@@ -4,8 +4,8 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
-import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { InjectDataSource, InjectRepository } from '@nestjs/typeorm';
+import { DataSource, Repository } from 'typeorm';
 import { Bounty, Team, TeamMemberSplit, User } from '../common/entities';
 import { BountyStatus, UserRole } from '../common/enums';
 import { CreateTeamDto, TeamMemberSplitDto } from './dto/create-team.dto';
@@ -19,6 +19,7 @@ export class TeamsService {
     private readonly splitRepo: Repository<TeamMemberSplit>,
     @InjectRepository(Bounty) private readonly bountyRepo: Repository<Bounty>,
     @InjectRepository(User) private readonly userRepo: Repository<User>,
+    @InjectDataSource() private readonly dataSource: DataSource,
   ) {}
 
   async create(dto: CreateTeamDto, callerUserId: string): Promise<Team> {
@@ -86,20 +87,22 @@ export class TeamsService {
       }
     }
 
-    // Remove existing splits
-    await this.splitRepo.delete({ teamId: team.id });
+    // Perform delete and insert atomically inside a transaction to prevent zero-split state on insert failure (#728, #536, #375)
+    await this.dataSource.transaction(async (manager) => {
+      await manager.delete(TeamMemberSplit, { teamId: team.id });
 
-    // Create new splits — one batched save, same rationale as create() (#150).
-    team.splits = await this.splitRepo.save(
-      members.map((m) =>
-        this.splitRepo.create({
-          teamId: team.id,
-          userId: m.userId,
-          role: m.role ?? null,
-          percentage: m.percentage.toFixed(2),
-        }),
-      ),
-    );
+      team.splits = await manager.save(
+        TeamMemberSplit,
+        members.map((m) =>
+          manager.create(TeamMemberSplit, {
+            teamId: team.id,
+            userId: m.userId,
+            role: m.role ?? null,
+            percentage: m.percentage.toFixed(2),
+          }),
+        ),
+      );
+    });
 
     return team;
   }
