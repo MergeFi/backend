@@ -1,4 +1,8 @@
 import { Test, TestingModule } from '@nestjs/testing';
+import {
+  SchedulerLockId,
+  SchedulerLockService,
+} from '../common/locks/scheduler-lock.service';
 import { BountiesService } from './bounties.service';
 import { BountyExpiryScheduler } from './bounty-expiry.scheduler';
 
@@ -45,5 +49,27 @@ describe('BountyExpiryScheduler', () => {
     await scheduler.sweepOverdueBounties();
 
     expect(loggerSpy).not.toHaveBeenCalled();
+  });
+
+  it('delegates execution to schedulerLockService.withSchedulerLock with BOUNTY_EXPIRY', async () => {
+    const mockLockService = {
+      withSchedulerLock: jest
+        .fn()
+        .mockImplementation((_lockId, _name, fn) => fn()),
+    };
+    const schedulerWithLock = new BountyExpiryScheduler(
+      bountiesService as unknown as BountiesService,
+      mockLockService as unknown as SchedulerLockService,
+    );
+    bountiesService.expireOverdue.mockResolvedValue(2);
+
+    await schedulerWithLock.sweepOverdueBounties();
+
+    expect(mockLockService.withSchedulerLock).toHaveBeenCalledWith(
+      SchedulerLockId.BOUNTY_EXPIRY,
+      'sweep',
+      expect.any(Function),
+    );
+    expect(bountiesService.expireOverdue).toHaveBeenCalledTimes(1);
   });
 });

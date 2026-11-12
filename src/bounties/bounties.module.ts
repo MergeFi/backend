@@ -5,6 +5,7 @@ import { IdempotencyKey } from '../common/entities/idempotency-key.entity';
 import { BountiesService } from './bounties.service';
 import { BountiesController } from './bounties.controller';
 import { BountyExpiryScheduler } from './bounty-expiry.scheduler';
+import { SchedulerLockService } from '../common/locks/scheduler-lock.service';
 import { EscrowModule } from '../escrow/escrow.module';
 import { AuthModule } from '../auth/auth.module';
 
@@ -19,7 +20,7 @@ import { AuthModule } from '../auth/auth.module';
     AuthModule,
   ],
   controllers: [BountiesController],
-  providers: [BountiesService, BountyExpiryScheduler],
+  providers: [BountiesService, BountyExpiryScheduler, SchedulerLockService],
   exports: [BountiesService],
 })
 export class BountiesModule {}
