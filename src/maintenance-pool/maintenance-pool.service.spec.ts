@@ -68,9 +68,9 @@ describe('MaintenancePoolService', () => {
   });
 
   describe('create', () => {
-    it('saves a new pool with ACTIVE status', async () => {
+    it('saves a new pool with ACTIVE status and binds createdById to callerUserId (#852)', async () => {
       const pool = await service.create(
-        { name: 'Docs pool', asset: AssetType.USDC, createdById: 'creator-1' },
+        { name: 'Docs pool', asset: AssetType.USDC },
         'caller-99',
       );
 
@@ -78,15 +78,22 @@ describe('MaintenancePoolService', () => {
         expect.objectContaining({
           name: 'Docs pool',
           asset: AssetType.USDC,
-          createdById: 'creator-1',
+          createdById: 'caller-99',
           status: MaintenancePoolStatus.ACTIVE,
         }),
       );
       expect(pool.status).toBe(MaintenancePoolStatus.ACTIVE);
     });
 
-    it('falls back to callerUserId for createdById when client omits it', async () => {
-      await service.create({ name: 'Pool', asset: AssetType.USDC }, 'caller-99');
+    it('always uses callerUserId for createdById even if payload includes createdById (#852)', async () => {
+      await service.create(
+        {
+          name: 'Pool',
+          asset: AssetType.USDC,
+          ...({ createdById: 'attacker-id' } as any),
+        },
+        'caller-99',
+      );
 
       expect(poolRepo.save).toHaveBeenCalledWith(
         expect.objectContaining({ repositoryId: null, createdById: 'caller-99' }),
@@ -337,6 +344,7 @@ describe('MaintenancePoolService', () => {
     it('releases the reward and atomically decrements the balance', async () => {
       poolRepo.findOne.mockResolvedValue({
         id: 'pool-1',
+        status: MaintenancePoolStatus.ACTIVE,
         balance: '100',
         escrowId: 'escrow-1',
       });
@@ -410,6 +418,7 @@ describe('MaintenancePoolService', () => {
     it('rejects when the issue has already received a reward from this pool (#273)', async () => {
       poolRepo.findOne.mockResolvedValue({
         id: 'pool-1',
+        status: MaintenancePoolStatus.ACTIVE,
         balance: '100',
         escrowId: 'escrow-1',
       });
@@ -437,7 +446,8 @@ describe('MaintenancePoolService', () => {
     // time — not a value cached from an earlier read — and neither
     // decrement is lost.
     it('two concurrent assignReward calls both apply — no lost decrement (#51)', async () => {
-      const sharedPoolRow: { balance: string; escrowId: string } = {
+      const sharedPoolRow: { status: MaintenancePoolStatus; balance: string; escrowId: string } = {
+        status: MaintenancePoolStatus.ACTIVE,
         balance: '1000.0000000',
         escrowId: 'escrow-1',
       };
