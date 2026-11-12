@@ -32,7 +32,7 @@ describe('configuration', () => {
   it('falls back to defaults when nothing is set', () => {
     const config = configuration();
     expect(config.env).toBe('development');
-    expect(config.port).toBe(3000);
+    expect(config.port).toBe(4000);
     expect(config.database).toEqual({
       url: 'postgresql://postgres:postgres@localhost:5432/mergefi',
       synchronize: false,
@@ -70,12 +70,43 @@ describe('configuration', () => {
     expect(config.github.clientId).toBe('mock_client_id_12345');
   });
 
-  it('yields NaN for a non-numeric PORT or ESCROW_DEADLINE_SECONDS', () => {
+  it('throws for a non-numeric, non-positive or out-of-range PORT', () => {
     process.env.PORT = 'abc';
+    expect(() => configuration()).toThrow(/PORT must be a positive integer/);
+
+    process.env.PORT = '0';
+    expect(() => configuration()).toThrow(/PORT must be a positive integer/);
+
+    process.env.PORT = '-1';
+    expect(() => configuration()).toThrow(/PORT must be a positive integer/);
+
+    process.env.PORT = '65536';
+    expect(() => configuration()).toThrow(/PORT must be a positive integer/);
+
+    process.env.PORT = '80.5';
+    expect(() => configuration()).toThrow(/PORT must be a positive integer/);
+  });
+
+  it('throws for a non-numeric, non-positive or below-minimum ESCROW_DEADLINE_SECONDS', () => {
     process.env.ESCROW_DEADLINE_SECONDS = 'soon';
-    const config = configuration();
-    expect(config.port).toBeNaN();
-    expect(config.stellar.escrowDeadlineSeconds).toBeNaN();
+    expect(() => configuration()).toThrow(
+      /ESCROW_DEADLINE_SECONDS must be a positive integer/,
+    );
+
+    process.env.ESCROW_DEADLINE_SECONDS = '0';
+    expect(() => configuration()).toThrow(
+      /ESCROW_DEADLINE_SECONDS must be a positive integer/,
+    );
+
+    process.env.ESCROW_DEADLINE_SECONDS = '-10';
+    expect(() => configuration()).toThrow(
+      /ESCROW_DEADLINE_SECONDS must be a positive integer/,
+    );
+
+    process.env.ESCROW_DEADLINE_SECONDS = '1.5';
+    expect(() => configuration()).toThrow(
+      /ESCROW_DEADLINE_SECONDS must be a positive integer/,
+    );
   });
 
   describe('maintenancePoolContractId', () => {
