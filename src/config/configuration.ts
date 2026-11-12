@@ -64,6 +64,12 @@ export interface AppConfig {
      * refund-after-deadline mechanism depends on this being set.
      */
     escrowDeadlineSeconds: number;
+    /**
+     * Whether simulated dry-run Soroban contract execution is explicitly enabled.
+     * Required for invoke() to dry-run when contracts are unconfigured in non-production.
+     * Strictly forbidden in production.
+     */
+    dryRun: boolean;
   };
 }
 
@@ -122,5 +128,6 @@ export default (): AppConfig => ({
       process.env.ESCROW_DEADLINE_SECONDS ?? '7776000',
       10,
     ),
+    dryRun: process.env.SOROBAN_DRY_RUN === 'true',
   },
 });

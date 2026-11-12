@@ -25,13 +25,19 @@ const baseStellarConfig: StellarConfig = {
   treasurySecret: '',
   assetContractIds: { USDC: '', XLM: '' },
   escrowDeadlineSeconds: 7776000,
+  dryRun: false,
 };
 
 function makeService(
   overrides: Partial<StellarConfig> = {},
+  env = 'development',
 ): SorobanClientService {
   const configService = {
-    get: jest.fn(() => ({ ...baseStellarConfig, ...overrides })),
+    get: jest.fn((key: string) => {
+      if (key === 'env') return env;
+      if (key === 'stellar') return { ...baseStellarConfig, ...overrides };
+      return undefined;
+    }),
   };
   return new SorobanClientService(
     configService as unknown as ConfigService<AppConfig, true>,
@@ -114,11 +120,23 @@ describe('SorobanClientService', () => {
   });
 
   describe('invoke (dry-run gating)', () => {
-    it('returns a deterministic dry-run result without touching the RPC server when unconfigured', async () => {
+    it('throws when contract is unconfigured and SOROBAN_DRY_RUN is not enabled', async () => {
+      await expect(makeService().invoke('release', ['ref-1'])).rejects.toThrow(
+        /SOROBAN_DRY_RUN is not set to true/,
+      );
+    });
+
+    it('throws in production even when SOROBAN_DRY_RUN is true', async () => {
+      await expect(
+        makeService({ dryRun: true }, 'production').invoke('release', ['ref-1']),
+      ).rejects.toThrow(/Refusing to execute unconfigured Soroban contract invocation/);
+    });
+
+    it('returns a deterministic dry-run result without touching the RPC server when unconfigured and dry-run is explicitly enabled', async () => {
       const sendSpy = jest.spyOn(rpc.Server.prototype, 'sendTransaction');
       const getTxSpy = jest.spyOn(rpc.Server.prototype, 'getTransaction');
 
-      const result = await makeService().invoke('release', ['ref-1']);
+      const result = await makeService({ dryRun: true }).invoke('release', ['ref-1']);
 
       expect(result.status).toBe('DRY_RUN');
       expect(result.txHash).toMatch(/^dry-run-release-/);

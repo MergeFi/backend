@@ -108,6 +108,16 @@ export function collectConfigIssues(config: RequiredConfig): ConfigIssue[] {
     config.stellar.treasurySecret,
     'escrow release/refund transactions cannot be signed',
   );
+  requireNonEmpty(
+    'USDC_TOKEN_CONTRACT_ID',
+    config.stellar.assetContractIds?.USDC,
+    'USDC escrow contracts cannot be funded',
+  );
+  requireNonEmpty(
+    'XLM_TOKEN_CONTRACT_ID',
+    config.stellar.assetContractIds?.XLM,
+    'XLM escrow contracts cannot be funded',
+  );
 
   return issues;
 }
