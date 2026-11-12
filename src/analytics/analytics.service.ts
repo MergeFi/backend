@@ -8,7 +8,7 @@ import {
   Payment,
   Repository as RepositoryEntity,
 } from '../common/entities';
-import { BountyStatus } from '../common/enums';
+import { AssetType, BountyStatus, PaymentStatus } from '../common/enums';
 import { AppConfig } from '../config/configuration';
 import {
   heatmapRange,
@@ -38,6 +38,7 @@ export interface ContributorAnalyticsQuery {
 export interface PlatformSummary {
   totalBounties: number;
   totalPaidOut: number;
+  paidOutByAsset: Record<AssetType, number>;
   totalRepos: number;
 }
 
@@ -97,19 +98,33 @@ export class AnalyticsService {
   }
 
   private async loadPlatformSummary(): Promise<PlatformSummary> {
-    const [totalBounties, totalPaidRaw, totalRepos] = await Promise.all([
+    const [totalBounties, paymentRows, totalRepos] = await Promise.all([
       this.bountyRepo.count(),
-      this.bountyRepo
-        .createQueryBuilder('bounty')
-        .select('COALESCE(SUM(bounty.amount), 0)', 'total')
-        .where('bounty.status = :status', { status: BountyStatus.PAID })
-        .getRawOne<{ total: string }>(),
+      this.paymentRepo
+        .createQueryBuilder('payment')
+        .select('payment.asset', 'asset')
+        .addSelect('COALESCE(SUM(payment.amount), 0)', 'total')
+        .where('payment.status = :status', { status: PaymentStatus.CONFIRMED })
+        .groupBy('payment.asset')
+        .getRawMany<{ asset: AssetType; total: string }>(),
       this.repositoryRepo.count(),
     ]);
 
+    const paidOutByAsset: Record<AssetType, number> = {
+      [AssetType.USDC]: 0,
+      [AssetType.XLM]: 0,
+    };
+
+    for (const row of paymentRows) {
+      if (row.asset && row.asset in paidOutByAsset) {
+        paidOutByAsset[row.asset] = Number(row.total);
+      }
+    }
+
     return {
       totalBounties,
-      totalPaidOut: Number(totalPaidRaw?.total ?? 0),
+      totalPaidOut: paidOutByAsset[AssetType.USDC],
+      paidOutByAsset,
       totalRepos,
     };
   }
