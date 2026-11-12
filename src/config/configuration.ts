@@ -60,16 +60,51 @@ export interface AppConfig {
     /**
      * Fallback escrow deadline, in seconds from fund time, used as the real
      * `escrow::fund`'s `deadline` argument when the funding bounty/milestone
-     * carries no explicit deadline of its own (#158). The contract's
-     * refund-after-deadline mechanism depends on this being set.
+     * carries no explicit deadline of its own (#158).
+     *
+     * In the deployed smart contract, once `now >= deadline + GRACE_PERIOD`
+     * (14 days), `escrow::refund` becomes permissionless — anyone can trigger
+     * it to unwind the escrow and return funds to contributors on record.
+     * Shortening this setting creates an early on-chain permissionless refund
+     * window (e.g. 7 days yields an unwinding window at day 21) that can unwind
+     * bounties the platform still considers live (#851).
      */
     escrowDeadlineSeconds: number;
   };
 }
 
+export const DEFAULT_PORT = 4000;
+export const MIN_PORT = 1;
+export const MAX_PORT = 65535;
+
+export const DEFAULT_ESCROW_DEADLINE_SECONDS = 7776000; // 90 days
+export const MIN_ESCROW_DEADLINE_SECONDS = 1;
+
+export function parsePort(val: string | undefined): number {
+  if (val === undefined) return DEFAULT_PORT;
+  const num = Number(val);
+  if (!Number.isInteger(num) || num < MIN_PORT || num > MAX_PORT) {
+    throw new Error(
+      `PORT must be a positive integer between ${MIN_PORT} and ${MAX_PORT}, received "${val}"`,
+    );
+  }
+  return num;
+}
+
+export function parseEscrowDeadlineSeconds(val: string | undefined): number {
+  if (val === undefined) return DEFAULT_ESCROW_DEADLINE_SECONDS;
+  const num = Number(val);
+  if (!Number.isInteger(num) || num < MIN_ESCROW_DEADLINE_SECONDS) {
+    throw new Error(
+      `ESCROW_DEADLINE_SECONDS must be a positive integer (minimum ${MIN_ESCROW_DEADLINE_SECONDS} second), received "${val}"`,
+    );
+  }
+  return num;
+}
+
 export default (): AppConfig => ({
   env: process.env.NODE_ENV ?? 'development',
-  port: parseInt(process.env.PORT ?? '4000', 10),
+  port: parsePort(process.env.PORT),
   appUrl: process.env.APP_URL ?? 'http://localhost:4000',
   frontendUrl: process.env.FRONTEND_URL ?? 'http://localhost:3000',
   logLevel: process.env.LOG_LEVEL ?? 'debug',
@@ -118,9 +153,8 @@ export default (): AppConfig => ({
       USDC: process.env.USDC_TOKEN_CONTRACT_ID ?? '',
       XLM: process.env.XLM_TOKEN_CONTRACT_ID ?? '',
     },
-    escrowDeadlineSeconds: parseInt(
-      process.env.ESCROW_DEADLINE_SECONDS ?? '7776000',
-      10,
+    escrowDeadlineSeconds: parseEscrowDeadlineSeconds(
+      process.env.ESCROW_DEADLINE_SECONDS,
     ),
   },
 });

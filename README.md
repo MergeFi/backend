@@ -138,7 +138,7 @@ See [`.env.example`](./.env.example) for the full annotated list. Highlights:
 | `ESCROW_CONTRACT_ID` | Deployed escrow contract ID from `mergefi-contracts`. **Not set in this environment** — see below. |
 | `MAINTENANCE_POOL_CONTRACT_ID` | Optional separate contract for maintenance-pool escrows; falls back to `ESCROW_CONTRACT_ID`. |
 | `USDC_TOKEN_CONTRACT_ID`, `XLM_TOKEN_CONTRACT_ID` | Soroban token (SAC) contract addresses, passed as `escrow::fund`'s required `token` argument. |
-| `ESCROW_DEADLINE_SECONDS` | Fallback `escrow::fund` deadline (seconds from fund time) when the bounty/milestone has none. Default 90 days. |
+| `ESCROW_DEADLINE_SECONDS` | Fallback `escrow::fund` deadline (seconds from fund time) when the bounty/milestone has none (default `7776000` / 90 days). In the smart contract, once `now >= deadline + 14 days (GRACE_PERIOD)`, `escrow::refund` becomes permissionless. Validated at boot as a positive integer. |
 | `TREASURY_SECRET` | Platform signer used to submit release/refund transactions. |
 
 ## Escrow / Soroban integration
