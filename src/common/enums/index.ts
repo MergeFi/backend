@@ -51,6 +51,7 @@ export enum EscrowStatus {
   RELEASED = 'released',
   REFUNDED = 'refunded',
   FAILED = 'failed',
+  DRY_RUN = 'dry_run',
 }
 
 export enum EscrowAction {
@@ -65,6 +66,7 @@ export enum PaymentStatus {
   SUBMITTED = 'submitted',
   CONFIRMED = 'confirmed',
   FAILED = 'failed',
+  DRY_RUN = 'dry_run',
 }
 
 export enum MilestoneStatus {
