@@ -3,7 +3,12 @@ import { ConfigService } from '@nestjs/config';
 import { getRepositoryToken } from '@nestjs/typeorm';
 import { BadRequestException } from '@nestjs/common';
 import { AnalyticsService } from './analytics.service';
-import { Bounty, Repository as RepositoryEntity } from '../common/entities';
+import {
+  Bounty,
+  Payment,
+  Repository as RepositoryEntity,
+} from '../common/entities';
+import { AssetType, PaymentStatus } from '../common/enums';
 import * as sql from '../common/stats/contributor-stats.sql';
 import { heatmapRange } from '../common/stats/contributor-stats.sql';
 import { TtlCache } from './ttl-cache';
@@ -89,6 +94,9 @@ describe('AnalyticsService', () => {
     count: jest.fn(),
     createQueryBuilder: jest.fn(),
   };
+  const mockPaymentRepo = {
+    createQueryBuilder: jest.fn(),
+  };
   const mockRepositoryRepo = {
     count: jest.fn(),
   };
@@ -98,6 +106,7 @@ describe('AnalyticsService', () => {
       providers: [
         AnalyticsService,
         { provide: getRepositoryToken(Bounty), useValue: mockBountyRepo },
+        { provide: getRepositoryToken(Payment), useValue: mockPaymentRepo },
         {
           provide: getRepositoryToken(RepositoryEntity),
           useValue: mockRepositoryRepo,
@@ -189,11 +198,17 @@ describe('AnalyticsService', () => {
 
   it('serves platformSummary from cache until invalidate', async () => {
     mockBountyRepo.count.mockResolvedValue(4);
-    mockBountyRepo.createQueryBuilder.mockReturnValue({
+    const paymentQb = {
       select: jest.fn().mockReturnThis(),
+      addSelect: jest.fn().mockReturnThis(),
       where: jest.fn().mockReturnThis(),
-      getRawOne: jest.fn().mockResolvedValue({ total: '10' }),
-    });
+      groupBy: jest.fn().mockReturnThis(),
+      getRawMany: jest.fn().mockResolvedValue([
+        { asset: AssetType.USDC, total: '10' },
+        { asset: AssetType.XLM, total: '0' },
+      ]),
+    };
+    mockPaymentRepo.createQueryBuilder.mockReturnValue(paymentQb);
     mockRepositoryRepo.count.mockResolvedValue(2);
 
     const first = await service.platformSummary();
@@ -201,6 +216,10 @@ describe('AnalyticsService', () => {
     expect(first).toEqual({
       totalBounties: 4,
       totalPaidOut: 10,
+      paidOutByAsset: {
+        [AssetType.USDC]: 10,
+        [AssetType.XLM]: 0,
+      },
       totalRepos: 2,
     });
     expect(second).toEqual(first);
@@ -211,5 +230,48 @@ describe('AnalyticsService', () => {
     const third = await service.platformSummary();
     expect(third.totalBounties).toBe(5);
     expect(mockBountyRepo.count).toHaveBeenCalledTimes(2);
+  });
+
+  it('sums confirmed Payment rows per asset and counts only actual released payments for partial escrows (#787)', async () => {
+    mockBountyRepo.count.mockResolvedValue(10);
+    mockRepositoryRepo.count.mockResolvedValue(3);
+
+    // Scenario:
+    // Pledged bounties amount might be 1,000 USDC across multiple escrows.
+    // But actual confirmed disbursements are 150 USDC (partial release of milestone escrows)
+    // and 300 XLM, while unconfirmed / pending payments (e.g. 50 USDC) are excluded.
+    const paymentQb = {
+      select: jest.fn().mockReturnThis(),
+      addSelect: jest.fn().mockReturnThis(),
+      where: jest.fn().mockReturnThis(),
+      groupBy: jest.fn().mockReturnThis(),
+      getRawMany: jest.fn().mockResolvedValue([
+        { asset: AssetType.USDC, total: '150.0000000' },
+        { asset: AssetType.XLM, total: '300.0000000' },
+      ]),
+    };
+    mockPaymentRepo.createQueryBuilder.mockReturnValue(paymentQb);
+
+    const summary = await service.platformSummary();
+
+    expect(paymentQb.select).toHaveBeenCalledWith('payment.asset', 'asset');
+    expect(paymentQb.addSelect).toHaveBeenCalledWith(
+      'COALESCE(SUM(payment.amount), 0)',
+      'total',
+    );
+    expect(paymentQb.where).toHaveBeenCalledWith('payment.status = :status', {
+      status: PaymentStatus.CONFIRMED,
+    });
+    expect(paymentQb.groupBy).toHaveBeenCalledWith('payment.asset');
+
+    expect(summary).toEqual({
+      totalBounties: 10,
+      totalPaidOut: 150,
+      paidOutByAsset: {
+        [AssetType.USDC]: 150,
+        [AssetType.XLM]: 300,
+      },
+      totalRepos: 3,
+    });
   });
 });
