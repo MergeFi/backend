@@ -30,6 +30,7 @@ RPC and mirrors on-chain state into Postgres for fast reads.
 - [Data model](#data-model)
 - [Environment variables](#environment-variables)
 - [Escrow / Soroban integration](#escrow--soroban-integration)
+- [Dry-run mode](#dry-run-mode)
 - [API overview](#api-overview)
 - [Setup, run, test](#setup-run-test)
 - [Roadmap](#roadmap)
@@ -82,7 +83,7 @@ Design principles:
 - **Config-driven, not hardcoded.** There is no deployed escrow contract for
   this MVP session, so `ESCROW_CONTRACT_ID` / `TREASURY_SECRET` are read from
   env and the Soroban client transparently falls back to a "dry run" mode
-  when they're absent — see [Escrow / Soroban integration](#escrow--soroban-integration).
+  when they're absent — see [Dry-run mode](#dry-run-mode).
 
 ## Modules
 
@@ -135,11 +136,11 @@ See [`.env.example`](./.env.example) for the full annotated list. Highlights:
 | `GITHUB_WEBHOOK_SECRET` | HMAC-SHA256 secret configured on the GitHub webhook. |
 | `ANALYTICS_PLATFORM_SUMMARY_TTL_MS` | In-process TTL for `GET /analytics/platform` (default `60000`). Also invalidated on bounty create/pay and first repository sync. |
 | `STELLAR_NETWORK`, `SOROBAN_RPC_URL`, `STELLAR_NETWORK_PASSPHRASE` | Stellar network config. |
-| `ESCROW_CONTRACT_ID` | Deployed escrow contract ID from `mergefi-contracts`. **Not set in this environment** — see below. |
+| `ESCROW_CONTRACT_ID` | Deployed escrow contract ID from `mergefi-contracts`. When unset, engages dry-run mode — see [Dry-run mode](#dry-run-mode). |
 | `MAINTENANCE_POOL_CONTRACT_ID` | Optional separate contract for maintenance-pool escrows; falls back to `ESCROW_CONTRACT_ID`. |
 | `USDC_TOKEN_CONTRACT_ID`, `XLM_TOKEN_CONTRACT_ID` | Soroban token (SAC) contract addresses, passed as `escrow::fund`'s required `token` argument. |
 | `ESCROW_DEADLINE_SECONDS` | Fallback `escrow::fund` deadline (seconds from fund time) when the bounty/milestone has none. Default 90 days. |
-| `TREASURY_SECRET` | Platform signer used to submit release/refund transactions. |
+| `TREASURY_SECRET` | Platform signer used to submit release/refund transactions. When unset, engages dry-run mode — see [Dry-run mode](#dry-run-mode). |
 
 ## Escrow / Soroban integration
 
@@ -157,7 +158,9 @@ transparently short-circuits into a deterministic **dry-run** mode — it logs
 a warning, returns a synthetic tx hash, and skips the network call — so the
 rest of the system (state transitions, DB writes, split-percentage math,
 webhook-triggered releases) can still be exercised end-to-end in tests and
-local dev. Once real contracts are deployed:
+local dev. See [Dry-run mode](#dry-run-mode) for complete details on how
+dry-run operates, which database records are written, and how to identify
+synthetic transactions. Once real contracts are deployed:
 
 1. Set `ESCROW_CONTRACT_ID` (and `MAINTENANCE_POOL_CONTRACT_ID` if the pool
    uses a separate deployment), plus `USDC_TOKEN_CONTRACT_ID` /
@@ -169,6 +172,114 @@ local dev. Once real contracts are deployed:
 
 No private keys for end users are ever stored — only the platform treasury
 signer, and only as an env var for this MVP (see Roadmap: move to KMS/multi-sig).
+
+## Dry-run mode
+
+In any environment without deployed smart contracts, MergeFi runs escrow
+operations in **dry-run mode**. This enables local development, CI testing,
+and full workflow evaluation (from bounty creation through pull request merge
+and payout) without requiring an active Stellar testnet account, funded
+treasury, or deployed Soroban contracts.
+
+### When it engages
+
+Dry-run mode engages automatically whenever either of the following
+environment variables is unset or empty:
+- `ESCROW_CONTRACT_ID`
+- `TREASURY_SECRET`
+
+When either variable is missing, `SorobanClientService.isConfigured()` returns
+`false`. Every contract call made via `SorobanClientService.invoke` (`fund`,
+`release`, `refund`, or `poolWithdraw`) skips all RPC interactions (simulation,
+transaction assembly, signing, and submission) and immediately returns a
+synthetic success payload.
+
+> [!NOTE]
+> Leaving both variables unset is the default configuration in [`.env.example`](./.env.example).
+> In production (`NODE_ENV=production`), `assertRequiredConfig` in
+> `src/config/validate-required-config.ts` crashes the application at startup
+> if either variable is missing, preventing dry-run mode from running in production.
+
+### Exactly which records are written
+
+Even though dry-run calls bypass the Stellar network, the backend orchestration
+proceeds as if on-chain transactions succeeded. Database records are persisted
+identically to live executions:
+
+1. **Escrows (`escrows` table)**:
+   - **Fund**: Calling `POST /escrow/fund` or `POST /bounties/:id/fund` transitions
+     escrow status from `PENDING` to `LOCKED`, assigns `fundTxHash` to a synthetic
+     hash (`dry-run-fund-<timestamp>`), sets `lockedAt`, and stores the synthetic
+     invocation result in `metadata.fund` (`{ txHash, ledger: null, returnValue: null, status: 'DRY_RUN' }`).
+   - **Release / Split Release**: Calling `POST /escrow/:id/release` or
+     `POST /escrow/:id/split-release` transitions escrow status from `LOCKED` to
+     `RELEASED`, sets `releaseTxHash` (`dry-run-release-<timestamp>`), and sets
+     `releasedAt`.
+   - **Refund**: Calling `POST /escrow/:id/refund` or `POST /bounties/:id/refund`
+     transitions escrow status from `LOCKED` to `REFUNDED`, sets `refundTxHash`
+     (`dry-run-refund-<timestamp>`), and sets `refundedAt`.
+   - **Maintenance Pool Withdrawal**: Calling `POST /maintenance-pools/:id/assign-reward`
+     appends a withdrawal entry with `txHash: dry-run-poolWithdraw-<timestamp>` to
+     `escrow.metadata.withdrawals`.
+
+2. **Payments (`payments` table)**:
+   - On release or pool withdrawal, one or more `Payment` records are created
+     with `status = PaymentStatus.CONFIRMED`, storing the synthetic transaction hash in `txHash`,
+     along with the recipient address, user ID, amount, and asset.
+
+3. **Bounties (`bounties` table)**:
+   - When a linked pull request is merged (via GitHub webhook or
+     `POST /bounties/:id/mark-merged-and-release`), the bounty state machine
+     transitions from `MERGED` to `PAID`, sets `paidAt`, and invalidates cached
+     platform analytics.
+   - When refunded, the bounty transitions to `REFUNDED`.
+
+4. **Analytics and Reputation**:
+   - Contributor stats (lifetime earnings, completed bounties, merge rates,
+     languages, payout heatmaps) and sponsor metrics (total spend, active budget)
+     query the `payments` and `bounties` tables directly. Because those rows are
+     written with `CONFIRMED` and `PAID` statuses, contributor earnings and sponsor
+     spend figures increment exactly as they would with real on-chain transfers.
+
+### How to recognise dry-run records
+
+Because the frontend and API responses display database statuses directly (`PAID`
+badges, `CONFIRMED` payments, updated earnings), dry-run records look identical
+to real payouts in the UI. To distinguish dry-run operations:
+
+- **Synthetic Transaction Hashes**: All dry-run transaction hashes follow the
+  pattern `dry-run-<method>-<timestamp>` (e.g. `dry-run-fund-1731470400000`,
+  `dry-run-release-1731470400000`, `dry-run-refund-1731470400000`, or
+  `dry-run-poolWithdraw-1731470400000`). In contrast, real Stellar transactions
+  produce a 64-character hexadecimal hash (SHA-256 hash of the transaction envelope).
+- **Escrow Metadata**: Inspecting `metadata.fund` on an `Escrow` entity shows:
+  ```json
+  {
+    "status": "DRY_RUN",
+    "ledger": null,
+    "returnValue": null,
+    "txHash": "dry-run-fund-1731470400000"
+  }
+  ```
+  Real settled transactions contain `status: "SUCCESS"` and a numeric `ledger`
+  sequence number.
+- **Server Runtime Logs**: At runtime, `SorobanClientService` emits a warning log
+  for every dry-run invocation:
+  ```
+  [SorobanClientService] Soroban not configured (ESCROW_CONTRACT_ID/TREASURY_SECRET missing) — dry-running "<method>" instead of submitting an on-chain transaction.
+  ```
+
+### Transitioning to live contracts
+
+To switch from dry-run mode to live on-chain contract execution:
+1. Deploy contracts from the `mergefi-contracts` repository to Stellar Testnet.
+2. In `.env` (cross-referencing [`.env.example`](./.env.example)), configure:
+   - `ESCROW_CONTRACT_ID`: The deployed contract ID (e.g. `CA...`).
+   - `TREASURY_SECRET`: The secret key (`S...`) of a funded platform account.
+   - `USDC_TOKEN_CONTRACT_ID` and `XLM_TOKEN_CONTRACT_ID`: Deployed SAC token contract addresses.
+   - `MAINTENANCE_POOL_CONTRACT_ID`: (Optional) dedicated pool contract ID if separated.
+3. Restart the application. Once configured, calls to `invoke()` will simulate, sign,
+   submit, and poll real on-chain Stellar transactions.
 
 ## API overview
 

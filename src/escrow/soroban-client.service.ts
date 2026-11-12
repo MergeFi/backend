@@ -71,9 +71,10 @@ export function u64(value: bigint | number | string): U64Arg {
  *
  * The bounty/milestone escrow signatures below track `mergefi-contracts`'
  * `contracts/escrow/src/lib.rs`. Adjust argument encoding once the real
- * generated bindings are available. Until ESCROW_CONTRACT_ID is configured,
- * calls run in "simulate-only" dry-run mode and never submit a real
- * transaction.
+ * generated bindings are available. When either ESCROW_CONTRACT_ID or
+ * TREASURY_SECRET is unset, calls run in dry-run mode: SorobanClientService
+ * returns a synthetic success without simulating or submitting transactions
+ * on-chain. See README.md ("Dry-run mode") for details.
  *
  * Bounty/milestone escrow interface (Rust):
  *   fn fund(env, issue_id: u64, sponsor: Address, token: Address, amount: i128, deadline: u64) -> Result<(), Error>
@@ -119,7 +120,10 @@ export class SorobanClientService {
     });
   }
 
-  /** Whether a real escrow contract has been configured for this environment. */
+  /**
+   * Whether a real escrow contract and treasury signer are configured for
+   * this environment. When false, invoke() operates in dry-run mode.
+   */
   isConfigured(): boolean {
     return Boolean(
       this.stellar.escrowContractId && this.stellar.treasurySecret,
@@ -168,11 +172,13 @@ export class SorobanClientService {
   }
 
   /**
-   * Builds, simulates, signs, and submits a contract invocation. When no
-   * contract ID / treasury secret is configured (local dev without deployed
-   * contracts), this short-circuits into a deterministic dry-run result so
-   * the rest of the orchestration (DB writes, status transitions) can still
-   * be exercised end-to-end without live infrastructure.
+   * Builds, simulates, signs, and submits a contract invocation. When either
+   * ESCROW_CONTRACT_ID or TREASURY_SECRET is unset (local dev, CI, or
+   * environments without deployed contracts), this short-circuits into a
+   * deterministic dry-run result (txHash: `dry-run-${method}-${Date.now()}`,
+   * status: 'DRY_RUN') so the rest of the orchestration (DB writes, status
+   * transitions) can still be exercised end-to-end without live infrastructure.
+   * See README.md ("Dry-run mode") for details.
    */
   async invoke(
     method: string,
