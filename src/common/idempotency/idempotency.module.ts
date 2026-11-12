@@ -3,6 +3,7 @@ import { TypeOrmModule } from '@nestjs/typeorm';
 import { IdempotencyKey } from '../entities/idempotency-key.entity';
 import { IdempotencyCleanupService } from './idempotency-cleanup.service';
 import { IdempotencyInterceptor } from './idempotency.interceptor';
+import { SchedulerLockService } from '../locks/scheduler-lock.service';
 
 /**
  * Global so `@Idempotent(scope)` (which references IdempotencyInterceptor
@@ -13,7 +14,11 @@ import { IdempotencyInterceptor } from './idempotency.interceptor';
 @Global()
 @Module({
   imports: [TypeOrmModule.forFeature([IdempotencyKey])],
-  providers: [IdempotencyInterceptor, IdempotencyCleanupService],
-  exports: [IdempotencyInterceptor],
+  providers: [
+    IdempotencyInterceptor,
+    IdempotencyCleanupService,
+    SchedulerLockService,
+  ],
+  exports: [IdempotencyInterceptor, SchedulerLockService],
 })
 export class IdempotencyModule {}

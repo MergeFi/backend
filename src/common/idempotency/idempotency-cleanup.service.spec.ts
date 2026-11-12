@@ -1,7 +1,11 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { getRepositoryToken } from '@nestjs/typeorm';
-import { LessThan } from 'typeorm';
+import { LessThan, Repository } from 'typeorm';
 import { IdempotencyKey } from '../entities/idempotency-key.entity';
+import {
+  SchedulerLockId,
+  SchedulerLockService,
+} from '../locks/scheduler-lock.service';
 import { IdempotencyCleanupService } from './idempotency-cleanup.service';
 
 interface DeleteCriteria {
@@ -45,5 +49,27 @@ describe('IdempotencyCleanupService', () => {
     repo.delete.mockResolvedValue({ affected: 0 });
 
     await expect(service.removeExpired()).resolves.toBeUndefined();
+  });
+
+  it('delegates execution to schedulerLockService.withSchedulerLock with IDEMPOTENCY_CLEANUP', async () => {
+    const mockLockService = {
+      withSchedulerLock: jest
+        .fn()
+        .mockImplementation((_lockId, _name, fn) => fn()),
+    };
+    const serviceWithLock = new IdempotencyCleanupService(
+      repo as unknown as Repository<IdempotencyKey>,
+      mockLockService as unknown as SchedulerLockService,
+    );
+    repo.delete.mockResolvedValue({ affected: 2 });
+
+    await serviceWithLock.removeExpired();
+
+    expect(mockLockService.withSchedulerLock).toHaveBeenCalledWith(
+      SchedulerLockId.IDEMPOTENCY_CLEANUP,
+      'cleanup',
+      expect.any(Function),
+    );
+    expect(repo.delete).toHaveBeenCalledTimes(1);
   });
 });
