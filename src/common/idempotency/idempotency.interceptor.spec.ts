@@ -263,6 +263,30 @@ describe('IdempotencyInterceptor', () => {
     expect(next.handle).toHaveBeenCalledTimes(2);
   });
 
+  it('does not cache a generic Error outcome, so a retry re-executes the handler', async () => {
+    let calls = 0;
+    const next = createNext(() => {
+      calls += 1;
+      if (calls === 1) {
+        return throwError(() => new Error('boom'));
+      }
+      return of({ ok: true });
+    });
+    const context = createContext({ headers: { 'idempotency-key': KEY_A } });
+
+    await expect(
+      firstValueFrom(await interceptor.intercept(context, next)),
+    ).rejects.toThrow('boom');
+    expect(repo.rows).toHaveLength(0);
+
+    const retryResult = await lastValueFrom(
+      await interceptor.intercept(context, next),
+    );
+
+    expect(retryResult).toEqual({ ok: true });
+    expect(next.handle).toHaveBeenCalledTimes(2);
+  });
+
   it('caches a 4xx outcome and replays the same exception on retry without re-executing', async () => {
     const next = createNext(() =>
       throwError(() => new BadRequestException('insufficient funds')),
