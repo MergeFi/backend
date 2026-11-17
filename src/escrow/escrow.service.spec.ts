@@ -204,7 +204,8 @@ describe('EscrowService', () => {
     });
 
     it('marks the escrow FAILED and rethrows when the contract call fails', async () => {
-      soroban.invoke.mockRejectedValueOnce(new Error('simulation failed'));
+      const invokeError = new Error('simulation failed');
+      soroban.invoke.mockRejectedValueOnce(invokeError);
 
       await expect(
         service.fund({
@@ -213,18 +214,22 @@ describe('EscrowService', () => {
           funderAddress: 'G...',
           bountyId: 'bounty-1',
         }),
-      ).rejects.toThrow('simulation failed');
+      ).rejects.toThrow(invokeError);
 
       const savedCalls = (
         escrowRepo.save.mock.calls as [Partial<Escrow>][]
       ).map((c) => c[0]);
+      const last = savedCalls[savedCalls.length - 1];
+      expect(last.status).toBe(EscrowStatus.FAILED);
+      expect(last.metadata).toEqual({ error: 'simulation failed' });
       expect(savedCalls.some((e) => e.status === EscrowStatus.FAILED)).toBe(
         true,
       );
     });
 
     it('keeps the escrow PENDING with the tx hash when the poll times out (#527)', async () => {
-      soroban.invoke.mockRejectedValueOnce(new SorobanPendingError('tx-abc'));
+      const pendingError = new SorobanPendingError('tx-abc');
+      soroban.invoke.mockRejectedValueOnce(pendingError);
 
       await expect(
         service.fund({
@@ -233,7 +238,7 @@ describe('EscrowService', () => {
           funderAddress: 'G...',
           bountyId: 'bounty-1',
         }),
-      ).rejects.toBeInstanceOf(SorobanPendingError);
+      ).rejects.toThrow(pendingError);
 
       const savedCalls = (
         escrowRepo.save.mock.calls as [Partial<Escrow>][]
@@ -241,17 +246,24 @@ describe('EscrowService', () => {
       const last = savedCalls[savedCalls.length - 1];
       expect(last.status).toBe(EscrowStatus.PENDING);
       expect(last.fundTxHash).toBe('tx-abc');
+      expect(last.metadata).toEqual({
+        pending: {
+          txHash: 'tx-abc',
+          at: expect.any(String),
+        },
+      });
       expect(savedCalls.every((e) => e.status !== EscrowStatus.FAILED)).toBe(
         true,
       );
     });
 
     it('keeps the escrow LOCKED when the on-chain call succeeded but the local write failed (#302, #42)', async () => {
+      const saveError = new Error('connection terminated unexpectedly');
       // First save (the PENDING row) succeeds; the post-invoke save fails —
       // exactly the post-on-chain-success failure #42 describes.
       escrowRepo.save
         .mockResolvedValueOnce({ id: 'escrow-1' } as Partial<Escrow>)
-        .mockRejectedValueOnce(new Error('connection terminated unexpectedly'));
+        .mockRejectedValueOnce(saveError);
 
       await expect(
         service.fund({
@@ -260,7 +272,7 @@ describe('EscrowService', () => {
           funderAddress: 'G...',
           bountyId: 'bounty-1',
         }),
-      ).rejects.toThrow('connection terminated unexpectedly');
+      ).rejects.toThrow(saveError);
 
       // The row must never be marked FAILED: the funds really are locked.
       const savedCalls = (
@@ -278,18 +290,27 @@ describe('EscrowService', () => {
       const retry = savedCalls[savedCalls.length - 1];
       expect(retry.status).toBe(EscrowStatus.LOCKED);
       expect(retry.fundTxHash).toBe('tx-hash-123');
-      expect(retry.metadata).toEqual(
-        expect.objectContaining({
-          lastFailure: expect.objectContaining({ operation: 'fund' }),
-        }),
-      );
+      expect(retry.metadata).toEqual({
+        fund: {
+          txHash: 'tx-hash-123',
+          ledger: 42,
+          returnValue: null,
+          status: 'SUCCESS',
+        },
+        lastFailure: {
+          operation: 'fund',
+          error: 'connection terminated unexpectedly',
+          at: expect.any(String),
+        },
+      });
     });
 
     it('surfaces the original error when the post-invoke retry also fails (#302)', async () => {
       // PENDING row persists, then every post-invoke write fails too.
+      const saveError = new Error('pool exhausted');
       escrowRepo.save
         .mockResolvedValueOnce({ id: 'escrow-1' } as Partial<Escrow>)
-        .mockRejectedValue(new Error('pool exhausted'));
+        .mockRejectedValue(saveError);
 
       await expect(
         service.fund({
@@ -298,7 +319,7 @@ describe('EscrowService', () => {
           funderAddress: 'G...',
           bountyId: 'bounty-1',
         }),
-      ).rejects.toThrow('pool exhausted');
+      ).rejects.toThrow(saveError);
 
       const savedCalls = (
         escrowRepo.save.mock.calls as [Partial<Escrow>][]
@@ -306,6 +327,22 @@ describe('EscrowService', () => {
       expect(savedCalls.some((e) => e.status === EscrowStatus.FAILED)).toBe(
         false,
       );
+      const retry = savedCalls[savedCalls.length - 1];
+      expect(retry.status).toBe(EscrowStatus.LOCKED);
+      expect(retry.fundTxHash).toBe('tx-hash-123');
+      expect(retry.metadata).toEqual({
+        fund: {
+          txHash: 'tx-hash-123',
+          ledger: 42,
+          returnValue: null,
+          status: 'SUCCESS',
+        },
+        lastFailure: {
+          operation: 'fund',
+          error: 'pool exhausted',
+          at: expect.any(String),
+        },
+      });
     });
 
     it.each([
