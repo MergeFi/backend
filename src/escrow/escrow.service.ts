@@ -141,7 +141,8 @@ export class EscrowService {
       throw err;
     }
 
-    escrow.status = EscrowStatus.LOCKED;
+    const isDryRun = result.status === 'DRY_RUN';
+    escrow.status = isDryRun ? EscrowStatus.DRY_RUN : EscrowStatus.LOCKED;
     escrow.fundTxHash = result.txHash;
     escrow.lockedAt = new Date();
     escrow.metadata = { fund: result };
@@ -199,7 +200,8 @@ export class EscrowService {
       // Payment-insert failure can never leave a permanently-mismarked escrow
       // with no record of who was paid (#154). The lock makes that whole span
       // one indivisible unit.
-      escrow.status = EscrowStatus.RELEASED;
+      const isDryRun = result.status === 'DRY_RUN';
+      escrow.status = isDryRun ? EscrowStatus.DRY_RUN : EscrowStatus.RELEASED;
       escrow.releaseTxHash = result.txHash;
       escrow.releasedAt = new Date();
       await manager.save(Escrow, escrow);
@@ -212,7 +214,7 @@ export class EscrowService {
           recipientAddress,
           amount: escrow.amount,
           asset: escrow.asset,
-          status: PaymentStatus.CONFIRMED,
+          status: isDryRun ? PaymentStatus.DRY_RUN : PaymentStatus.CONFIRMED,
           txHash: result.txHash,
         }),
       );
@@ -263,8 +265,9 @@ export class EscrowService {
       // is written in one transaction, so a mid-loop insert failure can no
       // longer leave a RELEASED escrow with only some recipients recorded
       // (#154) — and the row lock makes that span indivisible (#303).
+      const isDryRun = result.status === 'DRY_RUN';
       const payments: Payment[] = [];
-      escrow.status = EscrowStatus.RELEASED;
+      escrow.status = isDryRun ? EscrowStatus.DRY_RUN : EscrowStatus.RELEASED;
       escrow.releaseTxHash = result.txHash;
       escrow.releasedAt = new Date();
       escrow.metadata = { ...(escrow.metadata ?? {}), splitRelease: result };
@@ -281,7 +284,7 @@ export class EscrowService {
             amount: stroopsToAmount(shares[i]),
             asset: escrow.asset,
             splitPercentage: (bps[i] / 100).toFixed(2),
-            status: PaymentStatus.CONFIRMED,
+            status: isDryRun ? PaymentStatus.DRY_RUN : PaymentStatus.CONFIRMED,
             txHash: result.txHash,
           }),
         );
@@ -359,6 +362,7 @@ export class EscrowService {
         // release() and splitRelease() (#154). When an outer `manager` is
         // supplied, reuse it so the caller's transaction also covers these
         // writes and this call's row lock (#254, #303).
+        const isDryRun = result.status === 'DRY_RUN';
         const payment = await mgr.save(
           Payment,
           this.paymentRepo.create({
@@ -367,13 +371,13 @@ export class EscrowService {
             recipientAddress,
             amount,
             asset: escrow.asset,
-            status: PaymentStatus.CONFIRMED,
+            status: isDryRun ? PaymentStatus.DRY_RUN : PaymentStatus.CONFIRMED,
             txHash: result.txHash,
           }),
         );
 
         if (releasedSoFarStroops + requestedStroops >= escrowStroops) {
-          escrow.status = EscrowStatus.RELEASED;
+          escrow.status = isDryRun ? EscrowStatus.DRY_RUN : EscrowStatus.RELEASED;
           escrow.releaseTxHash = result.txHash;
           escrow.releasedAt = new Date();
           await mgr.save(Escrow, escrow);
@@ -423,6 +427,7 @@ export class EscrowService {
       ),
     );
 
+    const isDryRun = result.status === 'DRY_RUN';
     return this.paymentRepo.save(
       this.paymentRepo.create({
         escrowId: escrow.id,
@@ -430,7 +435,7 @@ export class EscrowService {
         recipientAddress,
         amount,
         asset: escrow.asset,
-        status: PaymentStatus.CONFIRMED,
+        status: isDryRun ? PaymentStatus.DRY_RUN : PaymentStatus.CONFIRMED,
         txHash: result.txHash,
       }),
     );
@@ -450,7 +455,8 @@ export class EscrowService {
       ),
     );
 
-    escrow.status = EscrowStatus.REFUNDED;
+    const isDryRun = result.status === 'DRY_RUN';
+    escrow.status = isDryRun ? EscrowStatus.DRY_RUN : EscrowStatus.REFUNDED;
     escrow.refundTxHash = result.txHash;
     escrow.refundedAt = new Date();
     return this.escrowRepo.save(escrow);
@@ -503,7 +509,10 @@ export class EscrowService {
   }
 
   private assertLocked(escrow: Escrow) {
-    if (escrow.status !== EscrowStatus.LOCKED) {
+    if (
+      escrow.status !== EscrowStatus.LOCKED &&
+      escrow.status !== EscrowStatus.DRY_RUN
+    ) {
       throw new BadRequestException(
         `Escrow ${escrow.id} is not in LOCKED state (current: ${escrow.status})`,
       );

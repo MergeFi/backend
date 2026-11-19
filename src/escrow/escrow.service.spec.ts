@@ -1144,4 +1144,53 @@ describe('EscrowService', () => {
       ).rejects.toThrow('FK violation on recipient 2');
     });
   });
+
+  describe('dry-run execution (#752)', () => {
+    it('marks the escrow DRY_RUN when fund produces a dry-run result', async () => {
+      soroban.invoke.mockResolvedValueOnce({
+        txHash: 'dry-run-fund-12345',
+        ledger: null,
+        returnValue: null,
+        status: 'DRY_RUN',
+      });
+
+      const escrow = await service.fund({
+        bountyId: 'bounty-dry-run',
+        funderAddress: 'GSPONSOR',
+        amount: '50',
+        asset: AssetType.USDC,
+      });
+
+      expect(escrow.status).toBe(EscrowStatus.DRY_RUN);
+      expect(escrow.fundTxHash).toBe('dry-run-fund-12345');
+    });
+
+    it('marks both escrow and payment DRY_RUN when release produces a dry-run result', async () => {
+      escrowRepo.findOne.mockResolvedValue({
+        id: 'escrow-dry',
+        status: EscrowStatus.DRY_RUN,
+        amount: '50',
+        asset: AssetType.USDC,
+        bountyId: 'bounty-dry',
+      });
+      soroban.invoke.mockResolvedValueOnce({
+        txHash: 'dry-run-release-12345',
+        ledger: null,
+        returnValue: null,
+        status: 'DRY_RUN',
+      });
+
+      const savedPayment: Partial<Payment>[] = [];
+      paymentRepo.create.mockImplementation((dto) => dto);
+      paymentRepo.save.mockImplementation((p) => {
+        savedPayment.push(p);
+        return Promise.resolve(p);
+      });
+
+      const escrow = await service.release('escrow-dry', 'GRECIPIENT');
+
+      expect(escrow.status).toBe(EscrowStatus.DRY_RUN);
+      expect(savedPayment[0]?.status).toBe(PaymentStatus.DRY_RUN);
+    });
+  });
 });

@@ -29,6 +29,10 @@ const validProduction = (): Config => ({
     ...configuration().stellar,
     escrowContractId: 'CESCROW',
     treasurySecret: 'STREASURY',
+    assetContractIds: {
+      USDC: 'CUSDC',
+      XLM: 'CXLM',
+    },
   },
 });
 
@@ -55,6 +59,8 @@ describe('collectConfigIssues', () => {
     ['GITHUB_CLIENT_SECRET', (c: Config) => (c.github.clientSecret = '  ')],
     ['ESCROW_CONTRACT_ID', (c: Config) => (c.stellar.escrowContractId = '')],
     ['TREASURY_SECRET', (c: Config) => (c.stellar.treasurySecret = '')],
+    ['USDC_TOKEN_CONTRACT_ID', (c: Config) => (c.stellar.assetContractIds.USDC = '')],
+    ['XLM_TOKEN_CONTRACT_ID', (c: Config) => (c.stellar.assetContractIds.XLM = '')],
     ['JWT_SECRET', (c: Config) => (c.jwt.secret = '')],
   ])('flags a missing %s', (key, mutate) => {
     const config = validProduction();

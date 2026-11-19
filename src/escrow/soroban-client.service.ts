@@ -152,6 +152,15 @@ export class SorobanClientService {
     return this.stellar.escrowDeadlineSeconds;
   }
 
+  /** Whether simulated dry-run Soroban contract execution is explicitly enabled. */
+  isDryRunEnabled(): boolean {
+    return Boolean(this.stellar.dryRun);
+  }
+
+  private isProduction(): boolean {
+    return this.configService.get('env', { infer: true }) === 'production';
+  }
+
   private getTreasuryKeypair(): Keypair | null {
     if (!this.stellar.treasurySecret) return null;
     return Keypair.fromSecret(this.stellar.treasurySecret);
@@ -180,6 +189,16 @@ export class SorobanClientService {
     opts: { contractId?: string } = {},
   ): Promise<ContractInvocationResult> {
     if (!this.isConfigured()) {
+      if (this.isProduction()) {
+        throw new Error(
+          `Refusing to execute unconfigured Soroban contract invocation "${method}" in production.`,
+        );
+      }
+      if (!this.isDryRunEnabled()) {
+        throw new Error(
+          `Soroban is not configured (ESCROW_CONTRACT_ID/TREASURY_SECRET missing) and SOROBAN_DRY_RUN is not set to true. Refusing to silently dry-run "${method}".`,
+        );
+      }
       this.logger.warn(
         `Soroban not configured (ESCROW_CONTRACT_ID/TREASURY_SECRET missing) — ` +
           `dry-running "${method}" instead of submitting an on-chain transaction.`,
