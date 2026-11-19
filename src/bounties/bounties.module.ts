@@ -1,6 +1,6 @@
 import { Module } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
-import { Bounty, Team, User } from '../common/entities';
+import { Bounty, Issue, Team, User } from '../common/entities';
 import { IdempotencyKey } from '../common/entities/idempotency-key.entity';
 import { BountiesService } from './bounties.service';
 import { BountiesController } from './bounties.controller';
@@ -14,7 +14,9 @@ import { AuthModule } from '../auth/auth.module';
     // @UseGuards/@UseInterceptors class references on BountiesController —
     // see TeamsModule for why each needs its repository resolvable here
     // directly rather than only through an imported/global module.
-    TypeOrmModule.forFeature([Bounty, Team, User, IdempotencyKey]),
+    // Issue backs BountiesService.create's existence check; without it the
+    // module cannot resolve BountiesService and the app fails to boot (#848).
+    TypeOrmModule.forFeature([Bounty, Issue, Team, User, IdempotencyKey]),
     EscrowModule,
     AuthModule,
   ],
