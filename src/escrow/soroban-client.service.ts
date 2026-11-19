@@ -26,6 +26,18 @@ const POLL_ATTEMPTS =
   Math.ceil((SOROBAN_TX_TIMEOUT_SECONDS * 1000) / POLL_DELAY_MS) + 1;
 
 /**
+ * Worst-case wall-clock time for a single `invoke` call, in ms.
+ *
+ * Exported so the idempotency interceptor can derive its staleness window
+ * from this value rather than a hardcoded constant that silently falls out
+ * of sync when SOROBAN_TX_TIMEOUT_SECONDS changes (#810).
+ *
+ * This is the poll loop alone; real callers also pay getAccount/simulate/
+ * send latency, which the safety multiplier in STALE_PROCESSING_MS covers.
+ */
+export const POLL_CEILING_MS = POLL_ATTEMPTS * POLL_DELAY_MS;
+
+/**
  * The transaction was accepted (`sendTransaction` → PENDING) but had not
  * finalized when polling ran out. Its outcome is unknown, not failed: it may
  * still be included, so callers must not treat this as "nothing happened" (#527).
