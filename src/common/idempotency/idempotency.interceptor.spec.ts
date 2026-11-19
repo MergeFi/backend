@@ -15,6 +15,7 @@ import {
   IdempotencyInterceptor,
   STALE_PROCESSING_MS,
 } from './idempotency.interceptor';
+import { POLL_CEILING_MS } from '../../escrow/soroban-client.service';
 
 const PG_UNIQUE_VIOLATION = '23505';
 
@@ -574,5 +575,30 @@ describe('IdempotencyInterceptor', () => {
       ).rejects.toBeInstanceOf(ConflictException);
       expect(next.handle).toHaveBeenCalledTimes(1);
     });
+  });
+});
+
+// ─── Invariant: staleness window vs. poll ceiling (#810) ─────────────────────
+//
+// STALE_PROCESSING_MS must always comfortably exceed the worst-case poll
+// ceiling so that a legitimately slow (but not crashed) handler is never
+// reclaimed by a concurrent retry.  The minimum safe multiple is 2× — 1×
+// leaves no room for RPC latency on top of the poll loop itself.
+//
+// This test pins the relationship so that tuning SOROBAN_TX_TIMEOUT_SECONDS
+// never silently narrows the window below the safety threshold (#810).
+describe('STALE_PROCESSING_MS / POLL_CEILING_MS invariant (#810)', () => {
+  it('STALE_PROCESSING_MS is at least 2× the poll ceiling', () => {
+    expect(STALE_PROCESSING_MS).toBeGreaterThanOrEqual(POLL_CEILING_MS * 2);
+  });
+
+  it('POLL_CEILING_MS covers the full transaction timeout plus one poll interval', () => {
+    // The poll loop runs POLL_ATTEMPTS × POLL_DELAY_MS.  POLL_ATTEMPTS is
+    // ceil(TIMEOUT_MS / POLL_DELAY_MS) + 1, so POLL_CEILING_MS must be
+    // strictly greater than SOROBAN_TX_TIMEOUT_SECONDS × 1000.
+    const { SOROBAN_TX_TIMEOUT_SECONDS } = jest.requireActual<typeof import('../../escrow/soroban-client.service')>(
+      '../../escrow/soroban-client.service',
+    );
+    expect(POLL_CEILING_MS).toBeGreaterThan(SOROBAN_TX_TIMEOUT_SECONDS * 1000);
   });
 });
