@@ -65,6 +65,26 @@ export interface AppConfig {
      */
     escrowDeadlineSeconds: number;
   };
+  schedulers: {
+    /**
+     * Whether this process runs the hourly `@Cron` sweeps
+     * (`BountyExpiryScheduler`, `IdempotencyCleanupService`). Set
+     * `RUN_SCHEDULERS=false` on web replicas when a separate worker tier owns
+     * the schedulers (#831). See `parseSchedulersEnabled` for accepted values.
+     */
+    enabled: boolean;
+  };
+}
+
+/**
+ * `RUN_SCHEDULERS` is enabled unless explicitly switched off. `false`, `0`,
+ * `no` and `off` (case-insensitive, surrounding whitespace ignored) disable
+ * it, so a near-miss spelling such as `FALSE` no longer silently leaves the
+ * schedulers running on every replica (#831).
+ */
+export function parseSchedulersEnabled(raw: string | undefined): boolean {
+  if (raw === undefined) return true;
+  return !['false', '0', 'no', 'off'].includes(raw.trim().toLowerCase());
 }
 
 export default (): AppConfig => ({
@@ -122,5 +142,8 @@ export default (): AppConfig => ({
       process.env.ESCROW_DEADLINE_SECONDS ?? '7776000',
       10,
     ),
+  },
+  schedulers: {
+    enabled: parseSchedulersEnabled(process.env.RUN_SCHEDULERS),
   },
 });

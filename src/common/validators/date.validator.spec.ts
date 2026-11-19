@@ -1,98 +1,120 @@
-import { validateSync } from 'class-validator';
+import 'reflect-metadata';
+import { plainToInstance, Type } from 'class-transformer';
+import { IsISO8601, IsOptional, validateSync } from 'class-validator';
 import { IsFutureDate } from './date.validator';
 
-class DeadlineDto {
+const NOW = new Date('2026-01-01T00:00:00.000Z');
+const FUTURE_ISO = '2026-06-01T12:00:00.000Z';
+const PAST_ISO = '2025-06-01T12:00:00.000Z';
+
+class FutureDateDto {
   @IsFutureDate()
-  deadline: unknown;
+  deadline!: unknown;
 }
 
-function errorsFor(value: unknown) {
-  const dto = new DeadlineDto();
-  dto.deadline = value;
-  return validateSync(dto);
+class CustomMessageDto {
+  @IsFutureDate({ message: 'pick a later date' })
+  deadline!: unknown;
 }
 
-const DAY_MS = 24 * 60 * 60 * 1000;
+/** Mirrors the deadline field on CreateBountyDto / CreateMilestoneDto. */
+class OptionalIsoDeadlineDto {
+  @IsOptional()
+  @IsISO8601()
+  @IsFutureDate()
+  deadline?: string;
+}
+
+/** A deadline transformed to a Date, as on FundEscrowDto (#743). */
+class TransformedDeadlineDto {
+  @Type(() => Date)
+  @IsFutureDate()
+  deadline!: Date;
+}
+
+function errorsFor<T extends object>(
+  cls: new () => T,
+  plain: Record<string, unknown>,
+) {
+  return validateSync(plainToInstance(cls, plain));
+}
 
 describe('IsFutureDate', () => {
-  describe('accepts', () => {
-    it('an ISO-8601 string in the future', () => {
-      const future = new Date(Date.now() + DAY_MS).toISOString();
-      expect(errorsFor(future)).toHaveLength(0);
-    });
+  beforeAll(() => {
+    jest.useFakeTimers();
+    jest.setSystemTime(NOW);
+  });
 
-    it('an ISO-8601 date-only string in the future', () => {
-      expect(errorsFor('2999-01-01')).toHaveLength(0);
+  afterAll(() => {
+    jest.useRealTimers();
+  });
+
+  describe('accepts', () => {
+    it.each([
+      ['a full ISO-8601 timestamp', FUTURE_ISO],
+      ['an ISO-8601 timestamp with offset', '2026-06-01T12:00:00+02:00'],
+      ['a date-only ISO-8601 string', '2026-06-01'],
+    ])('%s in the future', (_label, deadline) => {
+      expect(errorsFor(FutureDateDto, { deadline })).toHaveLength(0);
     });
 
     it('a Date instance in the future', () => {
-      expect(errorsFor(new Date(Date.now() + DAY_MS))).toHaveLength(0);
+      expect(
+        errorsFor(FutureDateDto, { deadline: new Date(FUTURE_ISO) }),
+      ).toHaveLength(0);
+    });
+
+    it('a deadline transformed with @Type(() => Date)', () => {
+      expect(
+        errorsFor(TransformedDeadlineDto, { deadline: FUTURE_ISO }),
+      ).toHaveLength(0);
+    });
+
+    it('an omitted optional deadline', () => {
+      expect(errorsFor(OptionalIsoDeadlineDto, {})).toHaveLength(0);
     });
   });
 
   describe('rejects', () => {
-    it('an ISO-8601 string in the past', () => {
-      const past = new Date(Date.now() - DAY_MS).toISOString();
-      expect(errorsFor(past)).toHaveLength(1);
+    it.each([
+      ['a past ISO-8601 string', PAST_ISO],
+      ['the current instant (strictly in the future)', NOW.toISOString()],
+      ['a past Date instance', new Date(PAST_ISO)],
+      ['an empty string', ''],
+      ['a whitespace-only string', '   '],
+      ['a malformed string', 'not-a-date'],
+      ['an impossible calendar date', '2026-13-45'],
+      ['a numeric timestamp (ms)', new Date(FUTURE_ISO).getTime()],
+      ['a numeric-string timestamp', String(new Date(FUTURE_ISO).getTime())],
+      ['an invalid Date instance', new Date('nope')],
+      ['null', null],
+      ['undefined', undefined],
+      ['a boolean', true],
+      ['an object', { date: FUTURE_ISO }],
+    ])('%s', (_label, deadline) => {
+      const errors = errorsFor(FutureDateDto, { deadline });
+      expect(errors).toHaveLength(1);
+      expect(errors[0].constraints).toHaveProperty('isFutureDate');
     });
 
-    it('a Date instance in the past', () => {
-      expect(errorsFor(new Date(Date.now() - DAY_MS))).toHaveLength(1);
-    });
-
-    it('the current instant (must be strictly in the future)', () => {
-      jest.useFakeTimers({ now: new Date('2030-01-01T00:00:00.000Z') });
-      try {
-        expect(errorsFor('2030-01-01T00:00:00.000Z')).toHaveLength(1);
-      } finally {
-        jest.useRealTimers();
-      }
-    });
-
-    it('an empty or whitespace-only string', () => {
-      expect(errorsFor('')).toHaveLength(1);
-      expect(errorsFor('   ')).toHaveLength(1);
-    });
-
-    it('a malformed string', () => {
-      expect(errorsFor('not-a-date')).toHaveLength(1);
-      expect(errorsFor('2999-13-45')).toHaveLength(1);
-    });
-
-    it('an invalid Date instance', () => {
-      expect(errorsFor(new Date('nope'))).toHaveLength(1);
-    });
-
-    it('a numeric timestamp, even one in the future', () => {
-      expect(errorsFor(Date.now() + DAY_MS)).toHaveLength(1);
-    });
-
-    it('null, undefined, booleans and objects', () => {
-      expect(errorsFor(null)).toHaveLength(1);
-      expect(errorsFor(undefined)).toHaveLength(1);
-      expect(errorsFor(true)).toHaveLength(1);
-      expect(errorsFor({})).toHaveLength(1);
+    it('a past date on a field transformed with @Type(() => Date)', () => {
+      const errors = errorsFor(TransformedDeadlineDto, { deadline: PAST_ISO });
+      expect(errors[0].constraints).toHaveProperty('isFutureDate');
     });
   });
 
-  describe('error message', () => {
-    it('names the property and reports the isFutureDate constraint', () => {
-      const [error] = errorsFor('2000-01-01T00:00:00.000Z');
+  describe('message', () => {
+    it('names the property in the default message', () => {
+      const [error] = errorsFor(FutureDateDto, { deadline: PAST_ISO });
       expect(error.property).toBe('deadline');
-      expect(error.constraints).toEqual({
-        isFutureDate: 'deadline must be a date strictly in the future',
-      });
+      expect(error.constraints?.isFutureDate).toBe(
+        'deadline must be a date strictly in the future',
+      );
     });
 
     it('honours a custom message from ValidationOptions', () => {
-      class CustomMessageDto {
-        @IsFutureDate({ message: 'pick a later date' })
-        dueAt: unknown;
-      }
-      const dto = new CustomMessageDto();
-      dto.dueAt = '2000-01-01';
-      const [error] = validateSync(dto);
-      expect(error.constraints).toEqual({ isFutureDate: 'pick a later date' });
+      const [error] = errorsFor(CustomMessageDto, { deadline: PAST_ISO });
+      expect(error.constraints?.isFutureDate).toBe('pick a later date');
     });
   });
 });

@@ -13,9 +13,9 @@ export function IsFutureDate(validationOptions?: ValidationOptions) {
       options: validationOptions,
       validator: {
         validate(value: unknown) {
-          // Accept an already-transformed Date (a DTO using @Type(() => Date))
-          // as well as the raw string. Numbers are rejected rather than read
-          // as epoch milliseconds (#818).
+          // Accept a Date as well as a string so the decorator still works on
+          // a field that is also transformed with `@Type(() => Date)` (#743).
+          // Numbers are rejected: an epoch timestamp is ambiguous (s vs ms).
           let date: Date;
           if (value instanceof Date) date = value;
           else if (typeof value === 'string' && value.trim() !== '')

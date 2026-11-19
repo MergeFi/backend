@@ -1,3 +1,4 @@
+import { ConfigService } from '@nestjs/config';
 import { Test, TestingModule } from '@nestjs/testing';
 import { getRepositoryToken } from '@nestjs/typeorm';
 import { LessThan } from 'typeorm';
@@ -13,8 +14,10 @@ describe('IdempotencyCleanupService', () => {
   let repo: {
     delete: jest.Mock<Promise<{ affected: number }>, [DeleteCriteria]>;
   };
+  let configService: { get: jest.Mock };
 
   beforeEach(async () => {
+    configService = { get: jest.fn().mockReturnValue({ enabled: true }) };
     repo = {
       delete: jest
         .fn<Promise<{ affected: number }>, [DeleteCriteria]>()
@@ -25,6 +28,7 @@ describe('IdempotencyCleanupService', () => {
       providers: [
         IdempotencyCleanupService,
         { provide: getRepositoryToken(IdempotencyKey), useValue: repo },
+        { provide: ConfigService, useValue: configService },
       ],
     }).compile();
 
@@ -45,5 +49,16 @@ describe('IdempotencyCleanupService', () => {
     repo.delete.mockResolvedValue({ affected: 0 });
 
     await expect(service.removeExpired()).resolves.toBeUndefined();
+  });
+
+  it('skips cleanup when schedulers are disabled (RUN_SCHEDULERS)', async () => {
+    configService.get.mockReturnValue({ enabled: false });
+
+    await service.removeExpired();
+
+    expect(configService.get).toHaveBeenCalledWith('schedulers', {
+      infer: true,
+    });
+    expect(repo.delete).not.toHaveBeenCalled();
   });
 });

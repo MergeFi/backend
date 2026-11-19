@@ -1,4 +1,4 @@
-import configuration from './configuration';
+import configuration, { parseSchedulersEnabled } from './configuration';
 
 const ENV_KEYS = [
   'NODE_ENV',
@@ -16,6 +16,8 @@ const ENV_KEYS = [
   'ESCROW_DEADLINE_SECONDS',
   'USDC_TOKEN_CONTRACT_ID',
   'XLM_TOKEN_CONTRACT_ID',
+  'GITHUB_SYNC_ALLOWED_REPOS',
+  'RUN_SCHEDULERS',
 ];
 
 describe('configuration', () => {
@@ -93,5 +95,45 @@ describe('configuration', () => {
     it('is empty when neither is set', () => {
       expect(configuration().stellar.maintenancePoolContractId).toBe('');
     });
+  });
+
+  describe('github.syncAllowedRepos', () => {
+    it('is empty when GITHUB_SYNC_ALLOWED_REPOS is unset', () => {
+      expect(configuration().github.syncAllowedRepos).toBe('');
+    });
+
+    it('passes GITHUB_SYNC_ALLOWED_REPOS through verbatim', () => {
+      process.env.GITHUB_SYNC_ALLOWED_REPOS = 'MergeFi/backend, MergeFi/web';
+      expect(configuration().github.syncAllowedRepos).toBe(
+        'MergeFi/backend, MergeFi/web',
+      );
+    });
+  });
+
+  describe('schedulers.enabled', () => {
+    it('is enabled when RUN_SCHEDULERS is unset', () => {
+      expect(configuration().schedulers.enabled).toBe(true);
+    });
+
+    it('is disabled by RUN_SCHEDULERS=false', () => {
+      process.env.RUN_SCHEDULERS = 'false';
+      expect(configuration().schedulers.enabled).toBe(false);
+    });
+  });
+
+  describe('parseSchedulersEnabled', () => {
+    it.each(['false', 'FALSE', ' False ', '0', 'no', 'NO', 'off', 'Off'])(
+      'treats %p as disabled',
+      (raw) => {
+        expect(parseSchedulersEnabled(raw)).toBe(false);
+      },
+    );
+
+    it.each([undefined, '', 'true', 'TRUE', '1', 'yes', 'on'])(
+      'treats %p as enabled',
+      (raw) => {
+        expect(parseSchedulersEnabled(raw)).toBe(true);
+      },
+    );
   });
 });

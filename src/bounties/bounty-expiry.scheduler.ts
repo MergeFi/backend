@@ -1,6 +1,8 @@
 import { Injectable, Logger, Optional } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import { DataSource } from 'typeorm';
+import { AppConfig } from '../config/configuration';
 import { BountiesService } from './bounties.service';
 
 /**
@@ -21,12 +23,13 @@ export class BountyExpiryScheduler {
 
   constructor(
     private readonly bountiesService: BountiesService,
+    private readonly configService: ConfigService<AppConfig, true>,
     @Optional() private readonly dataSource?: DataSource,
   ) {}
 
   @Cron(CronExpression.EVERY_HOUR)
   async sweepOverdueBounties(): Promise<void> {
-    if (process.env.RUN_SCHEDULERS === 'false') {
+    if (!this.configService.get('schedulers', { infer: true }).enabled) {
       return;
     }
 

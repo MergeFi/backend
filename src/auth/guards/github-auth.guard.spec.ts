@@ -8,73 +8,79 @@ import {
 import { ConfigService } from '@nestjs/config';
 import { PassportModule } from '@nestjs/passport';
 import { Test } from '@nestjs/testing';
-import type { Request } from 'express';
+import { Request } from 'express';
 import request from 'supertest';
+import { App } from 'supertest/types';
 import { GithubStrategy } from '../strategies/github.strategy';
 import { GithubAuthGuard } from './github-auth.guard';
 
-const CLIENT_ID = 'guard-spec-client-id';
 const CALLBACK_URL = 'http://localhost:4000/api/auth/github/callback';
 
-/** Stands in for AuthController: records whether the guarded handler ran. */
-const handlerCalls: unknown[] = [];
+const handlerSpy = jest.fn();
 
+/** Stand-in for AuthController's two GitHub routes. */
 @Controller('auth')
 class OAuthController {
   @Get('github')
   @UseGuards(GithubAuthGuard)
-  login() {
-    handlerCalls.push('login');
+  githubLogin() {
+    handlerSpy('login');
   }
 
   @Get('github/callback')
   @UseGuards(GithubAuthGuard)
-  callback(@Req() req: Request) {
-    handlerCalls.push(req.user);
-    return { user: req.user };
+  githubCallback(@Req() req: Request) {
+    handlerSpy('callback', req.user);
+    return req.user;
   }
 }
 
-/** The pieces of passport-oauth2's internals the callback tests stub out. */
-interface OAuth2Internals {
+type TokenCallback = (
+  err: { statusCode: number; data?: string } | null,
+  accessToken?: string,
+  refreshToken?: string,
+  params?: Record<string, unknown>,
+) => void;
+
+/** The parts of passport-oauth2's internals stubbed to avoid network calls. */
+interface StubbableStrategy {
   _oauth2: {
     getOAuthAccessToken: (
       code: string,
-      params: unknown,
-      cb: (err: unknown, accessToken?: string, refreshToken?: string) => void,
+      params: Record<string, unknown>,
+      cb: TokenCallback,
     ) => void;
   };
   userProfile: (
     accessToken: string,
-    done: (err: unknown, profile?: unknown) => void,
+    done: (err: Error | null, profile?: unknown) => void,
   ) => void;
 }
 
 /**
- * Exercises the real GithubAuthGuard + GithubStrategy over HTTP (#820).
- * github.strategy.spec.ts covers the strategy's validate(); this pins what
- * the guard lets through to AuthController.githubCallback (and therefore to
- * loginWithGithub) and what it stops.
+ * Exercises GithubAuthGuard end-to-end through the real GithubStrategy, with
+ * only the GitHub token exchange and profile fetch stubbed (#820). This guard
+ * is the only thing between an arbitrary `?code=` and loginWithGithub.
  */
 describe('GithubAuthGuard', () => {
-  let app: INestApplication;
-  let strategy: OAuth2Internals;
-  let getOAuthAccessToken: jest.SpyInstance;
-  let userProfile: jest.SpyInstance;
+  let app: INestApplication<App>;
+  let strategy: StubbableStrategy;
+  let exchangeCode: jest.Mock;
+  let fetchProfile: jest.Mock;
 
   beforeAll(async () => {
     const moduleRef = await Test.createTestingModule({
       imports: [PassportModule],
       controllers: [OAuthController],
       providers: [
-        GithubAuthGuard,
         GithubStrategy,
+        GithubAuthGuard,
         {
           provide: ConfigService,
           useValue: {
-            get: () => ({
-              clientId: CLIENT_ID,
-              clientSecret: 'guard-spec-secret',
+            get: jest.fn().mockReturnValue({
+              clientId: 'test-client-id',
+              clientSecret: 'test-client-secret',
               oauthCallbackUrl: CALLBACK_URL,
             }),
           },
@@ -82,124 +88,140 @@ describe('GithubAuthGuard', () => {
       ],
     }).compile();
 
-    strategy = moduleRef.get<GithubStrategy, OAuth2Internals>(GithubStrategy);
-    app = moduleRef.createNestApplication();
+    strategy = moduleRef.get<StubbableStrategy>(GithubStrategy);
+    app = moduleRef.createNestApplication({ logger: false });
     await app.init();
   });
 
   beforeEach(() => {
-    handlerCalls.length = 0;
-    // Never reach github.com from a unit test.
-    getOAuthAccessToken = jest
-      .spyOn(strategy._oauth2, 'getOAuthAccessToken')
-      .mockImplementation((_code, _params, cb) =>
-        cb(new Error('token exchange should be stubbed per test')),
-      );
-    userProfile = jest
-      .spyOn(strategy, 'userProfile')
-      .mockImplementation((_token, done) =>
-        done(new Error('userProfile should be stubbed per test')),
-      );
-  });
-
-  afterEach(() => {
-    jest.restoreAllMocks();
+    handlerSpy.mockReset();
+    exchangeCode = jest.fn((_code: string, _params, cb: TokenCallback) =>
+      cb(null, 'gh-access-token', 'gh-refresh-token', {}),
+    );
+    fetchProfile = jest.fn(
+      (_token: string, done: (err: Error | null, profile?: unknown) => void) =>
+        done(null, {
+          id: '4242',
+          username: 'octocat',
+          emails: [{ value: 'octo@example.com' }],
+          photos: [{ value: 'https://avatars.example/octo.png' }],
+        }),
+    );
+    strategy._oauth2.getOAuthAccessToken = exchangeCode;
+    strategy.userProfile = fetchProfile;
   });
 
   afterAll(async () => {
     await app.close();
   });
 
-  function expectGithubAuthorizeRedirect(res: request.Response) {
+  function expectAuthorizeRedirect(res: request.Response) {
     expect(res.status).toBe(302);
     const location = new URL(res.headers.location);
     expect(`${location.origin}${location.pathname}`).toBe(
       'https://github.com/login/oauth/authorize',
     );
-    expect(location.searchParams.get('client_id')).toBe(CLIENT_ID);
+    expect(location.searchParams.get('client_id')).toBe('test-client-id');
     expect(location.searchParams.get('redirect_uri')).toBe(CALLBACK_URL);
-    expect(location.searchParams.get('response_type')).toBe('code');
     expect(location.searchParams.get('scope')).toBe('user:email,read:org');
+    expect(location.searchParams.get('response_type')).toBe('code');
   }
 
   describe('GET /auth/github (login)', () => {
-    it('redirects to the GitHub authorize URL without running the handler', async () => {
+    it('redirects to GitHub authorize without running the handler', async () => {
       const res = await request(app.getHttpServer()).get('/auth/github');
-      expectGithubAuthorizeRedirect(res);
-      expect(handlerCalls).toHaveLength(0);
+
+      expectAuthorizeRedirect(res);
+      expect(handlerSpy).not.toHaveBeenCalled();
+      expect(exchangeCode).not.toHaveBeenCalled();
     });
   });
 
   describe('GET /auth/github/callback', () => {
-    it('never reaches the handler when no code is supplied (bounces back to GitHub)', async () => {
+    it('never reaches the handler without a code (restarts the OAuth flow)', async () => {
       const res = await request(app.getHttpServer()).get(
         '/auth/github/callback',
       );
-      expectGithubAuthorizeRedirect(res);
-      expect(getOAuthAccessToken).not.toHaveBeenCalled();
-      expect(handlerCalls).toHaveLength(0);
+
+      expectAuthorizeRedirect(res);
+      expect(handlerSpy).not.toHaveBeenCalled();
+      expect(exchangeCode).not.toHaveBeenCalled();
     });
 
-    it('returns 401 when the user denied access on GitHub', async () => {
+    it('rejects with 401 when GitHub reports the user denied access', async () => {
       const res = await request(app.getHttpServer()).get(
         '/auth/github/callback?error=access_denied&error_description=denied',
       );
+
       expect(res.status).toBe(401);
-      expect(getOAuthAccessToken).not.toHaveBeenCalled();
-      expect(handlerCalls).toHaveLength(0);
+      expect(handlerSpy).not.toHaveBeenCalled();
+      expect(exchangeCode).not.toHaveBeenCalled();
     });
 
-    it('does not reach the handler when GitHub rejects the code', async () => {
-      const res = await request(app.getHttpServer()).get(
-        '/auth/github/callback?code=forged-code',
+    it('does not reach the handler when the code exchange fails', async () => {
+      exchangeCode.mockImplementation(
+        (_code: string, _params, cb: TokenCallback) =>
+          cb({ statusCode: 401, data: '{"error":"bad_verification_code"}' }),
       );
-      // passport-oauth2 reports a failed token exchange as InternalOAuthError,
-      // which is not an HttpException, so Nest answers 500. The handler (and
-      // loginWithGithub) is still never reached, which is what matters here.
-      expect(res.status).toBe(500);
-      expect(getOAuthAccessToken).toHaveBeenCalledWith(
-        'forged-code',
+
+      const res = await request(app.getHttpServer()).get(
+        '/auth/github/callback?code=forged',
+      );
+
+      expect(res.status).toBeGreaterThanOrEqual(400);
+      expect(exchangeCode).toHaveBeenCalledWith(
+        'forged',
         expect.anything(),
         expect.any(Function),
       );
-      expect(userProfile).not.toHaveBeenCalled();
-      expect(handlerCalls).toHaveLength(0);
+      expect(fetchProfile).not.toHaveBeenCalled();
+      expect(handlerSpy).not.toHaveBeenCalled();
     });
 
-    it('passes the mapped GitHub profile to the handler as req.user for a valid code', async () => {
-      getOAuthAccessToken.mockImplementation((_code, _params, cb) =>
-        cb(null, 'gh-access-token', 'gh-refresh-token'),
-      );
-      userProfile.mockImplementation((_token, done) =>
-        done(null, {
-          id: '42',
-          username: 'octocat',
-          emails: [{ value: 'octocat@example.com' }],
-          photos: [{ value: 'https://avatars.example/42' }],
-        }),
+    it('does not reach the handler when the profile fetch fails', async () => {
+      fetchProfile.mockImplementation(
+        (_token: string, done: (err: Error | null) => void) =>
+          done(new Error('profile fetch failed')),
       );
 
       const res = await request(app.getHttpServer()).get(
-        '/auth/github/callback?code=real-code',
+        '/auth/github/callback?code=good',
       );
 
-      expect(res.status).toBe(200);
+      expect(res.status).toBeGreaterThanOrEqual(400);
+      expect(handlerSpy).not.toHaveBeenCalled();
+    });
+
+    it('exchanges a valid code and hands the mapped profile to the handler', async () => {
+      const res = await request(app.getHttpServer()).get(
+        '/auth/github/callback?code=good',
+      );
+
       const expectedUser = {
-        githubId: '42',
+        githubId: '4242',
         username: 'octocat',
-        email: 'octocat@example.com',
-        avatarUrl: 'https://avatars.example/42',
+        email: 'octo@example.com',
+        avatarUrl: 'https://avatars.example/octo.png',
         accessToken: 'gh-access-token',
         refreshToken: 'gh-refresh-token',
       };
-      expect(res.body).toEqual({ user: expectedUser });
-      expect(handlerCalls).toEqual([expectedUser]);
+      expect(res.status).toBe(200);
+      expect(res.body).toEqual(expectedUser);
+      expect(exchangeCode).toHaveBeenCalledWith(
+        'good',
+        expect.objectContaining({ redirect_uri: CALLBACK_URL }),
+        expect.any(Function),
+      );
+      expect(handlerSpy).toHaveBeenCalledWith('callback', expectedUser);
     });
 
-    // Regression guard for the OAuth CSRF gap: once the strategy is
-    // configured with `state: true` (plus session/state-store support), these
-    // become real assertions that the guard refuses the callback.
-    it.todo('refuses a callback whose state parameter is missing');
-    it.todo('refuses a callback whose state does not match the issued one');
+    // Regression guard for the OAuth CSRF fix: once GithubStrategy is
+    // configured with `state: true`, a callback whose `state` is missing or
+    // does not match the one issued on /auth/github must be refused before
+    // the code is exchanged.
+    it.todo('rejects a callback with a missing state once state: true is set');
+    it.todo(
+      'rejects a callback with a mismatched state once state: true is set',
+    );
   });
 });

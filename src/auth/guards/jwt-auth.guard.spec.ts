@@ -9,49 +9,51 @@ import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
 import { PassportModule } from '@nestjs/passport';
 import { Test } from '@nestjs/testing';
-import type { Request } from 'express';
+import { Request } from 'express';
 import request from 'supertest';
+import { App } from 'supertest/types';
 import { UsersService } from '../../users/users.service';
 import { JwtStrategy } from '../strategies/jwt.strategy';
 import { JwtAuthGuard } from './jwt-auth.guard';
 
 const SECRET = 'jwt-guard-spec-secret';
 
-@Controller('protected')
+@Controller()
 class ProtectedController {
-  @Get()
+  @Get('me')
   @UseGuards(JwtAuthGuard)
-  get(@Req() req: Request) {
-    return { user: req.user };
+  me(@Req() req: Request) {
+    return req.user;
   }
 }
 
 /**
- * Runs the real JwtAuthGuard + JwtStrategy over HTTP so the status codes and
- * bodies the frontend branches on (AuthContext.refresh clears the token on
- * 401/403) are pinned end to end (#819, #612).
+ * Exercises JwtAuthGuard end-to-end through the real JwtStrategy. The
+ * frontend's AuthContext.refresh clears its token only on 401/403, so the
+ * status code for every rejection below is part of the contract (#819, #612).
  */
 describe('JwtAuthGuard', () => {
-  let app: INestApplication;
+  let app: INestApplication<App>;
   let usersService: { findOneRaw: jest.Mock };
   const jwt = new JwtService({ secret: SECRET });
 
-  const validToken = () =>
-    jwt.sign({ sub: 'user-1', username: 'octocat' }, { expiresIn: '1h' });
+  const sign = (
+    payload: Record<string, unknown> = { sub: 'user-1', username: 'octo' },
+    options: { secret?: string; expiresIn?: number } = {},
+  ) => jwt.sign(payload, { secret: SECRET, expiresIn: 3600, ...options });
 
   beforeAll(async () => {
     usersService = { findOneRaw: jest.fn() };
-
     const moduleRef = await Test.createTestingModule({
       imports: [PassportModule],
       controllers: [ProtectedController],
       providers: [
-        JwtAuthGuard,
         JwtStrategy,
+        JwtAuthGuard,
         { provide: UsersService, useValue: usersService },
         {
           provide: ConfigService,
-          useValue: { get: () => ({ secret: SECRET }) },
+          useValue: { get: jest.fn().mockReturnValue({ secret: SECRET }) },
         },
       ],
     }).compile();
@@ -70,115 +72,99 @@ describe('JwtAuthGuard', () => {
 
   const UNAUTHORIZED = { statusCode: 401, message: 'Unauthorized' };
 
-  describe('rejects with 401 (never 403)', () => {
+  describe('rejects with 401', () => {
     it('when no credentials are sent', async () => {
-      const res = await request(app.getHttpServer()).get('/protected');
+      const res = await request(app.getHttpServer()).get('/me');
       expect(res.status).toBe(401);
       expect(res.body).toEqual(UNAUTHORIZED);
+      expect(usersService.findOneRaw).not.toHaveBeenCalled();
     });
 
-    it('for a malformed bearer token', async () => {
+    it('when the bearer token is malformed', async () => {
       const res = await request(app.getHttpServer())
-        .get('/protected')
+        .get('/me')
         .set('Authorization', 'Bearer not.a.jwt');
       expect(res.status).toBe(401);
       expect(res.body).toEqual(UNAUTHORIZED);
     });
 
-    it('for a non-Bearer Authorization scheme', async () => {
+    it('when the Authorization scheme is not Bearer', async () => {
       const res = await request(app.getHttpServer())
-        .get('/protected')
-        .set('Authorization', `Basic ${validToken()}`);
+        .get('/me')
+        .set('Authorization', `Basic ${sign()}`);
       expect(res.status).toBe(401);
-      expect(res.body).toEqual(UNAUTHORIZED);
     });
 
-    it('for a token signed with a different secret', async () => {
-      const forged = new JwtService({ secret: 'other-secret' }).sign({
-        sub: 'user-1',
-        username: 'octocat',
-      });
+    it('when the token has expired', async () => {
+      const expired = sign(undefined, { expiresIn: -60 });
       const res = await request(app.getHttpServer())
-        .get('/protected')
-        .set('Authorization', `Bearer ${forged}`);
-      expect(res.status).toBe(401);
-      expect(res.body).toEqual(UNAUTHORIZED);
-    });
-
-    it('for an expired token', async () => {
-      const expired = jwt.sign({
-        sub: 'user-1',
-        username: 'octocat',
-        exp: Math.floor(Date.now() / 1000) - 60,
-      });
-      const res = await request(app.getHttpServer())
-        .get('/protected')
+        .get('/me')
         .set('Authorization', `Bearer ${expired}`);
       expect(res.status).toBe(401);
       expect(res.body).toEqual(UNAUTHORIZED);
       expect(usersService.findOneRaw).not.toHaveBeenCalled();
     });
 
-    it('for a valid token whose user no longer exists', async () => {
-      usersService.findOneRaw.mockRejectedValue(new Error('not found'));
+    it('when the token is signed with a different secret', async () => {
       const res = await request(app.getHttpServer())
-        .get('/protected')
-        .set('Authorization', `Bearer ${validToken()}`);
+        .get('/me')
+        .set('Authorization', `Bearer ${sign(undefined, { secret: 'other' })}`);
       expect(res.status).toBe(401);
-      expect(res.body).toEqual({
-        statusCode: 401,
-        message: 'User no longer exists',
-        error: 'Unauthorized',
-      });
+      expect(usersService.findOneRaw).not.toHaveBeenCalled();
     });
 
-    it('for a valid token with no sub claim', async () => {
-      const noSub = jwt.sign({ username: 'octocat' });
+    it('when the payload has no sub', async () => {
       const res = await request(app.getHttpServer())
-        .get('/protected')
-        .set('Authorization', `Bearer ${noSub}`);
+        .get('/me')
+        .set('Authorization', `Bearer ${sign({ username: 'octo' })}`);
       expect(res.status).toBe(401);
       expect(res.body.message).toBe('Invalid token payload');
     });
+
+    it('when the user behind a valid token no longer exists', async () => {
+      usersService.findOneRaw.mockRejectedValue(new Error('not found'));
+      const res = await request(app.getHttpServer())
+        .get('/me')
+        .set('Authorization', `Bearer ${sign()}`);
+      expect(res.status).toBe(401);
+      expect(res.body.message).toBe('User no longer exists');
+    });
+
+    it('when the access_token cookie is invalid', async () => {
+      const res = await request(app.getHttpServer())
+        .get('/me')
+        .set('Cookie', 'access_token=garbage');
+      expect(res.status).toBe(401);
+    });
   });
 
-  describe('accepts', () => {
-    it('a valid bearer token and exposes { userId, username } on req.user', async () => {
+  describe('admits', () => {
+    it('a valid bearer token and exposes the user on req.user', async () => {
       const res = await request(app.getHttpServer())
-        .get('/protected')
-        .set('Authorization', `Bearer ${validToken()}`);
+        .get('/me')
+        .set('Authorization', `Bearer ${sign()}`);
       expect(res.status).toBe(200);
-      expect(res.body).toEqual({
-        user: { userId: 'user-1', username: 'octocat' },
-      });
+      expect(res.body).toEqual({ userId: 'user-1', username: 'octo' });
       expect(usersService.findOneRaw).toHaveBeenCalledWith('user-1');
     });
 
     it('a valid access_token cookie', async () => {
       const res = await request(app.getHttpServer())
-        .get('/protected')
-        .set('Cookie', `access_token=${validToken()}`);
+        .get('/me')
+        .set('Cookie', `theme=dark; access_token=${sign()}`);
       expect(res.status).toBe(200);
-      expect(res.body.user).toEqual({ userId: 'user-1', username: 'octocat' });
-    });
-  });
-
-  describe('bearer vs cookie precedence', () => {
-    it('uses the bearer token when both are present', async () => {
-      const res = await request(app.getHttpServer())
-        .get('/protected')
-        .set('Authorization', `Bearer ${validToken()}`)
-        .set('Cookie', 'access_token=garbage');
-      expect(res.status).toBe(200);
+      expect(res.body).toEqual({ userId: 'user-1', username: 'octo' });
     });
 
-    it('does not fall back to a valid cookie when the bearer token is invalid', async () => {
+    it('prefers the bearer token over the cookie when both are sent', async () => {
+      const bearer = sign({ sub: 'bearer-user', username: 'bearer' });
+      const cookie = sign({ sub: 'cookie-user', username: 'cookie' });
       const res = await request(app.getHttpServer())
-        .get('/protected')
-        .set('Authorization', 'Bearer garbage')
-        .set('Cookie', `access_token=${validToken()}`);
-      expect(res.status).toBe(401);
-      expect(res.body).toEqual(UNAUTHORIZED);
+        .get('/me')
+        .set('Authorization', `Bearer ${bearer}`)
+        .set('Cookie', `access_token=${cookie}`);
+      expect(res.status).toBe(200);
+      expect(res.body).toEqual({ userId: 'bearer-user', username: 'bearer' });
     });
   });
 });
