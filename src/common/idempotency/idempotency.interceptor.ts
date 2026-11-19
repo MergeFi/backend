@@ -22,6 +22,7 @@ import type { QueryDeepPartialEntity } from 'typeorm';
 import { IdempotencyKey, JsonValue } from '../entities/idempotency-key.entity';
 import { IdempotencyKeyStatus } from '../enums';
 import { IDEMPOTENCY_SCOPE_KEY } from './idempotent.decorator';
+import { POLL_CEILING_MS } from '../../escrow/soroban-client.service';
 
 const UUID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -35,6 +36,18 @@ const UUID_PATTERN =
 export const IDEMPOTENCY_KEY_TTL_MS = 24 * 60 * 60 * 1000;
 
 /**
+ * Safety multiplier applied to `POLL_CEILING_MS` when computing
+ * `STALE_PROCESSING_MS`. The window must cover the full poll loop *plus*
+ * getAccount/simulate/send RPC round-trips; 3× leaves ~3x headroom over
+ * the poll ceiling itself (#810).
+ *
+ * Raising SOROBAN_TX_TIMEOUT_SECONDS (e.g. for congestion) automatically
+ * raises POLL_CEILING_MS and therefore this window, keeping the invariant
+ * STALE_PROCESSING_MS >= POLL_CEILING_MS * 2 intact without manual edits.
+ */
+const STALE_PROCESSING_SAFETY_FACTOR = 3;
+
+/**
  * A PROCESSING row older than this is treated as abandoned (the process
  * handling it almost certainly crashed rather than being merely slow) and
  * is reclaimed by the next request instead of permanently 409-ing.
@@ -42,14 +55,16 @@ export const IDEMPOTENCY_KEY_TTL_MS = 24 * 60 * 60 * 1000;
  * Must comfortably outlast the slowest legitimate handler: the escrow
  * mutations this interceptor guards go through
  * SorobanClientService.invoke → pollTransaction, which polls for the
- * transaction's full 60s time bound (31 × 2000ms, ~62s, #527) *on top of*
- * the getAccount/simulate/send RPC round-trips. A 30s window was shorter
- * than that worst case, letting a client retry reclaim a row whose original
- * request was still actively running and re-execute a concurrent
- * money-moving operation (#90). 180s leaves ~3x headroom over the poll
- * ceiling for RPC latency.
+ * transaction's full time bound (#527) *on top of* the getAccount/simulate/
+ * send RPC round-trips. A 30s window was shorter than that worst case,
+ * letting a client retry reclaim a row whose original request was still
+ * actively running and re-execute a concurrent money-moving operation (#90).
+ *
+ * Derived from POLL_CEILING_MS × STALE_PROCESSING_SAFETY_FACTOR instead of
+ * a hardcoded constant so that tuning SOROBAN_TX_TIMEOUT_SECONDS
+ * automatically propagates here and CI can assert the invariant (#810).
  */
-export const STALE_PROCESSING_MS = 180 * 1000;
+export const STALE_PROCESSING_MS = POLL_CEILING_MS * STALE_PROCESSING_SAFETY_FACTOR;
 
 /** Postgres SQLSTATE for unique_violation. */
 const PG_UNIQUE_VIOLATION = '23505';
