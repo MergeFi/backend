@@ -1,0 +1,31 @@
+# CODEOWNERS — paths requiring a named reviewer before merge.
+# See https://docs.github.com/articles/about-code-owners
+#
+# This repository holds the escrow orchestration, the OAuth token encryption
+# and the payout logic, so every path has an owner; the entries below the
+# catch-all call out the money and auth paths explicitly so they stay owned
+# even if the catch-all is later narrowed. Takes effect once "Require review
+# from Code Owners" is enabled in branch protection for main.
+
+* @chonilius
+
+# Money path: escrow, Soroban invocation, payouts, idempotency.
+/src/escrow/            @chonilius
+/src/bounties/          @chonilius
+/src/milestones/        @chonilius
+/src/maintenance-pool/  @chonilius
+/src/teams/             @chonilius
+/src/common/idempotency/ @chonilius
+
+# Auth, secrets and configuration.
+/src/auth/              @chonilius
+/src/config/            @chonilius
+/src/main.ts            @chonilius
+/src/app.module.ts      @chonilius
+
+# Schema and supply chain.
+/src/database/          @chonilius
+/package.json           @chonilius
+/package-lock.json      @chonilius
+/Dockerfile             @chonilius
+/.github/               @chonilius

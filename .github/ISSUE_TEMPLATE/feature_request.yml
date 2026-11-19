@@ -1,0 +1,36 @@
+name: Feature Request
+description: Suggest a new capability or an improvement to an existing one
+labels: ["enhancement", "needs-triage"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What is missing or painful today? Who hits it?
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: What should the backend do instead? Include API shape changes if any.
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Other approaches and why they were rejected.
+
+  - type: checkboxes
+    id: impact
+    attributes:
+      label: Impact
+      description: Tick everything this would touch.
+      options:
+        - label: Moves, locks or releases funds (escrow / Soroban)
+        - label: Changes the database schema (needs a migration)
+        - label: Changes a public API response or request shape
+        - label: Needs a matching change in MergeFi/frontend or MergeFi/contracts
