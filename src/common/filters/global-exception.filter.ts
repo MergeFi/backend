@@ -28,6 +28,13 @@ import { randomUUID } from 'crypto';
  *    while the full original error (message + stack) is always logged
  *    server-side at `error` level.
  *
+ * The one exception is 429. It is the only sub-500 status the app does not
+ * author itself: ThrottlerGuard throws it with a bare-string body and, for
+ * the named throttlers registered in AppModule, a suffixed
+ * `Retry-After-<name>` header. The frontend's rate-limit handling reads
+ * plain `Retry-After` and a JSON `message`, so both are normalised here
+ * (#842) — see {@link normaliseThrottledResponse}.
+ *
  * Registered globally in main.ts via `app.useGlobalFilters(...)` (#19).
  */
 @Catch()
@@ -40,6 +47,7 @@ export class GlobalExceptionFilter implements ExceptionFilter {
     const request = ctx.getRequest<Request>();
 
     const internalServerErrorStatus: number = HttpStatus.INTERNAL_SERVER_ERROR;
+    const tooManyRequestsStatus: number = HttpStatus.TOO_MANY_REQUESTS;
     const isHttpException = exception instanceof HttpException;
     const status: number = isHttpException
       ? exception.getStatus()
@@ -59,6 +67,12 @@ export class GlobalExceptionFilter implements ExceptionFilter {
       this.logger.warn(
         `[${errorId}] ${context} -> ${status}: ${error.message}`,
       );
+      if (status === tooManyRequestsStatus) {
+        response
+          .status(status)
+          .json(normaliseThrottledResponse(response, exception.getResponse()));
+        return;
+      }
       response.status(status).json(exception.getResponse());
       return;
     }
@@ -75,4 +89,40 @@ export class GlobalExceptionFilter implements ExceptionFilter {
       errorId,
     });
   }
+}
+
+/**
+ * Shapes a 429 into the contract mergefi-frontend's `apiRequest` reads
+ * (#842): a `Retry-After` header in seconds and a JSON body carrying
+ * `message`, matching ClientErrorResponseDto.
+ *
+ * ThrottlerGuard only sets the unsuffixed `Retry-After` for the throttler
+ * named `default`; a `short`/`medium`/`long` hit sets `Retry-After-short`
+ * etc. instead. When the plain header is missing it is filled from the
+ * longest suffixed one, so the client never retries before every exceeded
+ * window has reset.
+ */
+function normaliseThrottledResponse(
+  response: Response,
+  body: string | object,
+): object {
+  if (!response.getHeader('Retry-After')) {
+    const waits = response
+      .getHeaderNames()
+      .filter((name) => name.toLowerCase().startsWith('retry-after-'))
+      .map((name) => Number(response.getHeader(name)))
+      .filter((seconds) => Number.isFinite(seconds));
+    if (waits.length > 0) {
+      response.setHeader('Retry-After', String(Math.max(...waits)));
+    }
+  }
+
+  if (typeof body === 'string') {
+    return {
+      statusCode: HttpStatus.TOO_MANY_REQUESTS,
+      message: body,
+      error: 'Too Many Requests',
+    };
+  }
+  return body;
 }

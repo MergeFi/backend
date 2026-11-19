@@ -4,7 +4,9 @@ import {
   INestApplication,
   NotFoundException,
 } from '@nestjs/common';
+import { APP_GUARD } from '@nestjs/core';
 import { Test, TestingModule } from '@nestjs/testing';
+import { Throttle, ThrottlerGuard, ThrottlerModule } from '@nestjs/throttler';
 import request from 'supertest';
 import { App } from 'supertest/types';
 import { GlobalExceptionFilter } from './global-exception.filter';
@@ -36,6 +38,15 @@ class ThrowingController {
   notFound(): never {
     throw new NotFoundException('Escrow esc_1 not found');
   }
+
+  // Same named-throttler override shape the real mutating routes use
+  // (e.g. EscrowController.release), so the 429 below is produced exactly as
+  // production produces it (#842).
+  @Throttle({ short: { limit: 1, ttl: 1000 } })
+  @Get('throttled')
+  throttled(): { ok: true } {
+    return { ok: true };
+  }
 }
 
 describe('GlobalExceptionFilter (e2e)', () => {
@@ -43,7 +54,18 @@ describe('GlobalExceptionFilter (e2e)', () => {
 
   beforeAll(async () => {
     const moduleFixture: TestingModule = await Test.createTestingModule({
+      imports: [
+        // Mirrors AppModule's named throttlers (#287). Only `short` is
+        // tightened by the route above; the others stay lenient.
+        ThrottlerModule.forRoot([
+          { name: 'default', ttl: 60_000, limit: 120 },
+          { name: 'short', ttl: 1_000, limit: 20 },
+          { name: 'medium', ttl: 60_000, limit: 120 },
+          { name: 'long', ttl: 3_600_000, limit: 5_000 },
+        ]),
+      ],
       controllers: [ThrowingController],
+      providers: [{ provide: APP_GUARD, useClass: ThrottlerGuard }],
     }).compile();
 
     app = moduleFixture.createNestApplication();
@@ -94,6 +116,40 @@ describe('GlobalExceptionFilter (e2e)', () => {
       message: 'Escrow esc_1 not found',
       error: 'Not Found',
     });
+    expect(body.errorId).toBeUndefined();
+  });
+
+  /**
+   * The 429 is a cross-repository contract (#842): mergefi-frontend's
+   * apiRequest (src/lib/api.ts) branches on it, reads `Retry-After` to build
+   * the wait message and stores it on ApiRequestError.retryAfter, and reads
+   * `message` from the JSON body. Pinned here because this is where the
+   * header and body are produced; the frontend's tests mock this shape.
+   */
+  it('returns a throttled 429 with Retry-After and the body keys the frontend reads', async () => {
+    const server = app.getHttpServer();
+    await request(server).get('/test/throttled').expect(200);
+
+    const res = await request(server).get('/test/throttled');
+
+    expect(res.status).toBe(429);
+
+    const retryAfter = res.headers['retry-after'];
+    expect(retryAfter).toBeDefined();
+    expect(Number(retryAfter)).toBeGreaterThan(0);
+    expect(Number.isInteger(Number(retryAfter))).toBe(true);
+    // The short window is 1s, so the client is never told to wait longer.
+    expect(Number(retryAfter)).toBeLessThanOrEqual(1);
+
+    expect(res.headers['content-type']).toMatch(/application\/json/);
+    const body = res.body as Record<string, unknown>;
+    expect(body).toEqual({
+      statusCode: 429,
+      message: expect.any(String) as string,
+      error: 'Too Many Requests',
+    });
+    expect(body.message).not.toBe('');
+    // A 429 is a client error, not an internal one — no correlation id.
     expect(body.errorId).toBeUndefined();
   });
 });
