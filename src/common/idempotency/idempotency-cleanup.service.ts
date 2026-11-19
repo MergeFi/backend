@@ -1,7 +1,9 @@
 import { Injectable, Logger, Optional } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import { InjectRepository } from '@nestjs/typeorm';
 import { DataSource, LessThan, Repository } from 'typeorm';
+import { AppConfig } from '../../config/configuration';
 import { IdempotencyKey } from '../entities/idempotency-key.entity';
 
 /**
@@ -18,12 +20,13 @@ export class IdempotencyCleanupService {
   constructor(
     @InjectRepository(IdempotencyKey)
     private readonly repo: Repository<IdempotencyKey>,
+    private readonly configService: ConfigService<AppConfig, true>,
     @Optional() private readonly dataSource?: DataSource,
   ) {}
 
   @Cron(CronExpression.EVERY_HOUR)
   async removeExpired(): Promise<void> {
-    if (process.env.RUN_SCHEDULERS === 'false') {
+    if (!this.configService.get('schedulers', { infer: true }).enabled) {
       return;
     }
 
@@ -53,7 +56,9 @@ export class IdempotencyCleanupService {
         expiresAt: LessThan(new Date()),
       });
       if (result.affected) {
-        this.logger.log(`Removed ${result.affected} expired idempotency key(s)`);
+        this.logger.log(
+          `Removed ${result.affected} expired idempotency key(s)`,
+        );
       }
     } finally {
       if (this.dataSource?.isInitialized && lockAcquired) {
