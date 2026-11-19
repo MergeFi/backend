@@ -91,15 +91,3 @@ jobs:
           DATABASE_URL: postgresql://postgres:postgres@localhost:5432/mergefi
           NODE_ENV: test
         run: npm run test:e2e
-        run: |
-          # The e2e specs build their TestingModule from mocked providers and
-          # overrideGuard(...)-stubbed auth — none drive a real passport-github2
-          # handshake, so GITHUB_CLIENT_ID/SECRET were never the right gate
-          # (#165). What they actually need is a reachable Postgres, which the
-          # `postgres` service container above always provides.
-          if [ -z "${DATABASE_URL:-}" ]; then
-            echo "Skipping E2E tests: DATABASE_URL is not set."
-            exit 0
-          fi
-          npm run test:e2e
-        shell: bash

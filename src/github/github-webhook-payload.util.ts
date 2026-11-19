@@ -1,4 +1,7 @@
-import type { GithubIssuesEventPayload, GithubPullRequestPayload } from './github-webhooks.service';
+import type {
+  GithubIssuesEventPayload,
+  GithubPullRequestPayload,
+} from './github-webhooks.service';
 
 /**
  * Thrown when an inbound webhook payload doesn't have the shape a handler
@@ -24,10 +27,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
-function requireRecord(
-  value: unknown,
-  path: string,
-): Record<string, unknown> {
+function requireRecord(value: unknown, path: string): Record<string, unknown> {
   if (!isRecord(value)) {
     throw new WebhookPayloadValidationError(
       `"${path}" must be an object, got ${describe(value)}`,
@@ -72,9 +72,10 @@ function optionalString(
 }
 
 /** Shared by every event-type validator: every webhook payload identifies a repository. */
-function requireRepository(
-  payload: Record<string, unknown>,
-): { id: number; full_name: string } {
+function requireRepository(payload: Record<string, unknown>): {
+  id: number;
+  full_name: string;
+} {
   const repository = requireRecord(payload.repository, 'repository');
   return {
     id: requireNumber(repository.id, 'repository.id'),
@@ -106,7 +107,8 @@ export function validatePullRequestPayload(
       number: requireNumber(pullRequest.number, 'pull_request.number'),
       merged: requireBoolean(pullRequest.merged, 'pull_request.merged'),
       body: optionalString(pullRequest.body, 'pull_request.body'),
-      title: optionalString(pullRequest.title, 'pull_request.title') ?? undefined,
+      title:
+        optionalString(pullRequest.title, 'pull_request.title') ?? undefined,
     },
     repository,
   };

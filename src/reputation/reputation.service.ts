@@ -1,7 +1,8 @@
 import { Injectable } from '@nestjs/common';
+import { OnEvent } from '@nestjs/event-emitter';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
-import { Bounty, ReputationSnapshot } from '../common/entities';
+import { Bounty, Payment, ReputationSnapshot } from '../common/entities';
 import { queryContributorCoreStats } from '../common/stats/contributor-stats.sql';
 
 export const REPUTATION_HISTORY_DEFAULT_LIMIT = 50;
@@ -16,6 +17,8 @@ export interface ReputationHistoryOptions {
 export class ReputationService {
   constructor(
     @InjectRepository(Bounty) private readonly bountyRepo: Repository<Bounty>,
+    @InjectRepository(Payment)
+    private readonly paymentRepo: Repository<Payment>,
     @InjectRepository(ReputationSnapshot)
     private readonly snapshotRepo: Repository<ReputationSnapshot>,
   ) {}
@@ -25,7 +28,26 @@ export class ReputationService {
    * bounty activity and appends a new snapshot row.
    */
   async computeAndSave(userId: string): Promise<ReputationSnapshot> {
-    const stats = await queryContributorCoreStats(this.bountyRepo, userId);
+    const stats = await queryContributorCoreStats(
+      this.bountyRepo,
+      userId,
+      this.paymentRepo,
+    );
+
+    const latest = await this.getLatest(userId);
+    if (
+      latest &&
+      latest.totalEarnings === stats.lifetimeEarnings.toFixed(7) &&
+      latest.mergedPrCount === stats.mergedCount &&
+      latest.openBountiesClaimed === stats.openBountiesClaimed &&
+      latest.completionRate === stats.completionRate.toFixed(2) &&
+      latest.avgReviewTimeHours === stats.avgReviewTimeHours.toFixed(2) &&
+      latest.onTimeDeliveryPercentage === stats.onTimeDeliveryPercentage.toFixed(2) &&
+      JSON.stringify(latest.languages) === JSON.stringify(stats.languages) &&
+      JSON.stringify(latest.orgsContributedTo) === JSON.stringify(stats.orgs)
+    ) {
+      return latest;
+    }
 
     const snapshot = this.snapshotRepo.create({
       userId,
@@ -42,10 +64,21 @@ export class ReputationService {
   }
 
   async getLatest(userId: string): Promise<ReputationSnapshot | null> {
-    return this.snapshotRepo.findOne({
+    const existing = await this.snapshotRepo.findOne({
       where: { userId },
       order: { computedAt: 'DESC' },
     });
+    if (!existing) {
+      return this.computeAndSave(userId);
+    }
+    return existing;
+  }
+
+  @OnEvent('reputation.recompute')
+  async handleRecompute(payload: { userId: string }): Promise<void> {
+    if (payload?.userId) {
+      await this.computeAndSave(payload.userId);
+    }
   }
 
   async history(

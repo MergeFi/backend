@@ -31,6 +31,11 @@ export function validatePercentageSplits(
   if (splits.length === 0) {
     throw new BadRequestException(`At least one ${label} entry is required`);
   }
+  if (splits.some((s) => !Number.isFinite(s.percentage))) {
+    throw new BadRequestException(
+      `Each ${label} percentage must be a finite number`,
+    );
+  }
   if (splits.some((s) => s.percentage <= 0 || s.percentage > 100)) {
     throw new BadRequestException(
       `Each ${label} percentage must be greater than 0 and at most 100`,
@@ -41,5 +46,35 @@ export function validatePercentageSplits(
     throw new BadRequestException(
       `${label} percentages must sum to 100, got ${total.toFixed(2)}`,
     );
+  }
+}
+
+/**
+ * Single source of truth for rejecting duplicate recipients within a split
+ * (#358). `CreateTeamDto.members` (keyed by `userId`) and
+ * `SplitReleaseDto.recipients` (keyed by `recipientAddress`) both need this
+ * — without it, the same person can appear twice and silently receive a
+ * doubled share, since nothing else in the split math treats repeated
+ * entries as invalid.
+ *
+ * @param entries list to check
+ * @param keyOf extracts the identity each entry must be unique on
+ * @param label noun used in the error message (e.g. `"team member"`,
+ *   `"split recipient"`)
+ */
+export function assertUniqueSplitEntries<T>(
+  entries: T[],
+  keyOf: (entry: T) => string,
+  label: string,
+): void {
+  const seen = new Set<string>();
+  for (const entry of entries) {
+    const key = keyOf(entry);
+    if (seen.has(key)) {
+      throw new BadRequestException(
+        `Duplicate ${label} in split: ${key} appears more than once`,
+      );
+    }
+    seen.add(key);
   }
 }

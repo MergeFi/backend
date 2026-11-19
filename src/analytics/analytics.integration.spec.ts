@@ -49,17 +49,29 @@ describe('Analytics SQL aggregation (integration)', () => {
   const SEED_SPONSORS = 40;
 
   beforeAll(async () => {
+    const url =
+      process.env.DATABASE_URL ??
+      'postgresql://postgres:postgres@localhost:5432/mergefi';
+
     dataSource = new DataSource({
       type: 'postgres',
-      url:
-        process.env.DATABASE_URL ??
-        'postgresql://postgres:postgres@localhost:5432/mergefi',
+      url,
       schema: 'analytics_itest',
       entities,
       synchronize: true,
       dropSchema: true,
     });
     try {
+      // TypeORM's dropSchema/synchronize operate within an existing named
+      // schema — they don't create the schema itself, unlike the default
+      // `public` schema every Postgres database already has. Ensure
+      // analytics_itest exists first via a throwaway connection on the
+      // default schema.
+      const bootstrap = new DataSource({ type: 'postgres', url });
+      await bootstrap.initialize();
+      await bootstrap.query('CREATE SCHEMA IF NOT EXISTS analytics_itest');
+      await bootstrap.destroy();
+
       await dataSource.initialize();
     } catch (err) {
       console.warn(

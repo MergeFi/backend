@@ -23,17 +23,15 @@ export interface ContributorStats {
 }
 
 /**
- * Single implementation of the "contributor lifetime stats" computation that
+ * JavaScript reference implementation of the "contributor lifetime stats"
+ * computation (#166). This function is NOT used in production — both
  * `ReputationService.computeAndSave` and `AnalyticsService.forContributor`
- * both need (#166). Previously each service re-implemented the merge rate,
- * the (byte-for-byte identical) average-review-time arithmetic, and the
- * per-language / per-org reduction over a separately re-fetched set of the
- * same issues.
+ * call `queryContributorCoreStats` from `contributor-stats.sql.ts` instead.
  *
- * Callers pass the contributor's claimed bounties and the linked issues
- * (each with its `repository` relation loaded). Anything caller-specific —
- * paid earnings, on-time delivery %, payout heatmaps, top clients,
- * distinct-repo counts — stays in the caller.
+ * This file is kept as a cross-check oracle for integration tests that
+ * verify the SQL aggregation against a plain-JS baseline. Callers pass the
+ * contributor's claimed bounties and the linked issues (each with its
+ * `repository` relation loaded).
  */
 export function computeContributorStats(
   claimedBounties: Bounty[],

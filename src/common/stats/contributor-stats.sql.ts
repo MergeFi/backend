@@ -1,7 +1,7 @@
 import { BadRequestException } from '@nestjs/common';
 import { Repository } from 'typeorm';
-import { Bounty } from '../entities';
-import { BountyStatus } from '../enums';
+import { Bounty, Payment } from '../entities';
+import { BountyStatus, PaymentStatus } from '../enums';
 import { MERGED_BOUNTY_STATUSES } from './contributor-stats.util';
 
 /** Max calendar-day buckets returned for a payout heatmap. */
@@ -13,6 +13,7 @@ const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
 
 /** UTC calendar-day expression matching `Date#toISOString().slice(0, 10)`. */
 export const PAYOUT_UTC_DATE_SQL = `to_char((bounty.paidAt AT TIME ZONE 'UTC'), 'YYYY-MM-DD')`;
+export const PAYMENT_UTC_DATE_SQL = `to_char((payment.createdAt AT TIME ZONE 'UTC'), 'YYYY-MM-DD')`;
 
 const MERGED_SQL = MERGED_BOUNTY_STATUSES.map((s) => `'${s}'`).join(', ');
 
@@ -95,6 +96,7 @@ export async function queryPayoutHeatmap(
   bountyRepo: Repository<Bounty>,
   userId: string,
   range: HeatmapRange = {},
+  paymentRepo?: Repository<Payment>,
 ): Promise<HeatmapBucket[]> {
   const qb = bountyRepo
     .createQueryBuilder('bounty')
@@ -113,30 +115,76 @@ export async function queryPayoutHeatmap(
     });
   }
 
-  const rows = await qb
+  const bountyRows = await qb
     .groupBy(PAYOUT_UTC_DATE_SQL)
     .orderBy(PAYOUT_UTC_DATE_SQL, 'DESC')
     .limit(HEATMAP_MAX_DAYS)
     .getRawMany<{ date: string; count: string }>();
 
-  return heatmapFromRaw(rows);
+  // Also include Payment rows from milestone/maintenance-pool payouts (#272).
+  let paymentRows: Array<{ date: string; count: string }> = [];
+  if (paymentRepo) {
+    const pQb = paymentRepo
+      .createQueryBuilder('payment')
+      .select(PAYMENT_UTC_DATE_SQL, 'date')
+      .addSelect('COUNT(*)', 'count')
+      .where('payment.recipientId = :userId', { userId })
+      .andWhere('payment.status = :paid', { paid: PaymentStatus.PAID });
+
+    if (range.from) {
+      pQb.andWhere('payment.createdAt >= :from', { from: range.from });
+    }
+    if (range.toExclusive) {
+      pQb.andWhere('payment.createdAt < :toExclusive', {
+        toExclusive: range.toExclusive,
+      });
+    }
+
+    paymentRows = await pQb
+      .groupBy(PAYMENT_UTC_DATE_SQL)
+      .orderBy(PAYMENT_UTC_DATE_SQL, 'DESC')
+      .limit(HEATMAP_MAX_DAYS)
+      .getRawMany<{ date: string; count: string }>();
+  }
+
+  // Merge bounty and payment rows by date.
+  const merged = new Map<string, number>();
+  for (const row of bountyRows) {
+    merged.set(row.date, (merged.get(row.date) ?? 0) + Number(row.count));
+  }
+  for (const row of paymentRows) {
+    merged.set(row.date, (merged.get(row.date) ?? 0) + Number(row.count));
+  }
+
+  return Array.from(merged.entries())
+    .map(([date, count]) => ({ date, count }))
+    .sort((a, b) => a.date.localeCompare(b.date));
 }
 
 export async function queryTopClients(
   bountyRepo: Repository<Bounty>,
   userId: string,
+  paymentRepo?: Repository<Payment>,
 ): Promise<TopClientRow[]> {
-  const rows = await bountyRepo
-    .createQueryBuilder('bounty')
-    .select('bounty.sponsorId', 'sponsorId')
-    .addSelect('COALESCE(SUM(bounty.amount), 0)', 'totalPaid')
-    .where('bounty.claimedById = :userId', { userId })
-    .andWhere('bounty.status = :paid', { paid: BountyStatus.PAID })
-    .andWhere('bounty.sponsorId IS NOT NULL')
-    .groupBy('bounty.sponsorId')
-    .orderBy('totalPaid', 'DESC')
-    .limit(TOP_CLIENTS_LIMIT)
-    .getRawMany<{ sponsorId: string; totalPaid: string }>();
+  // Sum from the Payment ledger joined through escrow to get the sponsor,
+  // instead of summing bounty.amount which overstates team-split bounties.
+  let rows: { sponsorId: string; totalPaid: string }[] = [];
+  if (paymentRepo) {
+    rows = await paymentRepo
+      .createQueryBuilder('payment')
+      .innerJoin('payment.escrow', 'escrow')
+      .select('escrow.sponsorId', 'sponsorId')
+      .addSelect(
+        "COALESCE(SUM(payment.amount) FILTER (WHERE payment.status = :paid AND payment.recipientId = :userId AND escrow.sponsorId IS NOT NULL), 0)",
+        'totalPaid',
+      )
+      .setParameter('paid', PaymentStatus.PAID)
+      .setParameter('userId', userId)
+      .groupBy('escrow.sponsorId')
+      .orderBy('totalPaid', 'DESC')
+      .limit(TOP_CLIENTS_LIMIT)
+      .getRawMany<{ sponsorId: string; totalPaid: string }>();
+  }
 
   return rows.map((row) => ({
     sponsorId: row.sponsorId,
@@ -147,8 +195,9 @@ export async function queryTopClients(
 export async function queryContributorCoreStats(
   bountyRepo: Repository<Bounty>,
   userId: string,
+  paymentRepo?: Repository<Payment>,
 ): Promise<ContributorCoreSqlStats> {
-  const [counts, languagesRows, orgsRows] = await Promise.all([
+  const [counts, languagesRows, orgsRows, paymentEarnings] = await Promise.all([
     bountyRepo
       .createQueryBuilder('bounty')
       .leftJoin('bounty.issue', 'issue')
@@ -161,10 +210,6 @@ export async function queryContributorCoreStats(
       .addSelect(
         `COUNT(*) FILTER (WHERE bounty.status IN ('${BountyStatus.CLAIMED}', '${BountyStatus.IN_REVIEW}'))`,
         'openBountiesClaimed',
-      )
-      .addSelect(
-        `COALESCE(SUM(bounty.amount) FILTER (WHERE bounty.status = '${BountyStatus.PAID}'), 0)`,
-        'lifetimeEarnings',
       )
       .addSelect(
         `COALESCE(AVG(EXTRACT(EPOCH FROM (bounty.mergedAt - bounty.claimedAt)) / 3600) FILTER (WHERE bounty.status IN (${MERGED_SQL}) AND bounty.claimedAt IS NOT NULL AND bounty.mergedAt IS NOT NULL), 0)`,
@@ -205,6 +250,20 @@ export async function queryContributorCoreStats(
       .where('bounty.claimedById = :userId', { userId })
       .andWhere('repository.owner IS NOT NULL')
       .getRawMany<{ owner: string }>(),
+    // Also aggregate Payment rows from milestone/maintenance-pool payouts (#272).
+    // This is now the sole source of truth for lifetimeEarnings — summing from
+    // the Payment ledger instead of bounty.amount to correctly handle team splits.
+    paymentRepo
+      ? paymentRepo
+          .createQueryBuilder('payment')
+          .select(
+            "COALESCE(SUM(payment.amount) FILTER (WHERE payment.status = :paid AND payment.recipientId = :userId), 0)",
+            'totalPaid',
+          )
+          .setParameter('paid', PaymentStatus.PAID)
+          .setParameter('userId', userId)
+          .getRawOne<{ totalPaid: string }>()
+      : Promise.resolve({ totalPaid: '0' }),
   ]);
 
   const claimedCount = Number(counts?.claimedCount ?? 0);
@@ -220,12 +279,15 @@ export async function queryContributorCoreStats(
     languages[row.lang] = Number(row.count);
   }
 
+  // Use the Payment ledger as the source of truth for lifetime earnings.
+  const lifetimeEarnings = Number(paymentEarnings?.totalPaid ?? 0);
+
   return {
     claimedCount,
     mergedCount,
     completionRate,
     avgReviewTimeHours: Number(counts?.avgReviewTimeHours ?? 0),
-    lifetimeEarnings: Number(counts?.lifetimeEarnings ?? 0),
+    lifetimeEarnings,
     openBountiesClaimed: Number(counts?.openBountiesClaimed ?? 0),
     onTimeCount,
     onTimeDeliveryPercentage,

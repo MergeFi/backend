@@ -16,9 +16,7 @@ describe('UsersController (e2e)', () => {
   beforeAll(async () => {
     const moduleFixture: TestingModule = await Test.createTestingModule({
       controllers: [UsersController],
-      providers: [
-        { provide: UsersService, useValue: mockUsersService },
-      ],
+      providers: [{ provide: UsersService, useValue: mockUsersService }],
     })
       .overrideGuard(JwtAuthGuard)
       .useValue({ canActivate: () => false }) // Simulate a guard-denied request (always 403)
@@ -34,9 +32,7 @@ describe('UsersController (e2e)', () => {
 
   describe('GET /users', () => {
     it('should return 403 when the guard denies the request', () => {
-      return request(app.getHttpServer())
-        .get('/users')
-        .expect(403);
+      return request(app.getHttpServer()).get('/users').expect(403);
     });
   });
 

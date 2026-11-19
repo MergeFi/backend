@@ -85,6 +85,10 @@ function checksumInvalidAddress(): string {
 describe('Stellar address validation at the API boundary — maintenance-pool endpoints (#60)', () => {
   let app: INestApplication;
   let poolService: { deposit: jest.Mock; assignReward: jest.Mock };
+  // MaintenancePool.id is a real UUID column (ParseUUIDPipe on the route) —
+  // not the human-readable 'pool_1' this spec previously (and incorrectly)
+  // used as a path param.
+  const poolId = randomUUID();
 
   beforeAll(async () => {
     poolService = {
@@ -137,7 +141,7 @@ describe('Stellar address validation at the API boundary — maintenance-pool en
     'rejects POST /maintenance-pools/:id/deposit with a malformed funderAddress (%p) as 400',
     async (bad) => {
       await request(app.getHttpServer())
-        .post('/maintenance-pools/pool_1/deposit')
+        .post(`/maintenance-pools/${poolId}/deposit`)
         .set('Idempotency-Key', randomUUID())
         .send({ amount: '10.0000000', funderAddress: bad })
         .expect(400);
@@ -148,7 +152,7 @@ describe('Stellar address validation at the API boundary — maintenance-pool en
 
   it('accepts POST /maintenance-pools/:id/deposit with a valid funderAddress', async () => {
     await request(app.getHttpServer())
-      .post('/maintenance-pools/pool_1/deposit')
+      .post(`/maintenance-pools/${poolId}/deposit`)
       .set('Idempotency-Key', randomUUID())
       .send({
         amount: '10.0000000',
@@ -163,7 +167,7 @@ describe('Stellar address validation at the API boundary — maintenance-pool en
     'rejects POST /maintenance-pools/:id/assign-reward with a malformed recipientAddress (%p) as 400',
     async (bad) => {
       await request(app.getHttpServer())
-        .post('/maintenance-pools/pool_1/assign-reward')
+        .post(`/maintenance-pools/${poolId}/assign-reward`)
         .set('Idempotency-Key', randomUUID())
         .send({ amount: '5.0000000', recipientAddress: bad })
         .expect(400);
@@ -174,7 +178,7 @@ describe('Stellar address validation at the API boundary — maintenance-pool en
 
   it('accepts POST /maintenance-pools/:id/assign-reward with a valid recipientAddress', async () => {
     await request(app.getHttpServer())
-      .post('/maintenance-pools/pool_1/assign-reward')
+      .post(`/maintenance-pools/${poolId}/assign-reward`)
       .set('Idempotency-Key', randomUUID())
       .send({
         issueId: randomUUID(),

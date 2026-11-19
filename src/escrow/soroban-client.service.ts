@@ -10,15 +10,59 @@ import {
   nativeToScVal,
   rpc,
   scValToNative,
+  xdr,
 } from '@stellar/stellar-sdk';
 import { AssetType } from '../common/enums';
 import { AppConfig } from '../config/configuration';
+
+/** Transaction time bound set on every invocation (`setTimeout`), in seconds. */
+export const SOROBAN_TX_TIMEOUT_SECONDS = 60;
+const POLL_DELAY_MS = 2000;
+/**
+ * Poll at least as long as the transaction's time bound (+1 attempt), so a
+ * timeout really means "outcome still unknown at expiry", not "gave up early" (#527).
+ */
+const POLL_ATTEMPTS =
+  Math.ceil((SOROBAN_TX_TIMEOUT_SECONDS * 1000) / POLL_DELAY_MS) + 1;
+
+/**
+ * The transaction was accepted (`sendTransaction` → PENDING) but had not
+ * finalized when polling ran out. Its outcome is unknown, not failed: it may
+ * still be included, so callers must not treat this as "nothing happened" (#527).
+ */
+export class SorobanPendingError extends Error {
+  constructor(public readonly txHash: string) {
+    super(
+      `Timed out waiting for Soroban transaction ${txHash} to finalize; outcome unknown`,
+    );
+    this.name = 'SorobanPendingError';
+  }
+}
 
 export interface ContractInvocationResult {
   txHash: string;
   ledger: number | null;
   returnValue: unknown;
   status: string;
+}
+
+/**
+ * A `bigint` that the escrow ABI types as `u64` rather than `i128` (#301).
+ *
+ * Soroban argument binding is strongly typed against the WASM export's
+ * parameter types: passing `ScVal::I128` where the contract declares `u64`
+ * fails host-side (conversion / `UnexpectedType` during simulation) instead
+ * of degrading gracefully. Wrapping the value in this marker before handing
+ * it to {@link SorobanClientService.invoke} makes the intended XDR type
+ * explicit at the call site.
+ */
+export interface U64Arg {
+  readonly __sorobanU64: bigint;
+}
+
+/** Wraps a value so {@link SorobanClientService} encodes it as `ScVal::U64`. */
+export function u64(value: bigint | number | string): U64Arg {
+  return { __sorobanU64: BigInt(value) };
 }
 
 /**
@@ -158,14 +202,14 @@ export class SorobanClientService {
     const contract = this.getContract(opts.contractId);
     const account = await this.server.getAccount(keypair.publicKey());
 
-const scArgs = args.map((arg) => this.toScVal(arg)) as any[];
+    const scArgs = args.map((arg) => this.toScVal(arg));
 
     const tx = new TransactionBuilder(account, {
       fee: BASE_FEE,
       networkPassphrase: this.networkPassphrase,
     })
       .addOperation(contract.call(method, ...scArgs))
-      .setTimeout(60)
+      .setTimeout(SOROBAN_TX_TIMEOUT_SECONDS)
       .build();
 
     const simulated = await this.server.simulateTransaction(tx);
@@ -203,8 +247,8 @@ const scArgs = args.map((arg) => this.toScVal(arg)) as any[];
 
   private async pollTransaction(
     hash: string,
-    attempts = 10,
-    delayMs = 2000,
+    attempts = POLL_ATTEMPTS,
+    delayMs = POLL_DELAY_MS,
   ): Promise<rpc.Api.GetTransactionResponse> {
     for (let i = 0; i < attempts; i++) {
       const res = await this.server.getTransaction(hash);
@@ -213,12 +257,16 @@ const scArgs = args.map((arg) => this.toScVal(arg)) as any[];
       }
       await new Promise((resolve) => setTimeout(resolve, delayMs));
     }
-    throw new Error(
-      `Timed out waiting for Soroban transaction ${hash} to finalize`,
-    );
+    throw new SorobanPendingError(hash);
   }
 
-  private toScVal(value: unknown): unknown {
+  private toScVal(value: unknown): xdr.ScVal {
+    if (isU64Arg(value)) {
+      // #301 — `issue_id` / `deadline` are declared u64 in the escrow ABI;
+      // a bare bigint would encode as ScVal::I128 and fail host-side
+      // argument binding during simulation.
+      return nativeToScVal(value.__sorobanU64, { type: 'u64' });
+    }
     if (Buffer.isBuffer(value) || value instanceof Uint8Array) {
       // BytesN<32> arguments (metadata hashes, description hashes, etc.)
       // arrive as raw bytes, not strings — without this branch they fell
@@ -265,4 +313,13 @@ const scArgs = args.map((arg) => this.toScVal(arg)) as any[];
       typeof value[1] === 'number'
     );
   }
+}
+
+/** Type guard for the {@link u64} marker (#301). */
+function isU64Arg(value: unknown): value is U64Arg {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    typeof (value as U64Arg).__sorobanU64 === 'bigint'
+  );
 }

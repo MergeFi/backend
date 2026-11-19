@@ -1,7 +1,9 @@
 import {
   BadRequestException,
+  ForbiddenException,
   Injectable,
   NotFoundException,
+  NotImplementedException,
 } from '@nestjs/common';
 import { InjectDataSource, InjectRepository } from '@nestjs/typeorm';
 import { DataSource, Repository } from 'typeorm';
@@ -9,6 +11,7 @@ import { Issue, Milestone } from '../common/entities';
 import { IssueState, MilestoneStatus } from '../common/enums';
 import { EscrowService } from '../escrow/escrow.service';
 import { CreateMilestoneDto } from './dto/create-milestone.dto';
+import { assertTransition } from './milestone-state-machine';
 
 @Injectable()
 export class MilestonesService {
@@ -20,11 +23,26 @@ export class MilestonesService {
     private readonly escrowService: EscrowService,
   ) {}
 
-  async create(dto: CreateMilestoneDto): Promise<Milestone> {
+  async create(
+    dto: CreateMilestoneDto,
+    callerUserId: string,
+  ): Promise<Milestone> {
+    // Verify repositoryId exists
+    const repoExists = await this.dataSource.query(
+      'SELECT 1 FROM repositories WHERE id = $1',
+      [dto.repositoryId],
+    );
+    if (!repoExists.length) {
+      throw new NotFoundException(`Repository ${dto.repositoryId} not found`);
+    }
+
+    // Fall back to the authenticated caller's id when the client omits sponsorId.
+    // This prevents milestones with sponsorId = null that become permanently
+    // invisible to every sponsor dashboard filter.
     const milestone = this.milestoneRepo.create({
       repositoryId: dto.repositoryId,
-      sponsorId: dto.sponsorId ?? null,
-      title: dto.title,
+      sponsorId: dto.sponsorId ?? callerUserId,
+      title: dto.title?.trim() ?? dto.title,
       description: dto.description ?? null,
       budget: dto.budget,
       asset: dto.asset,
@@ -44,13 +62,26 @@ export class MilestonesService {
   }
 
   /** Sponsor funds the full milestone budget up front; distributed incrementally per issue. */
-  async fund(id: string, funderAddress: string): Promise<Milestone> {
+  async fund(
+    id: string,
+    funderAddress: string,
+    callerUserId: string,
+  ): Promise<Milestone> {
     const milestone = await this.findOne(id);
+
+    // Verify caller is the sponsor
+    if (milestone.sponsorId && milestone.sponsorId !== callerUserId) {
+      throw new ForbiddenException(
+        'Only the milestone sponsor can fund this milestone',
+      );
+    }
+
     if (milestone.status !== MilestoneStatus.OPEN) {
       throw new BadRequestException(
         `Milestone ${id} is not OPEN (current: ${milestone.status})`,
       );
     }
+    assertTransition(milestone.status, MilestoneStatus.FUNDED);
 
     const escrow = await this.escrowService.fund({
       amount: milestone.budget,
@@ -79,10 +110,10 @@ export class MilestonesService {
    */
   async addIssue(milestoneId: string, issueId: string): Promise<Issue> {
     const milestone = await this.findOne(milestoneId);
+    // addIssue is allowed from OPEN, FUNDED, or IN_PROGRESS — only reject terminal states
     if (
-      milestone.status !== MilestoneStatus.OPEN &&
-      milestone.status !== MilestoneStatus.FUNDED &&
-      milestone.status !== MilestoneStatus.IN_PROGRESS
+      milestone.status === MilestoneStatus.COMPLETED ||
+      milestone.status === MilestoneStatus.CLOSED
     ) {
       throw new BadRequestException(
         `Cannot attach issue to milestone in ${milestone.status} status`,
@@ -106,13 +137,15 @@ export class MilestonesService {
    * budget evenly across still-unresolved issues at the time of each call.
    *
    * The escrow release, milestone distributed-total update, and issue close
-   * are wrapped in a single DB transaction to prevent desync between the
-   * Payment ledger and `milestone.distributed` (#117).
+   * are now truly atomic: `releasePartial` receives the outer transaction's
+   * `EntityManager` so the Payment write, the milestone counter update, and
+   * the issue close all commit or roll back together (#254, #117).
    */
-   async resolveIssue(
+  async resolveIssue(
     milestoneId: string,
     issueId: string,
-    recipientAddress: string
+    recipientAddress: string,
+    recipientId?: string,
   ) {
     const milestone = await this.findOne(milestoneId);
     if (!milestone.escrowId) {
@@ -120,14 +153,7 @@ export class MilestonesService {
         `Milestone ${milestoneId} has not been funded yet`,
       );
     }
-    if (
-      milestone.status !== MilestoneStatus.FUNDED &&
-      milestone.status !== MilestoneStatus.IN_PROGRESS
-    ) {
-      throw new BadRequestException(
-        `Milestone ${milestoneId} is not accepting distributions`,
-      );
-    }
+    assertTransition(milestone.status, MilestoneStatus.IN_PROGRESS);
 
     // Verify the issue belongs to this milestone (#114).
     const issue = milestone.issues.find((i) => i.id === issueId);
@@ -137,7 +163,9 @@ export class MilestonesService {
       );
     }
 
-    const openIssues = milestone.issues.filter((i) => i.state === 'open');
+    const openIssues = milestone.issues.filter(
+      (i) => i.state === IssueState.OPEN,
+    );
 
     // Reject when no issues remain open — fallback to divisor 1 would let a
     // single call drain the entire remaining budget (#115).
@@ -147,28 +175,53 @@ export class MilestonesService {
       );
     }
 
-    if (issue.state !== 'open') {
+    if (issue.state !== IssueState.OPEN) {
       throw new BadRequestException(
         `Issue ${issueId} has already been resolved for milestone ${milestoneId}`,
       );
     }
 
-    const unresolvedCount = openIssues.length;
-    const remainingBudget =
-      Number(milestone.budget) - Number(milestone.distributed);
-    const share = Math.min(remainingBudget / unresolvedCount, remainingBudget);
-
     return this.dataSource.transaction(async (mgr) => {
-      // FIXED: Aligned argument signature with our 3-arg escrow service update
-      const payment = await this.escrowService.releasePartial(
-        milestone.escrowId!,
-        recipientAddress,
-        share.toFixed(7)
+      // Lock the milestone row and re-read `distributed` and the open issues
+      // under that lock (#531). Reading them before the transaction let two
+      // concurrent resolutions for different issues both start from the same
+      // `distributed`, so the second write lost the first share while the
+      // Payment ledger recorded both. releasePartial only locks the escrow.
+      const locked = await mgr.findOne(Milestone, {
+        where: { id: milestoneId },
+        lock: { mode: 'pessimistic_write' },
+      });
+      if (!locked) {
+        throw new NotFoundException(`Milestone ${milestoneId} not found`);
+      }
+      const lockedOpen = (
+        await mgr.find(Issue, { where: { milestoneId } })
+      ).filter((i) => i.state === IssueState.OPEN);
+      if (!lockedOpen.some((i) => i.id === issueId)) {
+        throw new BadRequestException(
+          `Issue ${issueId} has already been resolved for milestone ${milestoneId}`,
+        );
+      }
+
+      const unresolvedCount = lockedOpen.length;
+      const remainingBudget =
+        Number(locked.budget) - Number(locked.distributed);
+      const share = Math.min(
+        remainingBudget / unresolvedCount,
+        remainingBudget,
       );
 
-      const newDistributed = (Number(milestone.distributed) + share).toFixed(7);
+      const payment = await this.escrowService.releasePartial(
+        milestone.escrowId!,
+        share.toFixed(7),
+        recipientAddress,
+        recipientId,
+        mgr,
+      );
+
+      const newDistributed = (Number(locked.distributed) + share).toFixed(7);
       const newStatus =
-        Number(newDistributed) >= Number(milestone.budget) - 1e-7
+        Number(newDistributed) >= Number(locked.budget) - 1e-7
           ? MilestoneStatus.COMPLETED
           : MilestoneStatus.IN_PROGRESS;
       await mgr.update(Milestone, milestoneId, {
@@ -186,10 +239,43 @@ export class MilestonesService {
   }
 
   async list(): Promise<Milestone[]> {
-    return this.milestoneRepo.find();
+    return this.milestoneRepo.find({
+      relations: { repository: true, issues: true },
+    });
   }
 
-  allocateBudget(id: string) {
-    return Promise.resolve({ id, status: 'budget_allocated' });
+  /**
+   * Not implemented yet (#253, #533). This used to resolve
+   * `{ id, status: 'budget_allocated' }` without touching storage or the
+   * milestones contract, so the route reported an allocation that never
+   * happened. It now answers 501 until it is wired to the contract's
+   * `allocate`.
+   */
+  allocateBudget(id: string): Promise<never> {
+    return Promise.reject(
+      new NotImplementedException(
+        `Milestone budget allocation is not implemented yet (milestone ${id})`,
+      ),
+    );
+  }
+
+  async close(id: string, userId: string): Promise<Milestone> {
+    const milestone = await this.findOne(id);
+    if (!milestone) {
+      throw new NotFoundException(`Milestone ${id} not found`);
+    }
+
+    assertTransition(milestone.status, MilestoneStatus.CLOSED);
+
+    if (milestone.escrowId) {
+      try {
+        await this.escrowService.refund(milestone.escrowId);
+      } catch (err) {
+        // Escrow may already be refunded or partially released
+      }
+    }
+
+    milestone.status = MilestoneStatus.CLOSED;
+    return this.milestoneRepo.save(milestone);
   }
 }

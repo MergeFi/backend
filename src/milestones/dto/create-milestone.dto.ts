@@ -1,12 +1,15 @@
 import { ApiProperty } from '@nestjs/swagger';
+import { Transform } from 'class-transformer';
 import {
   IsISO8601,
+  IsNotEmpty,
   IsOptional,
   IsString,
   IsUUID,
   MaxLength,
 } from 'class-validator';
 import { AssetType } from '../../common/enums';
+import { IsFutureDate } from '../../common/validators/date.validator';
 import {
   IsMoneyAmount,
   IsSupportedEscrowAsset,
@@ -23,7 +26,11 @@ export class CreateMilestoneDto {
   sponsorId?: string;
 
   @ApiProperty({ maxLength: 200 })
+  @Transform(({ value }: { value: unknown }) =>
+    typeof value === 'string' ? value.trim() : value,
+  )
   @IsString()
+  @IsNotEmpty()
   @MaxLength(200)
   title: string;
 
@@ -44,5 +51,6 @@ export class CreateMilestoneDto {
   @ApiProperty({ required: false })
   @IsOptional()
   @IsISO8601()
+  @IsFutureDate()
   deadline?: string;
 }

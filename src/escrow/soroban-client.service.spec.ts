@@ -2,7 +2,12 @@ import { ConfigService } from '@nestjs/config';
 import { nativeToScVal, rpc } from '@stellar/stellar-sdk';
 import { AssetType } from '../common/enums';
 import { AppConfig } from '../config/configuration';
-import { SorobanClientService } from './soroban-client.service';
+import {
+  SOROBAN_TX_TIMEOUT_SECONDS,
+  SorobanClientService,
+  SorobanPendingError,
+  u64,
+} from './soroban-client.service';
 
 jest.mock('@stellar/stellar-sdk', () => ({
   ...jest.requireActual('@stellar/stellar-sdk'),
@@ -77,9 +82,9 @@ describe('SorobanClientService', () => {
 
   describe('contract resolvers (#157)', () => {
     it('exposes the configured escrow contract id', () => {
-      expect(makeService({ escrowContractId: 'CESCROW' }).escrowContractId).toBe(
-        'CESCROW',
-      );
+      expect(
+        makeService({ escrowContractId: 'CESCROW' }).escrowContractId,
+      ).toBe('CESCROW');
     });
 
     it('returns the dedicated maintenance-pool contract id when set', () => {
@@ -139,12 +144,10 @@ describe('SorobanClientService', () => {
       jest
         .spyOn(rpc.Server.prototype, 'simulateTransaction')
         .mockResolvedValue({} as never);
-      jest
-        .spyOn(rpc.Server.prototype, 'sendTransaction')
-        .mockResolvedValue({
-          status: 'PENDING',
-          hash: 'mock-hash',
-        } as never);
+      jest.spyOn(rpc.Server.prototype, 'sendTransaction').mockResolvedValue({
+        status: 'PENDING',
+        hash: 'mock-hash',
+      } as never);
       jest
         .spyOn(rpc.Server.prototype, 'getTransaction')
         .mockResolvedValue(
@@ -192,12 +195,10 @@ describe('SorobanClientService', () => {
     });
 
     it('throws when transaction submission errors', async () => {
-      jest
-        .spyOn(rpc.Server.prototype, 'sendTransaction')
-        .mockResolvedValue({
-          status: 'ERROR',
-          errorResult: { code: -1 },
-        } as never);
+      jest.spyOn(rpc.Server.prototype, 'sendTransaction').mockResolvedValue({
+        status: 'ERROR',
+        errorResult: { code: -1 },
+      } as never);
 
       await expect(service.invoke('refund', ['ref-1'])).rejects.toThrow(
         'Soroban transaction submission failed',
@@ -219,12 +220,10 @@ describe('SorobanClientService', () => {
       jest
         .spyOn(rpc.Server.prototype, 'simulateTransaction')
         .mockResolvedValue({} as never);
-      jest
-        .spyOn(rpc.Server.prototype, 'sendTransaction')
-        .mockResolvedValue({
-          status: 'PENDING',
-          hash: 'mock-hash',
-        } as never);
+      jest.spyOn(rpc.Server.prototype, 'sendTransaction').mockResolvedValue({
+        status: 'PENDING',
+        hash: 'mock-hash',
+      } as never);
       jest.useFakeTimers();
     });
 
@@ -246,7 +245,7 @@ describe('SorobanClientService', () => {
       expect(result.ledger).toBe(9);
     });
 
-    it('times out after exhausting all attempts when the transaction stays NOT_FOUND', async () => {
+    it('polls for the full tx time bound, then throws SorobanPendingError (#527)', async () => {
       const getTxSpy = jest
         .spyOn(rpc.Server.prototype, 'getTransaction')
         .mockResolvedValue(txResponse({ status: 'NOT_FOUND' }));
@@ -255,11 +254,15 @@ describe('SorobanClientService', () => {
         () => null,
         (err: Error) => err,
       );
-      await jest.advanceTimersByTimeAsync(21_000);
+      await jest.advanceTimersByTimeAsync(
+        SOROBAN_TX_TIMEOUT_SECONDS * 1000 + 5_000,
+      );
       const err = await settled;
 
-      expect(getTxSpy).toHaveBeenCalledTimes(10);
-      expect(err).toBeInstanceOf(Error);
+      // 60s time bound at 2s per poll, plus one final attempt past expiry.
+      expect(getTxSpy).toHaveBeenCalledTimes(31);
+      expect(err).toBeInstanceOf(SorobanPendingError);
+      expect((err as SorobanPendingError).txHash).toBe('mock-hash');
       expect((err as Error).message).toContain(
         'Timed out waiting for Soroban transaction mock-hash to finalize',
       );
@@ -320,6 +323,35 @@ describe('SorobanClientService', () => {
       expect(encoded).toBe(1_000_000n);
     });
 
+    it('encodes a u64-marked value as ScVal::U64 instead of i128 (#301)', () => {
+      const encoded = (
+        service as unknown as { toScVal(v: unknown): unknown }
+      ).toScVal(u64(4242n));
+
+      expect(nativeToScValMock).toHaveBeenCalledWith(4242n, { type: 'u64' });
+      expect(encoded).toBe(4242n);
+    });
+
+    it('normalizes string/number u64 inputs through BigInt', () => {
+      (service as unknown as { toScVal(v: unknown): unknown }).toScVal(
+        u64('7007'),
+      );
+      expect(nativeToScValMock).toHaveBeenCalledWith(7007n, { type: 'u64' });
+
+      nativeToScValMock.mockClear();
+      (service as unknown as { toScVal(v: unknown): unknown }).toScVal(u64(42));
+      expect(nativeToScValMock).toHaveBeenCalledWith(42n, { type: 'u64' });
+    });
+
+    it('still encodes a bare bigint amount as i128 (#301 — only u64 params are marked)', () => {
+      (service as unknown as { toScVal(v: unknown): unknown }).toScVal(
+        1_000_000n,
+      );
+      expect(nativeToScValMock).toHaveBeenCalledWith(1_000_000n, {
+        type: 'i128',
+      });
+    });
+
     it('encodes short/plain strings with generic native encoding', () => {
       const encoded = (
         service as unknown as { toScVal(v: unknown): unknown }
@@ -351,10 +383,8 @@ describe('SorobanClientService', () => {
     });
 
     it('encodes a Vec<(Address, u32)> recipients list element-by-element (#161)', () => {
-      const a =
-        'GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAVAWHV';
-      const b =
-        'GBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBAAAA';
+      const a = 'GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAVAWHV';
+      const b = 'GBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBAAAA';
 
       const encoded = (
         service as unknown as { toScVal(v: unknown): unknown }

@@ -1,6 +1,7 @@
 import { Module } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { Bounty, Team, User } from '../common/entities';
+import { IdempotencyKey } from '../common/entities/idempotency-key.entity';
 import { BountiesService } from './bounties.service';
 import { BountiesController } from './bounties.controller';
 import { BountyExpiryScheduler } from './bounty-expiry.scheduler';
@@ -9,7 +10,11 @@ import { AuthModule } from '../auth/auth.module';
 
 @Module({
   imports: [
-    TypeOrmModule.forFeature([Bounty, Team, User]),
+    // RolesGuard and @Idempotent()'s IdempotencyInterceptor are used via
+    // @UseGuards/@UseInterceptors class references on BountiesController —
+    // see TeamsModule for why each needs its repository resolvable here
+    // directly rather than only through an imported/global module.
+    TypeOrmModule.forFeature([Bounty, Team, User, IdempotencyKey]),
     EscrowModule,
     AuthModule,
   ],

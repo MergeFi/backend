@@ -141,7 +141,11 @@ describe('UsersService', () => {
         if (where?.username === 'octocat-1') return null;
         if (where?.email === 'octocat@example.com') return null;
         if (where?.id === 'u1') {
-          return { id: 'u1', username: 'octocat-1', githubAccount: { id: 'ga1' } };
+          return {
+            id: 'u1',
+            username: 'octocat-1',
+            githubAccount: { id: 'ga1' },
+          };
         }
         return null;
       });
@@ -313,6 +317,29 @@ describe('UsersService', () => {
       const user = await service.setStellarAddress('victim', 'GATTACKER');
 
       expect(user.stellarAddress).toBe('GATTACKER');
+    });
+  });
+
+  describe('clearStellarAddress', () => {
+    it('throws NotFoundException when the user does not exist', async () => {
+      userRepo.findOne.mockResolvedValue(null);
+      await expect(service.clearStellarAddress('missing')).rejects.toThrow(
+        NotFoundException,
+      );
+    });
+
+    it('sets stellarAddress to null and persists the change (#714)', async () => {
+      userRepo.findOne.mockResolvedValue({
+        id: 'u1',
+        stellarAddress: 'GLINKEDADDRESS',
+      });
+
+      const user = await service.clearStellarAddress('u1');
+
+      expect(user.stellarAddress).toBeNull();
+      expect(userRepo.save).toHaveBeenCalledWith(
+        expect.objectContaining({ id: 'u1', stellarAddress: null }),
+      );
     });
   });
 

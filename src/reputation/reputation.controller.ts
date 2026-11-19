@@ -9,10 +9,12 @@ import {
   UseGuards,
 } from '@nestjs/common';
 import { ApiBearerAuth, ApiQuery, ApiTags } from '@nestjs/swagger';
+import { Throttle } from '@nestjs/throttler';
 import { ReputationService } from './reputation.service';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
 import type { AuthenticatedUser } from '../common/decorators/current-user.decorator';
+import { ApiInternalErrorResponse } from '../common/swagger/api-common-responses.decorator';
 import {
   REPUTATION_HISTORY_DEFAULT_LIMIT,
   REPUTATION_HISTORY_MAX_LIMIT,
@@ -20,6 +22,7 @@ import {
 
 @ApiTags('reputation')
 @Controller('reputation')
+@ApiInternalErrorResponse()
 export class ReputationController {
   constructor(private readonly reputationService: ReputationService) {}
 
@@ -31,6 +34,7 @@ export class ReputationController {
     }
   }
 
+  @Throttle({ long: { limit: 10, ttl: 3_600_000 } })
   @ApiBearerAuth()
   @UseGuards(JwtAuthGuard)
   @Post(':userId/recompute')

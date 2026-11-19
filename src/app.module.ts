@@ -22,14 +22,20 @@ import { ReputationModule } from './reputation/reputation.module';
 import { AnalyticsModule } from './analytics/analytics.module';
 import { IdempotencyModule } from './common/idempotency/idempotency.module';
 
-// Import the new RolesGuard we created
-import { RolesGuard } from './roles.guard';
-
 @Module({
   imports: [
     ConfigModule.forRoot({ isGlobal: true, load: [configuration] }),
     EventEmitterModule.forRoot(),
-    ThrottlerModule.forRoot([{ ttl: 60_000, limit: 120 }]),
+    // Named throttlers: @Throttle({ short | medium | long: ... }) only takes
+    // effect when a throttler of that name is registered here — with a single
+    // unnamed entry those overrides were silently no-ops (#287). The limits
+    // below are lenient app-wide defaults; per-route @Throttle tightens them.
+    ThrottlerModule.forRoot([
+      { name: 'default', ttl: 60_000, limit: 120 },
+      { name: 'short', ttl: 1_000, limit: 20 },
+      { name: 'medium', ttl: 60_000, limit: 120 },
+      { name: 'long', ttl: 3_600_000, limit: 5_000 },
+    ]),
     ScheduleModule.forRoot(),
     TypeOrmModule.forRootAsync({
       inject: [ConfigService],
@@ -64,13 +70,6 @@ import { RolesGuard } from './roles.guard';
     {
       provide: APP_GUARD,
       useClass: ThrottlerGuard,
-    },
-    // This registers RolesGuard globally to secure all role permissions across the entire app
-    // This registers RolesGuard globally to secure all role permissions
-
-    {
-      provide: APP_GUARD,
-      useClass: RolesGuard,
     },
   ],
 })

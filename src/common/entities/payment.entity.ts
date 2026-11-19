@@ -2,6 +2,7 @@ import {
   Column,
   CreateDateColumn,
   Entity,
+  Index,
   JoinColumn,
   ManyToOne,
   PrimaryGeneratedColumn,
@@ -11,8 +12,19 @@ import { Escrow } from './escrow.entity';
 import { User } from './user.entity';
 import { AssetType, PaymentStatus } from '../enums';
 
-/** A single payout leg from an escrow release — one per recipient (team splits produce many). */
+/**
+ * A single payout leg from an escrow release — one per recipient (team splits
+ * produce many).
+ *
+ * `IDX_payment_escrow` serves `WHERE escrowId = :escrowId`, the lookup
+ * `EscrowService.releasePartial` runs on every call to compute the
+ * cumulative released-so-far balance before allowing a further partial
+ * payout — a hot path on every milestone-driven incremental release
+ * (#307). The same gap class as `IDX_escrow_sponsor_status` (#97) and the
+ * `Bounty.claimedById` index (#148).
+ */
 @Entity('payments')
+@Index('IDX_payment_escrow', ['escrowId'])
 export class Payment {
   @PrimaryGeneratedColumn('uuid')
   id: string;

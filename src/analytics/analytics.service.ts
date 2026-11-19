@@ -3,7 +3,11 @@ import { ConfigService } from '@nestjs/config';
 import { OnEvent } from '@nestjs/event-emitter';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
-import { Bounty, Repository as RepositoryEntity } from '../common/entities';
+import {
+  Bounty,
+  Payment,
+  Repository as RepositoryEntity,
+} from '../common/entities';
 import { BountyStatus } from '../common/enums';
 import { AppConfig } from '../config/configuration';
 import {
@@ -43,6 +47,8 @@ export class AnalyticsService {
 
   constructor(
     @InjectRepository(Bounty) private readonly bountyRepo: Repository<Bounty>,
+    @InjectRepository(Payment)
+    private readonly paymentRepo: Repository<Payment>,
     @InjectRepository(RepositoryEntity)
     private readonly repositoryRepo: Repository<RepositoryEntity>,
     configService: ConfigService<AppConfig, true>,
@@ -59,9 +65,9 @@ export class AnalyticsService {
   ): Promise<ContributorAnalytics> {
     const range = heatmapRange(query.from, query.to);
     const [stats, heatmap, topClients] = await Promise.all([
-      queryContributorCoreStats(this.bountyRepo, userId),
-      queryPayoutHeatmap(this.bountyRepo, userId, range),
-      queryTopClients(this.bountyRepo, userId),
+      queryContributorCoreStats(this.bountyRepo, userId, this.paymentRepo),
+      queryPayoutHeatmap(this.bountyRepo, userId, range, this.paymentRepo),
+      queryTopClients(this.bountyRepo, userId, this.paymentRepo),
     ]);
 
     return {

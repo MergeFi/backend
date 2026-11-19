@@ -21,6 +21,12 @@ export interface AppConfig {
     oauthCallbackUrl: string;
     apiToken: string;
     webhookSecret: string;
+    /**
+     * Comma-separated `owner/repo` entries that a MAINTAINER may introduce as
+     * a first-time sync (#312). A repository already tracked in the database is
+     * governed by its `maintainerId` instead, so this only gates new repos.
+     */
+    syncAllowedRepos: string;
   };
   analytics: {
     /**
@@ -63,9 +69,9 @@ export interface AppConfig {
 
 export default (): AppConfig => ({
   env: process.env.NODE_ENV ?? 'development',
-  port: parseInt(process.env.PORT ?? '3000', 10),
-  appUrl: process.env.APP_URL ?? 'http://localhost:3000',
-  frontendUrl: process.env.FRONTEND_URL ?? 'http://localhost:3001',
+  port: parseInt(process.env.PORT ?? '4000', 10),
+  appUrl: process.env.APP_URL ?? 'http://localhost:4000',
+  frontendUrl: process.env.FRONTEND_URL ?? 'http://localhost:3000',
   logLevel: process.env.LOG_LEVEL ?? 'debug',
   database: {
     url:
@@ -81,9 +87,12 @@ export default (): AppConfig => ({
   github: {
     clientId: process.env.GITHUB_CLIENT_ID || 'mock_client_id_12345',
     clientSecret: process.env.GITHUB_CLIENT_SECRET || 'mock_secret_key_67890',
-    oauthCallbackUrl: process.env.GITHUB_OAUTH_CALLBACK_URL || 'http://localhost:3000/api/auth/github/callback',
+    oauthCallbackUrl:
+      process.env.GITHUB_OAUTH_CALLBACK_URL ||
+      'http://localhost:3000/api/auth/github/callback',
     apiToken: process.env.GITHUB_API_TOKEN ?? '',
     webhookSecret: process.env.GITHUB_WEBHOOK_SECRET ?? '',
+    syncAllowedRepos: process.env.GITHUB_SYNC_ALLOWED_REPOS ?? '',
   },
 
   analytics: {

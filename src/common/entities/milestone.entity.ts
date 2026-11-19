@@ -8,6 +8,7 @@ import {
   OneToOne,
   PrimaryGeneratedColumn,
   UpdateDateColumn,
+  Index,
 } from 'typeorm';
 import { Repository } from './repository.entity';
 import { User } from './user.entity';
@@ -15,6 +16,7 @@ import { Issue } from './issue.entity';
 import { Escrow } from './escrow.entity';
 import { AssetType, MilestoneStatus } from '../enums';
 
+@Index('IDX_milestones_sponsorId', ['sponsorId'])
 @Entity('milestones')
 export class Milestone {
   @PrimaryGeneratedColumn('uuid')

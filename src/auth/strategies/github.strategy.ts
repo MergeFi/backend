@@ -1,25 +1,34 @@
 import { Injectable } from '@nestjs/common';
 import { PassportStrategy } from '@nestjs/passport';
-import { Strategy } from 'passport-github2';
+import { Strategy, Profile } from 'passport-github2';
+import { VerifyCallback } from 'passport-oauth2';
 import { ConfigService } from '@nestjs/config';
+import { AppConfig } from '../../config/configuration';
 
 @Injectable()
 export class GithubStrategy extends PassportStrategy(Strategy, 'github') {
-  constructor(configService: ConfigService) {
+  constructor(configService: ConfigService<AppConfig>) {
     // We completely override validation layers right here.
-    // If the config system returns an empty string or undefined, 
+    // If the config system returns an empty string or undefined,
     // it automatically uses static string fallbacks so Passport NEVER crashes.
-    const githubConfig = configService.get('github') || {};
-    
+    const githubConfig = configService.get('github', { infer: true });
+
     super({
-      clientID: githubConfig.clientId || 'mock_client_id_12345',
-      clientSecret: githubConfig.clientSecret || 'mock_secret_key_67890',
-      callbackURL: githubConfig.oauthCallbackUrl || 'http://localhost:3000/api/auth/github/callback',
+      clientID: githubConfig?.clientId || 'mock_client_id_12345',
+      clientSecret: githubConfig?.clientSecret || 'mock_secret_key_67890',
+      callbackURL:
+        githubConfig?.oauthCallbackUrl ||
+        'http://localhost:3000/api/auth/github/callback',
       scope: ['user:email', 'read:org'],
     });
   }
 
-  async validate(accessToken: string, refreshToken: string, profile: any, done: any): Promise<any> {
+  validate(
+    accessToken: string,
+    refreshToken: string,
+    profile: Profile,
+    done: VerifyCallback,
+  ) {
     const { id, username, emails, photos } = profile;
     const user = {
       githubId: id,
@@ -29,6 +38,6 @@ export class GithubStrategy extends PassportStrategy(Strategy, 'github') {
       accessToken,
       refreshToken,
     };
-    return done(null, user);
+    done(null, user);
   }
 }

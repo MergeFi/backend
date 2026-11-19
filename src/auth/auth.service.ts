@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { randomBytes } from 'crypto';
 import { User } from '../common/entities';
@@ -6,6 +6,9 @@ import { UsersService, UpsertFromGithubInput } from '../users/users.service';
 
 @Injectable()
 export class AuthService {
+  // Never log access tokens or handoff codes — only user ids/usernames and
+  // outcome reasons (#366).
+  private readonly logger = new Logger(AuthService.name);
   private readonly handoffCodes = new Map<
     string,
     { token: string; expiresAt: number }
@@ -22,11 +25,19 @@ export class AuthService {
   ): Promise<{ user: User; accessToken: string }> {
     const user = await this.usersService.upsertFromGithub(profile);
     const accessToken = this.signToken(user);
+    this.logger.log(
+      `GitHub login succeeded for user ${user.id} (${user.username})`,
+    );
     return { user, accessToken };
   }
 
   signToken(user: User): string {
-    return this.jwtService.sign({ sub: user.id, username: user.username });
+    const token = this.jwtService.sign({
+      sub: user.id,
+      username: user.username,
+    });
+    this.logger.debug(`Issued JWT for user ${user.id}`);
+    return token;
   }
 
   createHandoffCode(token: string): string {
@@ -42,9 +53,16 @@ export class AuthService {
 
   consumeHandoffCode(code: string): string | null {
     const entry = this.handoffCodes.get(code);
-    if (!entry) return null;
+    if (!entry) {
+      // Unknown, already-consumed (replayed), or issued by another instance.
+      this.logger.debug('Handoff code rejected: unknown or already consumed');
+      return null;
+    }
     this.handoffCodes.delete(code);
-    if (Date.now() > entry.expiresAt) return null;
+    if (Date.now() > entry.expiresAt) {
+      this.logger.debug('Handoff code rejected: expired');
+      return null;
+    }
     return entry.token;
   }
 }
