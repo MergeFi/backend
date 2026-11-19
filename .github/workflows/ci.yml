@@ -39,10 +39,12 @@ jobs:
           # is invisible to a shallow checkout (#155).
           fetch-depth: 0
 
-      - name: Setup Node.js v24
+      # .nvmrc is the single source of truth for the Node major (#835), so
+      # CI can't drift from what contributors and the Dockerfile run.
+      - name: Setup Node.js (from .nvmrc)
         uses: actions/setup-node@v4
         with:
-          node-version: 24
+          node-version-file: .nvmrc
           cache: 'npm'
 
       - name: Scan for Hardcoded Secrets (gitleaks, full history)
