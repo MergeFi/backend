@@ -256,30 +256,25 @@ export class EscrowService {
         manager,
       );
 
-    const shares = splitStroops(totalStroops, bps);
-    const reconcile = this.reconcileSplitResult(escrow.id, totalStroops, result.returnValue);
+      const shares = splitStroops(totalStroops, bps);
+      const reconcile = this.reconcileSplitResult(
+        escrow.id,
+        totalStroops,
+        result.returnValue,
+      );
 
-    // Atomic: the escrow flips to RELEASED (or RECONCILIATION_PENDING when
-    // the contract's reported total diverges from our recorded total) and
-    // every recipient's Payment row is written in one transaction, so a
-    // mid-loop insert failure can no longer leave a RELEASED escrow with only
-    // some recipients recorded (#154).  A divergence is written to
-    // metadata.reconciliation so the reconciliation job can query and act on
-    // it (#814).
-    const payments: Payment[] = [];
-    await this.dataSource.transaction(async (manager) => {
+      // Atomic: the escrow flips to RELEASED (or RECONCILIATION_PENDING when
+      // the contract's reported total diverges from our recorded total) and
+      // every recipient's Payment row is written in one transaction, so a
+      // mid-loop insert failure can no longer leave a RELEASED escrow with
+      // only some recipients recorded (#154) — and the row lock makes that
+      // span indivisible (#303). A divergence is written to
+      // metadata.reconciliation so the reconciliation job can query and act
+      // on it (#814).
+      const payments: Payment[] = [];
       escrow.status = reconcile.diverged
         ? EscrowStatus.RECONCILIATION_PENDING
         : EscrowStatus.RELEASED;
-      const shares = splitStroops(totalStroops, bps);
-      this.reconcileSplitResult(escrow.id, totalStroops, result.returnValue);
-
-      // Atomic: the escrow flips to RELEASED and every recipient's Payment row
-      // is written in one transaction, so a mid-loop insert failure can no
-      // longer leave a RELEASED escrow with only some recipients recorded
-      // (#154) — and the row lock makes that span indivisible (#303).
-      const payments: Payment[] = [];
-      escrow.status = EscrowStatus.RELEASED;
       escrow.releaseTxHash = result.txHash;
       escrow.releasedAt = new Date();
       escrow.metadata = {
@@ -751,7 +746,9 @@ export class EscrowService {
     escrowId: string,
     totalStroops: bigint,
     returnValue: unknown,
-  ): { diverged: false } | { diverged: true; returned: bigint; recorded: bigint } {
+  ):
+    | { diverged: false }
+    | { diverged: true; returned: bigint; recorded: bigint } {
     const returned = this.toStroopsFromReturnValue(returnValue);
     if (returned === null) return { diverged: false };
     if (returned !== totalStroops) {
