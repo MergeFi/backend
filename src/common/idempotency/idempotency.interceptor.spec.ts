@@ -3,6 +3,7 @@ import {
   CallHandler,
   ConflictException,
   ExecutionContext,
+  HttpException,
   InternalServerErrorException,
   UnprocessableEntityException,
 } from '@nestjs/common';
@@ -261,6 +262,69 @@ describe('IdempotencyInterceptor', () => {
 
     expect(retryResult).toEqual({ ok: true });
     expect(next.handle).toHaveBeenCalledTimes(2);
+  });
+
+  it('releases the key on a non-HttpException failure, so a retry re-executes the handler (#843)', async () => {
+    let calls = 0;
+    const next = createNext(() => {
+      calls += 1;
+      if (calls === 1) {
+        // e.g. a Soroban RPC/network failure surfacing as a plain Error —
+        // not a deterministic outcome, so it must not be cached.
+        return throwError(() => new Error('soroban rpc unavailable'));
+      }
+      return of({ ok: true });
+    });
+    const context = createContext({ headers: { 'idempotency-key': KEY_A } });
+
+    await expect(
+      firstValueFrom(await interceptor.intercept(context, next)),
+    ).rejects.toThrow('soroban rpc unavailable');
+    // The key row is gone after the first attempt, not left COMPLETED with
+    // a cached failure.
+    expect(repo.rows).toHaveLength(0);
+
+    const retryResult = await lastValueFrom(
+      await interceptor.intercept(context, next),
+    );
+
+    expect(retryResult).toEqual({ ok: true });
+    expect(next.handle).toHaveBeenCalledTimes(2);
+    expect(repo.rows).toHaveLength(1);
+    expect(repo.rows[0].status).toBe(IdempotencyKeyStatus.COMPLETED);
+  });
+
+  it('caches the exact 4xx status and body, not just the exception type (#843)', async () => {
+    const next = createNext(() =>
+      throwError(
+        () =>
+          new BadRequestException(
+            'Escrow e-1 is not in LOCKED state (current: released)',
+          ),
+      ),
+    );
+    const context = createContext({ headers: { 'idempotency-key': KEY_A } });
+
+    const first = await firstValueFrom(
+      await interceptor.intercept(context, next),
+    ).catch((error: unknown) => error);
+    expect(first).toBeInstanceOf(BadRequestException);
+    const firstException = first as BadRequestException;
+
+    expect(repo.rows[0]).toMatchObject({
+      status: IdempotencyKeyStatus.COMPLETED,
+      responseStatus: 400,
+      responseBody: firstException.getResponse(),
+    });
+
+    const replay = await interceptor
+      .intercept(context, next)
+      .catch((error: unknown) => error);
+    expect(replay).toBeInstanceOf(HttpException);
+    const replayException = replay as HttpException;
+    expect(replayException.getStatus()).toBe(400);
+    expect(replayException.getResponse()).toEqual(firstException.getResponse());
+    expect(next.handle).toHaveBeenCalledTimes(1);
   });
 
   it('caches a 4xx outcome and replays the same exception on retry without re-executing', async () => {

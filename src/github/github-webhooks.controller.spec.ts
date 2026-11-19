@@ -1,3 +1,4 @@
+import { UnauthorizedException } from '@nestjs/common';
 import { GithubWebhooksController } from './github-webhooks.controller';
 import { GithubWebhooksService } from './github-webhooks.service';
 import { WebhookEventStatus } from '../common/enums';
@@ -37,20 +38,17 @@ describe('GithubWebhooksController — rawBody handling (#338)', () => {
   });
 
   it('fails closed when req.rawBody is missing, never HMACing a reconstructed body', async () => {
-    await controller.handle(
-      { body: { action: 'closed' } } as never,
-      'pull_request',
-      'delivery-2',
-      'sha256=abc',
-    );
+    await expect(
+      controller.handle(
+        { body: { action: 'closed' } } as never,
+        'pull_request',
+        'delivery-2',
+        'sha256=abc',
+      ),
+    ).rejects.toBeInstanceOf(UnauthorizedException);
 
     expect(verifySignature).not.toHaveBeenCalled();
-    expect(handleEvent).toHaveBeenCalledWith(
-      'pull_request',
-      'delivery-2',
-      { action: 'closed' },
-      false,
-    );
+    expect(handleEvent).not.toHaveBeenCalled();
   });
 });
 
@@ -108,31 +106,19 @@ describe('GithubWebhooksController — header extraction and response shape (#31
     });
   });
 
-  it('still returns the 202 shape with the event status when the signature is invalid', async () => {
+  it('rejects an invalid signature with 401 before handing anything to the service (#845)', async () => {
     verifySignature.mockReturnValue(false);
-    handleEvent.mockResolvedValue({
-      id: 'event-11',
-      status: WebhookEventStatus.IGNORED,
-    });
 
-    const result = await controller.handle(
-      { rawBody: Buffer.from('{}'), body: {} } as never,
-      'push',
-      'delivery-11',
-      'sha256=bad',
-    );
+    await expect(
+      controller.handle(
+        { rawBody: Buffer.from('{}'), body: {} } as never,
+        'push',
+        'delivery-11',
+        'sha256=bad',
+      ),
+    ).rejects.toBeInstanceOf(UnauthorizedException);
 
-    expect(handleEvent).toHaveBeenCalledWith(
-      'push',
-      'delivery-11',
-      {},
-      false,
-    );
-    expect(result).toEqual({
-      received: true,
-      eventId: 'event-11',
-      status: WebhookEventStatus.IGNORED,
-    });
+    expect(handleEvent).not.toHaveBeenCalled();
   });
 
   it('is declared with a 202 HTTP status for the accepted delivery', () => {

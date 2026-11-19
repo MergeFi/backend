@@ -4,6 +4,7 @@ import {
   collectConfigIssues,
   DEFAULT_LOCAL_DATABASE_URL,
   INSECURE_DEFAULT_JWT_SECRET,
+  MIN_ESCROW_DEADLINE_SECONDS,
 } from './validate-required-config';
 
 type Config = Parameters<typeof collectConfigIssues>[0];
@@ -88,6 +89,70 @@ describe('collectConfigIssues', () => {
       'JWT_SECRET',
       'DATABASE_URL',
       'GITHUB_WEBHOOK_SECRET',
+    ]);
+  });
+});
+
+describe('numeric config validation (#851)', () => {
+  const development = (): Config => ({
+    ...configuration(),
+    env: 'development',
+  });
+
+  it('accepts the defaults', () => {
+    expect(collectConfigIssues(development())).toEqual([]);
+  });
+
+  it.each([NaN, 0, -1, 65536, 80.5])(
+    'flags PORT=%s in any environment',
+    (port) => {
+      const config = development();
+      config.port = port;
+      expect(keys(config)).toEqual(['PORT']);
+    },
+  );
+
+  it.each([NaN, 0, -86400, 90, MIN_ESCROW_DEADLINE_SECONDS - 1, 86400.5])(
+    'flags ESCROW_DEADLINE_SECONDS=%s in any environment',
+    (deadline) => {
+      const config = development();
+      config.stellar = { ...config.stellar, escrowDeadlineSeconds: deadline };
+      expect(keys(config)).toEqual(['ESCROW_DEADLINE_SECONDS']);
+    },
+  );
+
+  it('accepts ESCROW_DEADLINE_SECONDS at exactly the minimum', () => {
+    const config = development();
+    config.stellar = {
+      ...config.stellar,
+      escrowDeadlineSeconds: MIN_ESCROW_DEADLINE_SECONDS,
+    };
+    expect(collectConfigIssues(config)).toEqual([]);
+  });
+
+  it('explains the permissionless-refund consequence in the message', () => {
+    const config = development();
+    config.stellar = { ...config.stellar, escrowDeadlineSeconds: NaN };
+    expect(collectConfigIssues(config)[0].message).toMatch(
+      /anyone can trigger a refund/,
+    );
+  });
+
+  it('refuses to boot outside production on a malformed value', () => {
+    const config = development();
+    config.port = NaN;
+    expect(() => assertRequiredConfig(config)).toThrow(
+      /Refusing to start with an incomplete configuration[\s\S]*PORT/,
+    );
+  });
+
+  it('reports numeric issues alongside production secret issues', () => {
+    const config = validProduction();
+    config.stellar.escrowDeadlineSeconds = 90;
+    config.stellar.treasurySecret = '';
+    expect(keys(config)).toEqual([
+      'ESCROW_DEADLINE_SECONDS',
+      'TREASURY_SECRET',
     ]);
   });
 });

@@ -22,10 +22,52 @@ export interface ConfigIssue {
   message: string;
 }
 
+/**
+ * Shortest `ESCROW_DEADLINE_SECONDS` accepted at boot: one day. The value is
+ * passed straight to `escrow::fund`'s `deadline`, and once
+ * `now >= deadline + GRACE_PERIOD` (14 days in mergefi-contracts) the
+ * contract's `refund` becomes permissionless — anyone can unwind the escrow.
+ * This floor only catches unit mistakes (e.g. `90` meaning "90 days"); it is
+ * not a recommendation — see README "ESCROW_DEADLINE_SECONDS" (#851).
+ */
+export const MIN_ESCROW_DEADLINE_SECONDS = 24 * 60 * 60;
+
 type RequiredConfig = Pick<
   AppConfig,
-  'env' | 'jwt' | 'github' | 'stellar' | 'database'
+  'env' | 'port' | 'jwt' | 'github' | 'stellar' | 'database'
 >;
+
+/**
+ * Numeric settings that are broken in *every* environment when malformed:
+ * `parseInt` turns a typo into NaN, which surfaces much later as a failed
+ * `listen()` or a RangeError at escrow fund time (#610, #851).
+ */
+function collectNumericConfigIssues(config: RequiredConfig): ConfigIssue[] {
+  const issues: ConfigIssue[] = [];
+
+  if (
+    !Number.isInteger(config.port) ||
+    config.port < 1 ||
+    config.port > 65535
+  ) {
+    issues.push({
+      key: 'PORT',
+      message: `PORT must be an integer between 1 and 65535 (got ${config.port})`,
+    });
+  }
+
+  const deadline = config.stellar.escrowDeadlineSeconds;
+  if (!Number.isInteger(deadline) || deadline < MIN_ESCROW_DEADLINE_SECONDS) {
+    issues.push({
+      key: 'ESCROW_DEADLINE_SECONDS',
+      message:
+        `ESCROW_DEADLINE_SECONDS must be an integer of at least ${MIN_ESCROW_DEADLINE_SECONDS} (1 day) (got ${deadline}) — ` +
+        "it sets escrow::fund's deadline, after which (plus the contract's 14-day grace period) anyone can trigger a refund",
+    });
+  }
+
+  return issues;
+}
 
 /**
  * Collects every required-in-production configuration problem — not just the
@@ -38,11 +80,13 @@ type RequiredConfig = Pick<
  * touch the chain); a default `DATABASE_URL` connects to a local Postgres
  * with default credentials. None of that surfaces at boot without this pass.
  *
- * Returns an empty array outside production, or when the configuration is
- * safe to start with.
+ * Numeric settings (PORT, ESCROW_DEADLINE_SECONDS) are validated in every
+ * environment; the secret checks only apply in production.
+ *
+ * Returns an empty array when the configuration is safe to start with.
  */
 export function collectConfigIssues(config: RequiredConfig): ConfigIssue[] {
-  const issues: ConfigIssue[] = [];
+  const issues = collectNumericConfigIssues(config);
   if (config.env !== 'production') return issues;
 
   const requireNonEmpty = (
@@ -113,16 +157,18 @@ export function collectConfigIssues(config: RequiredConfig): ConfigIssue[] {
 }
 
 /**
- * Fails fast and loudly when any required-in-production secret is missing,
- * listing every problem at once rather than one boot attempt per fix.
+ * Fails fast and loudly when any required-in-production secret is missing
+ * or a numeric setting is malformed, listing every problem at once rather
+ * than one boot attempt per fix.
  */
 export function assertRequiredConfig(config: RequiredConfig): void {
   const issues = collectConfigIssues(config);
   if (issues.length === 0) return;
 
   const detail = issues.map((issue) => `  - ${issue.message}`).join('\n');
+  const where = config.env === 'production' ? ' in production' : '';
   throw new Error(
-    `Refusing to start in production with an incomplete configuration:\n${detail}\n` +
+    `Refusing to start${where} with an incomplete configuration:\n${detail}\n` +
       'Set the environment variables listed above (see .env.example) and restart.',
   );
 }
