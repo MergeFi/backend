@@ -197,18 +197,36 @@ export class EscrowService {
     );
 
     const shares = splitStroops(totalStroops, bps);
-    this.reconcileSplitResult(escrow.id, totalStroops, result.returnValue);
+    const reconcile = this.reconcileSplitResult(escrow.id, totalStroops, result.returnValue);
 
-    // Atomic: the escrow flips to RELEASED and every recipient's Payment row
-    // is written in one transaction, so a mid-loop insert failure can no
-    // longer leave a RELEASED escrow with only some recipients recorded
-    // (#154).
+    // Atomic: the escrow flips to RELEASED (or RECONCILIATION_PENDING when
+    // the contract's reported total diverges from our recorded total) and
+    // every recipient's Payment row is written in one transaction, so a
+    // mid-loop insert failure can no longer leave a RELEASED escrow with only
+    // some recipients recorded (#154).  A divergence is written to
+    // metadata.reconciliation so the reconciliation job can query and act on
+    // it (#814).
     const payments: Payment[] = [];
     await this.dataSource.transaction(async (manager) => {
-      escrow.status = EscrowStatus.RELEASED;
+      escrow.status = reconcile.diverged
+        ? EscrowStatus.RECONCILIATION_PENDING
+        : EscrowStatus.RELEASED;
       escrow.releaseTxHash = result.txHash;
       escrow.releasedAt = new Date();
-      escrow.metadata = { ...(escrow.metadata ?? {}), splitRelease: result };
+      escrow.metadata = {
+        ...(escrow.metadata ?? {}),
+        splitRelease: result,
+        ...(reconcile.diverged
+          ? {
+              reconciliation: {
+                divergedAt: new Date().toISOString(),
+                returnedStroops: String(reconcile.returned),
+                recordedStroops: String(reconcile.recorded),
+                resolved: false,
+              },
+            }
+          : {}),
+      };
       await manager.save(Escrow, escrow);
 
       for (let i = 0; i < recipients.length; i++) {
@@ -580,22 +598,26 @@ export class EscrowService {
    * payout figure — so `result.returnValue` is normally null and the
    * recorded Payment rows come from the locally computed shares. If a future
    * contract revision returns a scalar stroop total, reconcile it against
-   * the local total and surface any divergence as a warning for the
-   * reconciliation job rather than discarding it (#43).
+   * the local total and surface any divergence as queryable state so the
+   * reconciliation job can find and act on it (#814).
+   *
+   * Returns `true` when a divergence was detected.
    */
   private reconcileSplitResult(
     escrowId: string,
     totalStroops: bigint,
     returnValue: unknown,
-  ): void {
+  ): { diverged: false } | { diverged: true; returned: bigint; recorded: bigint } {
     const returned = this.toStroopsFromReturnValue(returnValue);
-    if (returned === null) return;
+    if (returned === null) return { diverged: false };
     if (returned !== totalStroops) {
       this.logger.warn(
         `release returnValue (${returned} stroops) diverges from the ` +
           `recorded total (${totalStroops} stroops) for escrow ${escrowId}`,
       );
+      return { diverged: true, returned, recorded: totalStroops };
     }
+    return { diverged: false };
   }
 
   /** Best-effort conversion of a contract return value to a stroop total. */

@@ -50,6 +50,12 @@ export enum EscrowStatus {
   RELEASED = 'released',
   REFUNDED = 'refunded',
   FAILED = 'failed',
+  /**
+   * On-chain release succeeded but the contract's reported stroop total
+   * diverges from the locally recorded total (#814). The reconciliation job
+   * must resolve this before the escrow transitions to RELEASED.
+   */
+  RECONCILIATION_PENDING = 'reconciliation_pending',
 }
 
 export enum EscrowAction {
