@@ -869,6 +869,9 @@ describe('GithubWebhooksService', () => {
 
       expect(bountiesService.markInReview).not.toHaveBeenCalled();
       expect(bountiesService.markMergedAndRelease).not.toHaveBeenCalled();
+    });
+  });
+
   // #308: a redelivered X-GitHub-Delivery used to hit the unique constraint
   // on webhook_events.deliveryId and escape handleEvent as a 500, so every
   // redelivery of that event failed forever.

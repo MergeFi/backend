@@ -122,9 +122,12 @@ export class SorobanClientService {
   private readonly server: rpc.Server;
   private readonly networkPassphrase: string;
   private readonly stellar: AppConfig['stellar'];
+  private readonly isProduction: boolean;
 
   constructor(private readonly configService: ConfigService<AppConfig, true>) {
     this.stellar = this.configService.get('stellar', { infer: true });
+    this.isProduction =
+      this.configService.get('env', { infer: true }) === 'production';
     this.networkPassphrase = this.stellar.networkPassphrase || Networks.TESTNET;
     this.server = new rpc.Server(this.stellar.sorobanRpcUrl, {
       allowHttp: this.stellar.sorobanRpcUrl.startsWith('http://'),
@@ -185,6 +188,11 @@ export class SorobanClientService {
    * contracts), this short-circuits into a deterministic dry-run result so
    * the rest of the orchestration (DB writes, status transitions) can still
    * be exercised end-to-end without live infrastructure.
+   *
+   * Production never dry-runs: a synthetic success there would write
+   * LOCKED escrows, CONFIRMED payments and PAID bounties for transactions
+   * that never happened. `assertRequiredConfig` already refuses to boot
+   * without both variables; this is the same guard at the point of use (#839).
    */
   async invoke(
     method: string,
@@ -192,6 +200,12 @@ export class SorobanClientService {
     opts: { contractId?: string } = {},
   ): Promise<ContractInvocationResult> {
     if (!this.isConfigured()) {
+      if (this.isProduction) {
+        throw new Error(
+          `Refusing to dry-run "${method}" in production: ESCROW_CONTRACT_ID ` +
+            'and TREASURY_SECRET must both be set.',
+        );
+      }
       this.logger.warn(
         `Soroban not configured (ESCROW_CONTRACT_ID/TREASURY_SECRET missing) — ` +
           `dry-running "${method}" instead of submitting an on-chain transaction.`,

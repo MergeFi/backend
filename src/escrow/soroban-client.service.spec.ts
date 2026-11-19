@@ -29,9 +29,12 @@ const baseStellarConfig: StellarConfig = {
 
 function makeService(
   overrides: Partial<StellarConfig> = {},
+  env = 'test',
 ): SorobanClientService {
   const configService = {
-    get: jest.fn(() => ({ ...baseStellarConfig, ...overrides })),
+    get: jest.fn((key: keyof AppConfig) =>
+      key === 'env' ? env : { ...baseStellarConfig, ...overrides },
+    ),
   };
   return new SorobanClientService(
     configService as unknown as ConfigService<AppConfig, true>,
@@ -113,20 +116,63 @@ describe('SorobanClientService', () => {
     });
   });
 
+  // The dry-run short-circuit is the path every test, local run and
+  // unconfigured deployment takes, and it writes LOCKED/CONFIRMED/PAID rows
+  // for transactions that never happened (#839).
   describe('invoke (dry-run gating)', () => {
-    it('returns a deterministic dry-run result without touching the RPC server when unconfigured', async () => {
-      const sendSpy = jest.spyOn(rpc.Server.prototype, 'sendTransaction');
-      const getTxSpy = jest.spyOn(rpc.Server.prototype, 'getTransaction');
+    const unconfigured: [string, Partial<StellarConfig>][] = [
+      ['neither variable is set', {}],
+      ['only ESCROW_CONTRACT_ID is set', { escrowContractId: 'CCONTRACT' }],
+      ['only TREASURY_SECRET is set', { treasurySecret: 'SSECRET' }],
+    ];
 
-      const result = await makeService().invoke('release', ['ref-1']);
+    let rpcSpies: jest.SpyInstance[];
 
-      expect(result.status).toBe('DRY_RUN');
-      expect(result.txHash).toMatch(/^dry-run-release-/);
-      expect(result.ledger).toBeNull();
-      expect(result.returnValue).toBeNull();
-      expect(sendSpy).not.toHaveBeenCalled();
-      expect(getTxSpy).not.toHaveBeenCalled();
+    beforeEach(() => {
+      rpcSpies = [
+        'getAccount',
+        'simulateTransaction',
+        'sendTransaction',
+        'getTransaction',
+      ].map((method) =>
+        jest.spyOn(
+          rpc.Server.prototype,
+          method as keyof typeof rpc.Server.prototype,
+        ),
+      );
     });
+
+    it.each(unconfigured)(
+      'dry-runs without any RPC call when %s',
+      async (_label, overrides) => {
+        const service = makeService(overrides);
+        expect(service.isConfigured()).toBe(false);
+
+        const result = await service.invoke('release', ['ref-1']);
+
+        // `dry-run-` is the only way to identify a synthetic record after
+        // the fact (see README "Dry-run mode").
+        expect(result).toEqual({
+          txHash: expect.stringMatching(/^dry-run-release-\d+$/),
+          ledger: null,
+          returnValue: null,
+          status: 'DRY_RUN',
+        });
+        for (const spy of rpcSpies) expect(spy).not.toHaveBeenCalled();
+      },
+    );
+
+    it.each(unconfigured)(
+      'throws instead of dry-running in production when %s',
+      async (_label, overrides) => {
+        const service = makeService(overrides, 'production');
+
+        await expect(service.invoke('release', ['ref-1'])).rejects.toThrow(
+          'Refusing to dry-run "release" in production',
+        );
+        for (const spy of rpcSpies) expect(spy).not.toHaveBeenCalled();
+      },
+    );
   });
 
   describe('invoke (configured pipeline)', () => {

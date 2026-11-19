@@ -1,0 +1,9 @@
+version: 2
+updates:
+  # GitHub Actions used by CI. The workflows pin each action to a full commit
+  # SHA (#833); this keeps those pins, and their trailing version comments,
+  # current instead of letting them silently age.
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"

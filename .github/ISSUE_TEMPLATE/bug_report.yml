@@ -1,0 +1,93 @@
+name: Bug Report
+description: Report a bug or unexpected behavior in the backend API
+labels: ["bug", "needs-triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report a bug! Please fill out the information below to help us investigate.
+
+        **Security issues** (auth bypass, secret exposure, a way to move or release funds you should not) must **not** be filed here — see the [security policy](https://github.com/MergeFi/backend/security/policy).
+
+  - type: textarea
+    id: description
+    attributes:
+      label: Describe the bug
+      description: A clear and concise description of what the bug is.
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Steps to reproduce
+      description: The request(s), webhook delivery or scheduler run that triggers it.
+      placeholder: |
+        1. POST /api/bounties with '...'
+        2. ...
+        3. See error
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+      description: A clear and concise description of what you expected to happen.
+    validations:
+      required: true
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Affected area
+      description: Which part of the backend is affected?
+      multiple: true
+      options:
+        - Escrow / Soroban / payouts
+        - Bounties
+        - Milestones
+        - Maintenance pools
+        - Teams / splits
+        - Auth / users
+        - GitHub sync / webhooks
+        - Analytics / reputation / sponsors
+        - Idempotency / rate limiting
+        - Configuration / database / migrations
+        - CI/CD
+        - Documentation
+        - Other
+    validations:
+      required: true
+
+  - type: dropdown
+    id: soroban-mode
+    attributes:
+      label: Soroban mode
+      description: Were ESCROW_CONTRACT_ID and TREASURY_SECRET both set? (See README "Dry-run mode".)
+      options:
+        - Dry-run (one or both unset)
+        - Configured contract (testnet)
+        - Configured contract (mainnet)
+        - Not relevant / don't know
+    validations:
+      required: false
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs / error output
+      description: Relevant server log lines or the API error response. Redact tokens and secrets.
+      render: shell
+
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      value: |
+        Commit / branch:
+        Node version:
+        Postgres version:
+        NODE_ENV:
+    validations:
+      required: false

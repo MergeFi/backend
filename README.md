@@ -164,7 +164,9 @@ it calls the client, then persists `Escrow`/`Payment` rows and drives the
 flag: it is inferred from those two variables. Both are blank in
 `.env.example`, so it is the default for local development, for CI, and for
 any non-production deployment where they were missed. (In
-`NODE_ENV=production` the app refuses to boot with either one unset.)
+`NODE_ENV=production` the app refuses to boot with either one unset, and
+`invoke` itself throws rather than dry-running if it is ever reached that
+way.)
 
 **What it does.** Instead of building, signing and submitting a transaction,
 `invoke` logs a warning and immediately returns a synthetic success. Every
