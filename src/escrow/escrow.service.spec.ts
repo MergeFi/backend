@@ -719,4 +719,91 @@ describe('EscrowService', () => {
       ).rejects.toThrow('FK violation on recipient 2');
     });
   });
+
+  describe('reconcileSplitResult divergence → queryable state (#814)', () => {
+    beforeEach(() => {
+      escrowRepo.findOne.mockResolvedValue({
+        id: 'escrow-reconcile',
+        status: EscrowStatus.LOCKED,
+        amount: '100.0000000',
+        asset: AssetType.USDC,
+        bountyId: 'bounty-reconcile',
+      });
+    });
+
+    it('sets status to RECONCILIATION_PENDING when returnValue diverges from recorded total', async () => {
+      // Contract reports 999_000_000 stroops but we recorded 1_000_000_000.
+      soroban.invoke.mockResolvedValueOnce({
+        txHash: 'tx-diverge',
+        ledger: 99,
+        returnValue: 999_000_000n,
+        status: 'SUCCESS',
+      });
+
+      await service.splitRelease('escrow-reconcile', [
+        { recipientAddress: 'GA', percentage: 50 },
+        { recipientAddress: 'GB', percentage: 50 },
+      ]);
+
+      const saved = escrowRepo.save.mock.calls[0]?.[0] as any;
+      expect(saved?.status).toBe(EscrowStatus.RECONCILIATION_PENDING);
+    });
+
+    it('writes metadata.reconciliation with returned and recorded stroops on divergence', async () => {
+      soroban.invoke.mockResolvedValueOnce({
+        txHash: 'tx-diverge-2',
+        ledger: 100,
+        returnValue: 999_000_000n,
+        status: 'SUCCESS',
+      });
+
+      await service.splitRelease('escrow-reconcile', [
+        { recipientAddress: 'GA', percentage: 50 },
+        { recipientAddress: 'GB', percentage: 50 },
+      ]);
+
+      const saved = escrowRepo.save.mock.calls[0]?.[0] as any;
+      expect(saved?.metadata?.reconciliation).toMatchObject({
+        returnedStroops: '999000000',
+        recordedStroops: '1000000000',
+        resolved: false,
+      });
+    });
+
+    it('sets status to RELEASED (not RECONCILIATION_PENDING) when returnValue is null', async () => {
+      // returnValue: null is the current contract behaviour — no divergence.
+      soroban.invoke.mockResolvedValueOnce({
+        txHash: 'tx-ok',
+        ledger: 101,
+        returnValue: null,
+        status: 'SUCCESS',
+      });
+
+      await service.splitRelease('escrow-reconcile', [
+        { recipientAddress: 'GA', percentage: 50 },
+        { recipientAddress: 'GB', percentage: 50 },
+      ]);
+
+      const saved = escrowRepo.save.mock.calls[0]?.[0] as any;
+      expect(saved?.status).toBe(EscrowStatus.RELEASED);
+      expect(saved?.metadata?.reconciliation).toBeUndefined();
+    });
+
+    it('sets status to RELEASED when returnValue matches the recorded total', async () => {
+      soroban.invoke.mockResolvedValueOnce({
+        txHash: 'tx-match',
+        ledger: 102,
+        returnValue: 1_000_000_000n,
+        status: 'SUCCESS',
+      });
+
+      await service.splitRelease('escrow-reconcile', [
+        { recipientAddress: 'GA', percentage: 50 },
+        { recipientAddress: 'GB', percentage: 50 },
+      ]);
+
+      const saved = escrowRepo.save.mock.calls[0]?.[0] as any;
+      expect(saved?.status).toBe(EscrowStatus.RELEASED);
+    });
+  });
 });
