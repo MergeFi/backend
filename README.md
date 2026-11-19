@@ -34,6 +34,7 @@ RPC and mirrors on-chain state into Postgres for fast reads.
   - [`ESCROW_DEADLINE_SECONDS` and the permissionless refund window](#escrow_deadline_seconds-and-the-permissionless-refund-window)
 - [API overview](#api-overview)
 - [Setup, run, test](#setup-run-test)
+  - [Node.js version](#nodejs-version)
 - [Roadmap](#roadmap)
 
 ---
@@ -307,6 +308,29 @@ job.
 
 You can run this project either natively on your host machine or completely containerized using Docker.
 
+### Node.js version
+
+This repository runs on **Node.js 24**. The major is pinned in one place,
+`.nvmrc`, and everything else is kept in step with it:
+
+| Where | Value |
+| --- | --- |
+| `.nvmrc` | `24` |
+| `package.json` `engines.node` | `>=24.0.0 <25.0.0` |
+| `.npmrc` | `engine-strict=true` — `npm install`/`npm ci` refuse to run on any other major instead of only warning |
+| CI (`.github/workflows/ci.yml`) | `node-version-file: .nvmrc` |
+| `Dockerfile` | `node:24-alpine` |
+
+With [nvm](https://github.com/nvm-sh/nvm) (or fnm / Volta, which read the
+same file), run `nvm use` in this directory before `npm install`.
+
+The sibling repositories pin different majors today (`mergefi-frontend` builds
+on 20; `mergefi-contracts`' scripts require >=22.12 while its `.nvmrc` says
+20). Running the backend next to the frontend locally therefore needs a
+version manager and a `nvm use` in each checkout. Aligning the org on a single
+major is tracked in #835. When that lands, change `.nvmrc` here and update the
+rows above to match.
+
 ### 1. Local Development via Docker Compose (Recommended)
 
 This is the easiest way to get up and running with a pre-configured, isolated PostgreSQL database.
@@ -330,7 +354,8 @@ docker compose up --build
 If you prefer to run NestJS directly on your host machine:
 
 ```bash
-# A. Install Dependencies
+# A. Install Dependencies (on the Node major in .nvmrc — see "Node.js version")
+nvm use
 npm install
 
 # B. Spin up only the Database service in Docker
@@ -392,6 +417,9 @@ Unit tests cover critical domains including:
 - `src/sponsors/sponsors.service.spec.ts` — sponsor dashboard aggregate queries (budgetLocked/totalSpend read the Escrow/Payment ledger directly).
 - `src/database/escrow-fk-integrity.integration.spec.ts` — **integration** test against a real Postgres (requires `DATABASE_URL`, not mocked): the exactly-one-parent CHECK constraint on `escrows`, and that sponsor dashboard figures survive a parent bounty/milestone being deleted.
 - `src/escrow/escrow-lock.integration.spec.ts` — **integration** test against a real Postgres: two concurrent `release` calls (and two over-budget `releasePartial` calls) on one escrow serialise on `withLockedEscrow`'s row lock, so exactly one succeeds and exactly one `Payment` is written (#844).
+- `src/common/filters/global-exception.filter.integration.spec.ts` — includes the throttled **429** contract mergefi-frontend depends on: a `Retry-After` header and a JSON body with `message` (#842).
+- `test/merge-to-payout.e2e-spec.ts` — **e2e** against a real Postgres: a signed `pull_request.closed(merged)` delivery drives the whole chain (signature gate → webhook dispatch → `markMergedAndRelease` → escrow release/split → `Payment` rows → bounty PAID → platform-summary refresh), for a single contributor and for a team of three (#848).
+- `test/soroban-xdr-encoding.e2e-spec.ts` — decodes the `xdr.ScVal`s the real Stellar SDK produces for every contract call the backend makes (`fund`, `release`, `refund`, `withdraw`, `release_partial`) and checks them against the `mergefi-contracts` signatures (#840). It runs under the e2e config because the unit config stubs the SDK.
 - `src/analytics/analytics.integration.spec.ts` — Postgres load/parity test: SQL heatmap + top-N match the old JS bucketing on a small fixture; a 3,000-bounty seed must not call `find`/`getMany` (O(n) entity load → O(days)+O(1) aggregates), `forContributor` under 2s, cached homepage summary on a second call.
 
 `DATABASE_SYNCHRONIZE=true` (set in development) will auto-create tables from entities for fast local iteration. Real deployments should run migrations instead — see `src/database/migrations/` and the `migration:*` npm scripts below.
