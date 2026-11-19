@@ -8,7 +8,9 @@ import {
 import { WebhookEventStatus } from '../enums';
 
 /**
- * Audit log of every inbound webhook, verified or not, for replay/debugging.
+ * Audit log of every signature-verified inbound webhook, for replay/debugging.
+ * Deliveries that fail the signature check are refused by
+ * GithubWebhooksController before anything is written here (#845).
  *
  * This is an append-only, never-pruned table (unlike `IdempotencyKey`, which
  * has TTL cleanup), so operational reads must not full-scan it (#149):

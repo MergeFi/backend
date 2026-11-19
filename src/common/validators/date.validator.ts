@@ -13,8 +13,14 @@ export function IsFutureDate(validationOptions?: ValidationOptions) {
       options: validationOptions,
       validator: {
         validate(value: unknown) {
-          if (typeof value !== 'string') return false;
-          const date = new Date(value);
+          // Accept an already-transformed Date (a DTO using @Type(() => Date))
+          // as well as the raw string. Numbers are rejected rather than read
+          // as epoch milliseconds (#818).
+          let date: Date;
+          if (value instanceof Date) date = value;
+          else if (typeof value === 'string' && value.trim() !== '')
+            date = new Date(value);
+          else return false;
           return !isNaN(date.getTime()) && date.getTime() > Date.now();
         },
         defaultMessage(args: ValidationArguments) {

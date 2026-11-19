@@ -1,4 +1,12 @@
-import { Controller, Headers, HttpCode, Post, Req } from '@nestjs/common';
+import {
+  Controller,
+  Headers,
+  HttpCode,
+  Logger,
+  Post,
+  Req,
+  UnauthorizedException,
+} from '@nestjs/common';
 import { ApiExcludeController } from '@nestjs/swagger';
 import type { Request } from 'express';
 import { GithubWebhooksService } from './github-webhooks.service';
@@ -10,6 +18,8 @@ interface RawBodyRequest extends Request {
 @ApiExcludeController()
 @Controller('github/webhooks')
 export class GithubWebhooksController {
+  private readonly logger = new Logger(GithubWebhooksController.name);
+
   constructor(private readonly webhooksService: GithubWebhooksService) {}
 
   @Post()
@@ -28,6 +38,17 @@ export class GithubWebhooksController {
     const signatureValid = req.rawBody
       ? this.webhooksService.verifySignature(req.rawBody, signature)
       : false;
+
+    // This is the only unauthenticated write endpoint, so the signature is a
+    // gate, not an audit flag: an unverified delivery is refused before
+    // anything reaches webhook_events (#735, #845). Otherwise anyone who can
+    // reach the endpoint could store arbitrary JSON at the throttler's rate.
+    if (!signatureValid) {
+      this.logger.warn(
+        `Rejected webhook delivery ${deliveryId} — invalid signature`,
+      );
+      throw new UnauthorizedException('Invalid webhook signature');
+    }
 
     const event = await this.webhooksService.handleEvent(
       eventType,
