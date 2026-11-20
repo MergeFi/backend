@@ -4,6 +4,7 @@ import { Cron, CronExpression } from '@nestjs/schedule';
 import { DataSource } from 'typeorm';
 import { AppConfig } from '../config/configuration';
 import { BountiesService } from './bounties.service';
+import { runWithAdvisoryLock } from '../common/advisory-lock';
 
 /**
  * Runs `BountiesService.expireOverdue()` on a schedule.
@@ -34,35 +35,22 @@ export class BountyExpiryScheduler {
     }
 
     const lockId = 847291;
-    let lockAcquired = true;
-    if (this.dataSource?.isInitialized) {
-      try {
-        const res = await this.dataSource.query(
-          'SELECT pg_try_advisory_lock($1) as acquired',
-          [lockId],
-        );
-        lockAcquired = res?.[0]?.acquired ?? true;
-      } catch {
-        lockAcquired = true;
-      }
-    }
-
-    if (!lockAcquired) {
-      this.logger.debug('Skipping sweep: another instance holds advisory lock');
-      return;
-    }
-
-    try {
+    const work = async (): Promise<void> => {
       const expired = await this.bountiesService.expireOverdue();
       if (expired > 0) {
         this.logger.log(`Expired ${expired} overdue bounty(ies)`);
       }
-    } finally {
-      if (this.dataSource?.isInitialized && lockAcquired) {
-        await this.dataSource
-          .query('SELECT pg_advisory_unlock($1)', [lockId])
-          .catch(() => {});
-      }
+    };
+
+    if (!this.dataSource?.isInitialized) {
+      await work();
+      return;
+    }
+
+    // Lock and unlock on one connection (#784), so the lock is always released.
+    const outcome = await runWithAdvisoryLock(this.dataSource, lockId, work);
+    if (!outcome.acquired) {
+      this.logger.debug('Skipping sweep: another instance holds advisory lock');
     }
   }
 }
