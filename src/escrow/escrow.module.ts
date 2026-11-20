@@ -5,6 +5,8 @@ import { IdempotencyKey } from '../common/entities/idempotency-key.entity';
 import { EscrowService } from './escrow.service';
 import { EscrowController } from './escrow.controller';
 import { SorobanClientService } from './soroban-client.service';
+import { EscrowReconciliationService } from './escrow-reconciliation.service';
+import { EscrowReconciliationScheduler } from './escrow-reconciliation.scheduler';
 
 @Module({
   imports: [
@@ -13,7 +15,12 @@ import { SorobanClientService } from './soroban-client.service';
     TypeOrmModule.forFeature([Escrow, Payment, User, IdempotencyKey]),
   ],
   controllers: [EscrowController],
-  providers: [EscrowService, SorobanClientService],
-  exports: [EscrowService, SorobanClientService],
+  providers: [
+    EscrowService,
+    SorobanClientService,
+    EscrowReconciliationService,
+    EscrowReconciliationScheduler,
+  ],
+  exports: [EscrowService, SorobanClientService, EscrowReconciliationService],
 })
 export class EscrowModule {}

@@ -308,6 +308,126 @@ describe('EscrowService', () => {
       );
     });
 
+    // #841: each branch below deliberately reverses the obvious handling, so
+    // every save is snapshotted (the service mutates one object in place) and
+    // the status, metadata and propagated error are asserted exactly.
+    describe('failure paths (#841)', () => {
+      const input = {
+        amount: '10',
+        asset: AssetType.XLM,
+        funderAddress: 'GFUNDER',
+        bountyId: 'bounty-1',
+        onChainIssueId: '77',
+      };
+      let snapshots: Partial<Escrow>[];
+      // fund() replaces metadata wholesale, so a shallow copy is a true snapshot.
+      const snapshot = (data: Partial<Escrow>) =>
+        snapshots.push({
+          ...data,
+          metadata: data.metadata ? { ...data.metadata } : data.metadata,
+        });
+
+      beforeEach(() => {
+        snapshots = [];
+        escrowRepo.save.mockImplementation((data: Partial<Escrow>) => {
+          snapshot(data);
+          return Promise.resolve(data);
+        });
+      });
+
+      it('SorobanPendingError: keeps PENDING, records pending.txHash, rethrows the same error (#527)', async () => {
+        const pending = new SorobanPendingError('tx-pending');
+        soroban.invoke.mockRejectedValueOnce(pending);
+
+        await expect(service.fund(input)).rejects.toBe(pending);
+
+        expect(snapshots.map((e) => e.status)).toEqual([
+          EscrowStatus.PENDING,
+          EscrowStatus.PENDING,
+        ]);
+        const last = snapshots[1];
+        expect(last.fundTxHash).toBe('tx-pending');
+        expect(last.lockedAt).toBeUndefined();
+        expect(last.metadata).toEqual({
+          pending: { txHash: 'tx-pending', at: expect.any(String) },
+        });
+        expect(
+          Number.isNaN(
+            Date.parse((last.metadata!.pending as { at: string }).at),
+          ),
+        ).toBe(false);
+      });
+
+      it('generic invocation error: marks FAILED with the error message and rethrows the same error', async () => {
+        const failure = new Error('simulation failed: bad args');
+        soroban.invoke.mockRejectedValueOnce(failure);
+
+        await expect(service.fund(input)).rejects.toBe(failure);
+
+        expect(snapshots.map((e) => e.status)).toEqual([
+          EscrowStatus.PENDING,
+          EscrowStatus.FAILED,
+        ]);
+        const last = snapshots[1];
+        expect(last.metadata).toEqual({ error: 'simulation failed: bad args' });
+        expect(last.fundTxHash).toBeUndefined();
+        expect(last.lockedAt).toBeUndefined();
+      });
+
+      it('post-success save failure: keeps LOCKED with the fund result and lastFailure, rethrows the save error (#42)', async () => {
+        const writeError = new Error('connection terminated unexpectedly');
+        escrowRepo.save
+          .mockImplementationOnce((data: Partial<Escrow>) => {
+            snapshot(data);
+            return Promise.resolve(data);
+          })
+          .mockImplementationOnce((data: Partial<Escrow>) => {
+            snapshot(data);
+            return Promise.reject(writeError);
+          });
+
+        await expect(service.fund(input)).rejects.toBe(writeError);
+
+        expect(soroban.invoke).toHaveBeenCalledTimes(1);
+        expect(snapshots.map((e) => e.status)).toEqual([
+          EscrowStatus.PENDING,
+          EscrowStatus.LOCKED,
+          EscrowStatus.LOCKED,
+        ]);
+        const retry = snapshots[2];
+        expect(retry.fundTxHash).toBe('tx-hash-123');
+        expect(retry.lockedAt).toBeInstanceOf(Date);
+        // The fund result must survive alongside lastFailure: it is the only
+        // record of the on-chain lock the reconciler can work from.
+        expect(retry.metadata).toEqual({
+          fund: {
+            txHash: 'tx-hash-123',
+            ledger: 42,
+            returnValue: null,
+            status: 'SUCCESS',
+          },
+          lastFailure: {
+            operation: 'fund',
+            error: 'connection terminated unexpectedly',
+            at: expect.any(String),
+          },
+        });
+      });
+
+      it('post-success save failure: the original error propagates even when the lastFailure write also fails', async () => {
+        const writeError = new Error('pool exhausted');
+        escrowRepo.save
+          .mockImplementationOnce((data: Partial<Escrow>) =>
+            Promise.resolve(data),
+          )
+          .mockRejectedValueOnce(writeError)
+          .mockRejectedValueOnce(new Error('second failure'));
+
+        await expect(service.fund(input)).rejects.toBe(writeError);
+        expect(escrowRepo.save).toHaveBeenCalledTimes(3);
+      });
+    });
+
     it.each([
       '0',
       '-1',

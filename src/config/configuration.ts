@@ -67,8 +67,9 @@ export interface AppConfig {
   };
   schedulers: {
     /**
-     * Whether this process runs the hourly `@Cron` sweeps
-     * (`BountyExpiryScheduler`, `IdempotencyCleanupService`). Set
+     * Whether this process runs the `@Cron` sweeps
+     * (`BountyExpiryScheduler`, `IdempotencyCleanupService`,
+     * `EscrowReconciliationScheduler`). Set
      * `RUN_SCHEDULERS=false` on web replicas when a separate worker tier owns
      * the schedulers (#831). See `parseSchedulersEnabled` for accepted values.
      */

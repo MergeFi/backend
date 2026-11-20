@@ -5,6 +5,7 @@ import { ConfigService } from '@nestjs/config';
 import { Test } from '@nestjs/testing';
 import { Repository, User } from '../../common/entities';
 import { UserRole } from '../../common/enums';
+import { GithubController } from '../../github/github.controller';
 import { RepoScopeGuard } from './repo-scope.guard';
 
 /**
@@ -168,9 +169,9 @@ describe('RepoScopeGuard', () => {
   });
 
   it('refuses an unauthenticated request', async () => {
-    await expect(guard.canActivate(context({ owner: 'acme', repo: 'repo' }))).rejects.toThrow(
-      /Authentication is required/,
-    );
+    await expect(
+      guard.canActivate(context({ owner: 'acme', repo: 'repo' })),
+    ).rejects.toThrow(/Authentication is required/);
   });
 
   it('refuses a request whose authenticated user no longer exists', async () => {
@@ -182,8 +183,78 @@ describe('RepoScopeGuard', () => {
   });
 
   it('refuses a request with no repository parameters', async () => {
-    await expect(guard.canActivate(context({ user: { userId: 'user-1' } }))).rejects.toThrow(
-      NotFoundException,
-    );
+    await expect(
+      guard.canActivate(context({ user: { userId: 'user-1' } })),
+    ).rejects.toThrow(NotFoundException);
+  });
+});
+
+/**
+ * The cases above mock the Reflector, so the real metadata path — the part
+ * that can break silently, since the guard allows when metadata is absent —
+ * is exercised only here, against the real decorated controller (#838).
+ */
+describe('RepoScopeGuard with the real Reflector (#838)', () => {
+  const userRepo = { findOne: jest.fn() };
+  const repositoryRepo = { findOne: jest.fn() };
+  const configService = {
+    get: jest.fn().mockReturnValue({ syncAllowedRepos: '' }),
+  };
+  let guard: RepoScopeGuard;
+
+  const contextFor = <T>(
+    controller: new (...args: never[]) => T,
+    method: keyof T,
+  ) =>
+    ({
+      getHandler: () => controller.prototype[method] as object,
+      getClass: () => controller,
+      switchToHttp: () => ({
+        getRequest: () => ({
+          user: { userId: 'user-2' },
+          params: { owner: 'acme', repo: 'repo' },
+        }),
+      }),
+    }) as never;
+
+  beforeEach(async () => {
+    jest.clearAllMocks();
+    guard = await Test.createTestingModule({
+      providers: [
+        RepoScopeGuard,
+        Reflector,
+        { provide: getRepositoryToken(User), useValue: userRepo },
+        { provide: getRepositoryToken(Repository), useValue: repositoryRepo },
+        { provide: ConfigService, useValue: configService },
+      ],
+    })
+      .compile()
+      .then((module) => module.get(RepoScopeGuard));
+  });
+
+  it('scopes the production sync route (GithubController.sync)', async () => {
+    userRepo.findOne.mockResolvedValue({
+      id: 'user-2',
+      roles: [UserRole.MAINTAINER],
+    });
+    repositoryRepo.findOne.mockResolvedValue({
+      id: 'repo-uuid-1',
+      maintainerId: 'user-1',
+    });
+
+    await expect(
+      guard.canActivate(contextFor(GithubController, 'sync')),
+    ).rejects.toThrow(/assigned to another maintainer/);
+  });
+
+  it('is a no-op on an undecorated handler', async () => {
+    class PlainController {
+      open() {}
+    }
+
+    await expect(
+      guard.canActivate(contextFor(PlainController, 'open')),
+    ).resolves.toBe(true);
+    expect(userRepo.findOne).not.toHaveBeenCalled();
   });
 });

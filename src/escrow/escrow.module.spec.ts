@@ -9,6 +9,8 @@ import { EscrowController } from './escrow.controller';
 import { EscrowModule } from './escrow.module';
 import { EscrowService } from './escrow.service';
 import { SorobanClientService } from './soroban-client.service';
+import { EscrowReconciliationService } from './escrow-reconciliation.service';
+import { EscrowReconciliationScheduler } from './escrow-reconciliation.scheduler';
 
 describe('EscrowModule (#837)', () => {
   let moduleRef: TestingModule;
@@ -19,12 +21,15 @@ describe('EscrowModule (#837)', () => {
 
   afterAll(() => moduleRef.close());
 
-  it.each([EscrowService, SorobanClientService, EscrowController])(
-    'resolves %p',
-    (token) => {
-      expect(moduleRef.get(token)).toBeInstanceOf(token);
-    },
-  );
+  it.each([
+    EscrowService,
+    SorobanClientService,
+    EscrowController,
+    EscrowReconciliationService,
+    EscrowReconciliationScheduler,
+  ])('resolves %p', (token) => {
+    expect(moduleRef.get(token)).toBeInstanceOf(token);
+  });
 
   it.each([Escrow, Payment, User, IdempotencyKey])(
     'registers the %p repository',
