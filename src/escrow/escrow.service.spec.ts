@@ -807,6 +807,50 @@ describe('EscrowService', () => {
       });
     });
 
+    it('locks poolWithdraw with a pessimistic_write lock (#738)', async () => {
+      escrowRepo.findOne.mockResolvedValue({
+        id: 'escrow-pool',
+        status: EscrowStatus.LOCKED,
+        amount: '500.0000000',
+        asset: AssetType.USDC,
+        maintenancePoolId: 'pool-1',
+        onChainId: '3303',
+      });
+
+      await service.poolWithdraw('escrow-pool', '10.0000000', 'GRECIPIENT');
+
+      expect(dataSource.transaction).toHaveBeenCalledTimes(1);
+      expect(dataSource.manager.findOne).toHaveBeenCalledWith(Escrow, {
+        where: { id: 'escrow-pool' },
+        lock: { mode: 'pessimistic_write' },
+      });
+    });
+
+    it('writes the poolWithdraw Payment through the transaction manager (#738)', async () => {
+      escrowRepo.findOne.mockResolvedValue({
+        id: 'escrow-pool',
+        status: EscrowStatus.LOCKED,
+        amount: '500.0000000',
+        asset: AssetType.USDC,
+        maintenancePoolId: 'pool-1',
+        onChainId: '3303',
+      });
+
+      await service.poolWithdraw('escrow-pool', '10.0000000', 'GRECIPIENT');
+
+      // manager.save(Payment, ...) delegates to paymentRepo.save in the mock,
+      // so paymentRepo.save carries the saved Payment data.
+      expect(dataSource.manager.save).toHaveBeenCalledWith(
+        Payment,
+        expect.objectContaining({
+          escrowId: 'escrow-pool',
+          recipientAddress: 'GRECIPIENT',
+          amount: '10.0000000',
+          status: PaymentStatus.CONFIRMED,
+        }),
+      );
+    });
+
     it('records invocation failures through the locking manager, not a second connection', async () => {
       escrowRepo.findOne.mockResolvedValue({ ...lockedEscrow });
       paymentRepo.find.mockResolvedValue([]);

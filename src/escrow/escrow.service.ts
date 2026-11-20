@@ -444,31 +444,44 @@ export class EscrowService {
     recipientId?: string,
     issueId?: string,
   ): Promise<Payment> {
-    const escrow = await this.getOrThrow(escrowId);
-    this.assertLocked(escrow);
+    // Validate amount and recipient identity before acquiring the row lock so
+    // bad-argument errors are cheap and do not briefly block concurrent callers.
     this.assertValidAmount(amount);
     await this.assertRecipientsMatchUsers([{ recipientAddress, recipientId }]);
 
-    const result = await this.invokeOnLockedEscrow(escrow, 'poolWithdraw', () =>
-      this.soroban.invoke(
-        'withdraw',
-        [this.onChainKeyFor(escrow), recipientAddress, this.toStroops(amount)],
-        this.contractOpts(escrow),
-      ),
-    );
+    // Route through withLockedEscrow for the same SELECT ... FOR UPDATE
+    // serialisation that release/refund use (#738). Without the lock a
+    // concurrent refund reads status = LOCKED before the withdraw commits,
+    // passes assertLocked, and both on-chain calls fly for the same escrow.
+    return this.withLockedEscrow(escrowId, async (escrow, manager) => {
+      const result = await this.invokeOnLockedEscrow(
+        escrow,
+        'poolWithdraw',
+        () =>
+          this.soroban.invoke(
+            'withdraw',
+            [this.onChainKeyFor(escrow), recipientAddress, this.toStroops(amount)],
+            this.contractOpts(escrow),
+          ),
+        manager,
+      );
 
-    return this.paymentRepo.save(
-      this.paymentRepo.create({
-        escrowId: escrow.id,
-        recipientId: recipientId ?? null,
-        recipientAddress,
-        issueId: issueId ?? null,
-        amount,
-        asset: escrow.asset,
-        status: PaymentStatus.CONFIRMED,
-        txHash: result.txHash,
-      }),
-    );
+      // Write through the transaction manager so the Payment insert and the
+      // row lock (and any failure-metadata write) are one atomic span.
+      return manager.save(
+        Payment,
+        this.paymentRepo.create({
+          escrowId: escrow.id,
+          recipientId: recipientId ?? null,
+          recipientAddress,
+          issueId: issueId ?? null,
+          amount,
+          asset: escrow.asset,
+          status: PaymentStatus.CONFIRMED,
+          txHash: result.txHash,
+        }),
+      );
+    });
   }
 
   /**
