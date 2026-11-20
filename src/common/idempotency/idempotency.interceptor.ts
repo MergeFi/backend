@@ -70,15 +70,7 @@ export const STALE_PROCESSING_MS = POLL_CEILING_MS * STALE_PROCESSING_SAFETY_FAC
 const PG_UNIQUE_VIOLATION = '23505';
 
 /** Attempts to record a successful outcome before giving up (#546). */
-// Backoff between attempts to record COMPLETED. The failures this survives are transient (a reset connection, a pool
-// timeout, a failover), so an immediate retry reuses the same broken state (#800).
-const COMPLETE_WRITE_RETRY_DELAYS_MS = [50, 250, 750];
-const COMPLETE_WRITE_ATTEMPTS = COMPLETE_WRITE_RETRY_DELAYS_MS.length + 1;
-// Bound on re-reads in resolveExisting when a reclaim keeps losing the compare-and-swap (#801).
-const MAX_RESOLVE_ATTEMPTS = 4;
-
-const sleep = (ms: number): Promise<void> =>
-  new Promise((resolve) => setTimeout(resolve, ms));
+const COMPLETE_WRITE_ATTEMPTS = 2;
 
 function isUniqueViolation(error: unknown): boolean {
   const driverError = (error as { driverError?: { code?: string } } | null)
@@ -150,11 +142,17 @@ interface CachedOutcome {
  * released instead — because forcing every future retry to replay a server
  * error forever is worse than letting the retry try again cleanly.
  *
- * Caller scoping: none of the controllers this guards (bounties, escrow,
- * milestones, maintenance-pool) currently sit behind JwtAuthGuard, so there
- * is no authenticated caller to scope by yet. `resolveCallerId` falls back
- * to a shared 'anonymous' bucket per scope in that case — see its doc
- * comment for what that does and doesn't protect against.
+ * Caller scoping: keys are bucketed per caller, never in one shared bucket.
+ * An authenticated request (req.user set by JwtAuthGuard) is bucketed by its
+ * userId; an anonymous one by its client IP (`ip:<address>`). A request with
+ * neither is rejected rather than falling back to a shared constant. See
+ * `resolveCallerId` for the rule and its limits.
+ *
+ * Empty-body caveat: the fingerprint check (below) hashes path params plus
+ * body. When the body is empty (e.g. POST /bounties/:id/claim, which the
+ * frontend sends as `{}`), the fingerprint only binds the path params, so the
+ * fingerprint check is effectively vacuous for body-less routes. Caller
+ * scoping is what keeps one caller's key from replaying another's response.
  *
  * Request identity: `scope` is a static string per route (e.g.
  * 'escrow.release'), the same for every request to that route regardless
@@ -253,20 +251,37 @@ export class IdempotencyInterceptor implements NestInterceptor {
   }
 
   /**
-   * Determines the bucket a key is scoped to. `req.user.userId` is used
-   * when the route is authenticated (none of the current target routes
-   * are — see class doc comment). The 'anonymous' fallback still gives
-   * correct duplicate-suppression and concurrency-safety for a single
-   * client retrying its own request, since that's driven entirely by the
-   * (key, scope, callerId) uniqueness, not by callerId being a *real*
-   * per-user identity — it just means two different anonymous callers
-   * *could* collide if they both independently generated the same UUID
-   * for the same scope, which is the accepted, documented trade-off until
-   * these routes require auth.
+   * Determines the bucket a key is scoped to (#799).
+   *
+   * - Authenticated (JwtAuthGuard set req.user): the userId. JWT userIds are
+   *   UUIDs, so they never carry the `ip:` prefix.
+   * - Anonymous: `ip:<request.ip>`. This is per-client, so two anonymous
+   *   callers presenting the same key do not share a cached response or a
+   *   PROCESSING lock.
+   * - Neither available: throws. Falling back to a shared constant is what
+   *   let one caller's key block or replay another's.
+   *
+   * request.ip is the socket peer address unless Express `trust proxy` is set.
+   * Behind a reverse proxy without it, every anonymous caller shares the
+   * proxy's address, so the anonymous bucket degrades to one bucket per proxy
+   * IP. No trust-proxy setting was found in src/main.ts.
+   *
+   * Changing the bucket does not affect rows already stored under the old
+   * 'anonymous' callerId. Those expire under the 24h TTL, and a retry of one
+   * of those keys after deploy starts a new bucket.
    */
   private resolveCallerId(request: Request): string {
     const user = (request as Request & { user?: { userId?: string } }).user;
-    return user?.userId ?? 'anonymous';
+    if (user?.userId) {
+      return user.userId;
+    }
+    const ip = request.ip;
+    if (!ip) {
+      throw new BadRequestException(
+        'Unable to identify the caller for this Idempotency-Key',
+      );
+    }
+    return `ip:${ip}`;
   }
 
   /**
@@ -314,7 +329,6 @@ export class IdempotencyInterceptor implements NestInterceptor {
     existing: IdempotencyKey,
     identity: KeyIdentity,
     fingerprint: string,
-    attempt = 1,
   ): Promise<CachedOutcome | null> {
     // A null stored fingerprint means this row predates the column
     // (migration deploy transition) — nothing to compare against, so it's
@@ -363,23 +377,16 @@ export class IdempotencyInterceptor implements NestInterceptor {
     }
 
     // Someone else reclaimed or completed it first — read back the current
-    // state and defer to it rather than assuming. Bounded: under contention
-    // the key is busy right now, so the caller gets the same 409 it would
-    // get for an in-flight request (#801).
-    if (attempt >= MAX_RESOLVE_ATTEMPTS) {
-      throw new ConflictException(
-        'A request with this Idempotency-Key is already being processed',
-      );
-    }
+    // state and defer to it rather than assuming.
     const current = await this.repo.findOneBy(identity);
     if (!current) {
       return null;
     }
-    return this.resolveExisting(current, identity, fingerprint, attempt + 1);
+    return this.resolveExisting(current, identity, fingerprint);
   }
 
   /**
-   * Records a successful handler outcome. Retries the write with backoff; if it still
+   * Records a successful handler outcome. Retries the write once; if it still
    * fails, logs and leaves the row PROCESSING. A retry with the same key then
    * gets 409 until the row goes stale instead of re-executing, and this
    * request still returns the handler's real response (#546).
@@ -400,8 +407,6 @@ export class IdempotencyInterceptor implements NestInterceptor {
               `rather than re-executed`,
             error instanceof Error ? error.stack : String(error),
           );
-        } else {
-          await sleep(COMPLETE_WRITE_RETRY_DELAYS_MS[attempt - 1]);
         }
       }
     }
