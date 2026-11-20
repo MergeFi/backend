@@ -5,8 +5,8 @@ import { MigrationInterface, QueryRunner } from 'typeorm';
  * these, but a bad write via another path (script, manual SQL, future
  * service) could otherwise persist a percentage outside 0..100.
  */
-export class AddSplitPercentageChecks1785200000000 implements MigrationInterface {
-  name = 'AddSplitPercentageChecks1785200000000';
+export class AddSplitPercentageChecks1785200000002 implements MigrationInterface {
+  name = 'AddSplitPercentageChecks1785200000002';
 
   public async up(queryRunner: QueryRunner): Promise<void> {
     await queryRunner.query(`

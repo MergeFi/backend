@@ -7,8 +7,8 @@ import { MigrationInterface, QueryRunner } from 'typeorm';
  *  - repositories("primaryLanguage")    (#348)
  *  - team_member_splits("teamId")       (#349) delete/join key
  */
-export class AddMissingLookupIndexes1785200000000 implements MigrationInterface {
-  name = 'AddMissingLookupIndexes1785200000000';
+export class AddMissingLookupIndexes1785200000001 implements MigrationInterface {
+  name = 'AddMissingLookupIndexes1785200000001';
 
   public async up(queryRunner: QueryRunner): Promise<void> {
     await queryRunner.query(
