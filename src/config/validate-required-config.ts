@@ -66,6 +66,27 @@ function collectNumericConfigIssues(config: RequiredConfig): ConfigIssue[] {
     });
   }
 
+  if (
+    !Number.isSafeInteger(config.stellar.inclusionFee) ||
+    config.stellar.inclusionFee <= 0
+  ) {
+    issues.push({
+      key: 'SOROBAN_INCLUSION_FEE',
+      message: `SOROBAN_INCLUSION_FEE must be a positive safe integer number of stroops (got ${config.stellar.inclusionFee})`,
+    });
+  }
+
+  if (
+    !Number.isInteger(config.stellar.protocolFeeBps) ||
+    config.stellar.protocolFeeBps < 0 ||
+    config.stellar.protocolFeeBps > 10_000
+  ) {
+    issues.push({
+      key: 'SOROBAN_FEE_BPS',
+      message: `SOROBAN_FEE_BPS must be an integer between 0 and 10000 (got ${config.stellar.protocolFeeBps})`,
+    });
+  }
+
   return issues;
 }
 
@@ -73,12 +94,11 @@ function collectNumericConfigIssues(config: RequiredConfig): ConfigIssue[] {
  * Collects every required-in-production configuration problem — not just the
  * single JWT_SECRET check that used to live inline in `main.ts` (#153).
  *
- * Each of these secrets fails *silently* today: an empty
- * `GITHUB_WEBHOOK_SECRET` makes `verifyGithubSignature` reject 100% of
- * incoming webhook deliveries; empty `TREASURY_SECRET`/`ESCROW_CONTRACT_ID`
- * pin `SorobanClientService` to permanent dry-run mode (escrow calls never
- * touch the chain); a default `DATABASE_URL` connects to a local Postgres
- * with default credentials. None of that surfaces at boot without this pass.
+ * Each of these values can silently break a production path: an empty
+ * `GITHUB_WEBHOOK_SECRET` makes `verifyGithubSignature` reject incoming
+ * deliveries; missing Soroban deployment/signing/token values prevent live
+ * escrow operations; a default `DATABASE_URL` connects to local Postgres.
+ * None of that surfaces at boot without this pass.
  *
  * Numeric settings (PORT, ESCROW_DEADLINE_SECONDS) are validated in every
  * environment; the secret checks only apply in production.
@@ -142,21 +162,33 @@ export function collectConfigIssues(config: RequiredConfig): ConfigIssue[] {
     config.github.clientSecret,
     'GitHub OAuth login cannot be completed',
   );
-  requireNonEmpty(
-    'ESCROW_CONTRACT_ID',
-    config.stellar.escrowContractId,
-    'escrow calls run in dry-run mode and never settle on-chain',
-  );
-  requireNonEmpty(
-    'MAINTENANCE_POOL_CONTRACT_ID',
-    config.stellar.maintenancePoolContractId,
-    'maintenance-pool deposits are refused at runtime — without a configured contract the service cannot safely route pool funds (#754)',
-  );
-  requireNonEmpty(
-    'TREASURY_SECRET',
-    config.stellar.treasurySecret,
-    'escrow release/refund transactions cannot be signed',
-  );
+  if (!config.stellar.dryRun) {
+    requireNonEmpty(
+      'ESCROW_CONTRACT_ID',
+      config.stellar.escrowContractId,
+      'escrow transactions cannot be submitted',
+    );
+    requireNonEmpty(
+      'MAINTENANCE_POOL_CONTRACT_ID',
+      config.stellar.maintenancePoolContractId,
+      'maintenance-pool transactions cannot be routed safely (#754)',
+    );
+    requireNonEmpty(
+      'TREASURY_SECRET',
+      config.stellar.treasurySecret,
+      'escrow release/refund transactions cannot be signed',
+    );
+    requireNonEmpty(
+      'USDC_TOKEN_CONTRACT_ID',
+      config.stellar.assetContractIds.USDC,
+      'USDC escrow funding cannot be submitted',
+    );
+    requireNonEmpty(
+      'XLM_TOKEN_CONTRACT_ID',
+      config.stellar.assetContractIds.XLM,
+      'XLM escrow funding cannot be submitted',
+    );
+  }
 
   return issues;
 }

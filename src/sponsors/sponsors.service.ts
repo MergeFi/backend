@@ -78,6 +78,7 @@ export class SponsorsService {
       .andWhere('payment.status = :status', {
         status: PaymentStatus.CONFIRMED,
       })
+      .andWhere('payment.isProtocolFee = false')
       .getRawOne<{ total: string }>();
     return Number(row?.total ?? 0);
   }

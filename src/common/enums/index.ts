@@ -57,6 +57,7 @@ export enum EscrowStatus {
    * must resolve this before the escrow transitions to RELEASED.
    */
   RECONCILIATION_PENDING = 'reconciliation_pending',
+  DRY_RUN = 'dry_run',
 }
 
 export enum EscrowAction {
@@ -71,6 +72,7 @@ export enum PaymentStatus {
   SUBMITTED = 'submitted',
   CONFIRMED = 'confirmed',
   FAILED = 'failed',
+  DRY_RUN = 'dry_run',
 }
 
 export enum MilestoneStatus {

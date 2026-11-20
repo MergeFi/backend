@@ -82,10 +82,10 @@ Design principles:
   `@stellar/stellar-sdk`'s Soroban RPC client; Postgres holds an audit-trail
   mirror (`escrows`, `payments`) of that on-chain activity, not the money
   itself.
-- **Config-driven, not hardcoded.** There is no deployed escrow contract for
-  this MVP session, so `ESCROW_CONTRACT_ID` / `TREASURY_SECRET` are read from
-  env and the Soroban client transparently falls back to a "dry run" mode
-  when they're absent — see [Escrow / Soroban integration](#escrow--soroban-integration).
+- **Config-driven, not hardcoded.** Soroban deployment/signing settings are
+  read from env. Missing live configuration fails explicitly; synthetic
+  operations require `SOROBAN_DRY_RUN=true` and are recorded as `dry_run` —
+  see [Escrow / Soroban integration](#escrow--soroban-integration).
 
 ## Modules
 
@@ -138,11 +138,14 @@ See [`.env.example`](./.env.example) for the full annotated list. Highlights:
 | `GITHUB_WEBHOOK_SECRET` | HMAC-SHA256 secret configured on the GitHub webhook. |
 | `ANALYTICS_PLATFORM_SUMMARY_TTL_MS` | In-process TTL for `GET /analytics/platform` (default `60000`). Also invalidated on bounty create/pay and first repository sync. |
 | `STELLAR_NETWORK`, `SOROBAN_RPC_URL`, `STELLAR_NETWORK_PASSPHRASE` | Stellar network config. |
-| `ESCROW_CONTRACT_ID` | Deployed escrow contract ID from `mergefi-contracts`. **Blank → [dry-run mode](#dry-run-mode)**: nothing settles on-chain. |
+| `SOROBAN_DRY_RUN` | Explicitly enables synthetic escrow invocations. Defaults to `false`; synthetic escrow/payment rows are marked `dry_run` and excluded from confirmed-payout totals. |
+| `ESCROW_CONTRACT_ID` | Deployed escrow contract ID from `mergefi-contracts`; required for live Soroban calls. |
 | `MAINTENANCE_POOL_CONTRACT_ID` | Optional separate contract for maintenance-pool escrows; falls back to `ESCROW_CONTRACT_ID`. |
 | `USDC_TOKEN_CONTRACT_ID`, `XLM_TOKEN_CONTRACT_ID` | Soroban token (SAC) contract addresses, passed as `escrow::fund`'s required `token` argument. |
 | `ESCROW_DEADLINE_SECONDS` | Fallback `escrow::fund` deadline (seconds from fund time) when the bounty/milestone has none. Default `7776000` (90 days), minimum `86400`. **Controls when anyone can refund the escrow on-chain** — see [below](#escrow_deadline_seconds-and-the-permissionless-refund-window). |
-| `TREASURY_SECRET` | Platform signer used to submit release/refund transactions. **Blank → [dry-run mode](#dry-run-mode).** |
+| `TREASURY_SECRET` | Platform signer used to submit release/refund transactions; required for live Soroban calls. |
+| `SOROBAN_INCLUSION_FEE` | Transaction inclusion bid in stroops (default `5000`, 50× `BASE_FEE`); resource fees are added by Soroban transaction assembly. The bid doubles for up to two resubmissions after a never-included transaction expires. |
+| `SOROBAN_FEE_BPS` | Fallback protocol fee in basis points for explicit dry-run mode (default `250`). Live releases read `get_fee_bps` from the escrow contract. |
 
 ## Escrow / Soroban integration
 
@@ -155,53 +158,43 @@ it calls the client, then persists `Escrow`/`Payment` rows and drives the
 
 ### Dry-run mode
 
-> **If you are running this locally from `.env.example`, you are in dry-run
-> mode. Bounties you see marked PAID were not paid.**
+> Dry-run mode is disabled by default. Synthetic escrow/payment rows carry the
+> `dry_run` status and do not count as confirmed payouts. Bounty workflow
+> statuses may still advance; inspect the linked escrow/payment status before
+> interpreting a dry-run bounty as settled.
 
-**When it engages.** `SorobanClientService.invoke`
-(`src/escrow/soroban-client.service.ts`) dry-runs whenever
-`ESCROW_CONTRACT_ID` **or** `TREASURY_SECRET` is empty. There is no separate
-flag: it is inferred from those two variables. Both are blank in
-`.env.example`, so it is the default for local development, for CI, and for
-any non-production deployment where they were missed. (In
-`NODE_ENV=production` the app refuses to boot with either one unset, and
-`invoke` itself throws rather than dry-running if it is ever reached that
-way.)
+**When it engages.** Dry-run mode is enabled only by setting
+`SOROBAN_DRY_RUN=true`. Missing contract or signer configuration does not
+silently trigger a dry run: invocations fail with an explicit configuration
+error. Production boot validation also requires the contract, signer, and
+supported token addresses unless dry-run mode was deliberately enabled.
 
 **What it does.** Instead of building, signing and submitting a transaction,
-`invoke` logs a warning and immediately returns a synthetic success. Every
-caller treats that as a confirmed on-chain result, so the full orchestration
-runs and writes real rows:
+`invoke` logs a warning and returns a synthetic result. Escrow and payment
+rows are marked `dry_run`, not as locked, released, refunded, or confirmed
+on-chain. Dry-run payments are excluded from confirmed payout and earnings
+totals:
 
-| Operation | Records written as if settled |
+| Operation | Records written |
 |---|---|
-| Fund (`fund`) | `Escrow` → `LOCKED`, with `fundTxHash` set; bounty/milestone/pool marked funded. |
-| Release / split release / partial release | `Escrow` → `RELEASED` (`releaseTxHash`, `releasedAt`); one `Payment` per recipient with `status = CONFIRMED` and `txHash`; the bounty moves to `PAID` and counts toward contributor earnings and sponsor spend. |
-| Pool withdraw | `Payment` with `status = CONFIRMED`; the pool balance is decremented. |
-| Refund | `Escrow` → `REFUNDED` (`refundTxHash`, `refundedAt`). |
+| Fund (`fund`) | `Escrow` → `dry_run`, with a synthetic `fundTxHash`. |
+| Release / split release / partial release | `Escrow` and recipient `Payment` rows remain explicitly `dry_run`; protocol fees are recorded separately. |
+| Pool withdraw | `Payment` with `status = dry_run`. |
+| Refund | `Escrow` → `dry_run` with a synthetic `refundTxHash`. |
 
-No tokens move and nothing is written to any ledger. The contract's own
-checks (balance, status, authorisation) never run, so the database row lock
-is the only thing stopping a duplicate release (see
+No tokens move and contract checks (balance, status, authorisation) do not run.
+The database row lock still prevents concurrent duplicate operations (see
 `src/escrow/escrow-lock.integration.spec.ts`).
 
-**How to recognise dry-run records.** Only the transaction hash shows it.
-Dry-run hashes look like `dry-run-<method>-<epoch-ms>` (for example
-`dry-run-release-1731400000000`) instead of a 64-character hex hash. They
-appear in `escrows.fundTxHash` / `releaseTxHash` / `refundTxHash` and
-`payments.txHash`. The invocation result's `status` is `DRY_RUN`, with
-`ledger = null`. That result is also stored in `escrows.metadata.fund`, and
-in `escrows.metadata.splitRelease` for split releases. The server log also prints
-`Soroban not configured (ESCROW_CONTRACT_ID/TREASURY_SECRET missing) —
-dry-running "<method>"` on every call. The API responses and the frontend
-do **not** surface it: a dry-run "paid" badge or lifetime-earnings figure
-looks exactly like a real one. To find them in a database:
+**How to recognise dry-run records.** Both escrow/payment status and the
+synthetic `dry-run-<method>-<epoch-ms>` transaction hash identify dry-run
+records. The invocation result uses status `DRY_RUN` with `ledger = null`.
+To find them in a database:
 
 ```sql
-SELECT id, "txHash" FROM payments WHERE "txHash" LIKE 'dry-run-%';
-SELECT id, status FROM escrows
- WHERE "fundTxHash" LIKE 'dry-run-%' OR "releaseTxHash" LIKE 'dry-run-%'
-    OR "refundTxHash" LIKE 'dry-run-%';
+SELECT id, status, "txHash" FROM payments WHERE status = 'dry_run';
+SELECT id, status, "fundTxHash", "releaseTxHash", "refundTxHash"
+  FROM escrows WHERE status = 'dry_run';
 ```
 
 Dry-run data should never be mixed with real data: if a database was ever
@@ -209,9 +202,10 @@ run in dry-run mode, don't later point a configured instance at it.
 
 **Leaving dry-run mode.** Once real contracts are deployed:
 
-1. Set `ESCROW_CONTRACT_ID` (and `MAINTENANCE_POOL_CONTRACT_ID` if the pool
-   uses a separate deployment), plus `USDC_TOKEN_CONTRACT_ID` /
-   `XLM_TOKEN_CONTRACT_ID` for the token argument.
+1. Set `SOROBAN_DRY_RUN=false`, `ESCROW_CONTRACT_ID` (and
+   `MAINTENANCE_POOL_CONTRACT_ID` if the pool uses a separate deployment),
+   plus `USDC_TOKEN_CONTRACT_ID` / `XLM_TOKEN_CONTRACT_ID` for the token
+   argument.
 2. Set `TREASURY_SECRET` to a funded Stellar account.
 3. Confirm the contract's `fund`/`release`/`refund` function signatures match
    the ones documented at the top of `soroban-client.service.ts` (adjusted in

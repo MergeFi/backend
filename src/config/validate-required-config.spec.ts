@@ -31,6 +31,7 @@ const validProduction = (): Config => ({
     escrowContractId: 'CESCROW',
     maintenancePoolContractId: 'CPOOL',
     treasurySecret: 'STREASURY',
+    assetContractIds: { USDC: 'CUSDC', XLM: 'CXLM' },
   },
 });
 
@@ -61,6 +62,22 @@ describe('collectConfigIssues', () => {
       (c: Config) => (c.stellar.maintenancePoolContractId = ''),
     ],
     ['TREASURY_SECRET', (c: Config) => (c.stellar.treasurySecret = '')],
+    [
+      'USDC_TOKEN_CONTRACT_ID',
+      (c: Config) =>
+        (c.stellar.assetContractIds = {
+          ...c.stellar.assetContractIds,
+          USDC: '',
+        }),
+    ],
+    [
+      'XLM_TOKEN_CONTRACT_ID',
+      (c: Config) =>
+        (c.stellar.assetContractIds = {
+          ...c.stellar.assetContractIds,
+          XLM: '',
+        }),
+    ],
     ['JWT_SECRET', (c: Config) => (c.jwt.secret = '')],
   ])('flags a missing %s', (key, mutate) => {
     const config = validProduction();
@@ -159,6 +176,23 @@ describe('numeric config validation (#851)', () => {
       'ESCROW_DEADLINE_SECONDS',
       'TREASURY_SECRET',
     ]);
+  });
+
+  it('allows missing Soroban deployment settings only with explicit dry-run', () => {
+    const config = validProduction();
+    config.stellar.dryRun = true;
+    config.stellar.escrowContractId = '';
+    config.stellar.maintenancePoolContractId = '';
+    config.stellar.treasurySecret = '';
+    config.stellar.assetContractIds = { USDC: '', XLM: '' };
+    expect(collectConfigIssues(config)).toEqual([]);
+  });
+
+  it('validates inclusion fee and protocol fee basis points in every environment', () => {
+    const config = { ...configuration(), env: 'development' };
+    config.stellar.inclusionFee = 0;
+    config.stellar.protocolFeeBps = 10_001;
+    expect(keys(config)).toEqual(['SOROBAN_INCLUSION_FEE', 'SOROBAN_FEE_BPS']);
   });
 });
 

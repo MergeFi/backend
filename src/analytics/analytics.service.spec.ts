@@ -3,7 +3,11 @@ import { ConfigService } from '@nestjs/config';
 import { getRepositoryToken } from '@nestjs/typeorm';
 import { BadRequestException } from '@nestjs/common';
 import { AnalyticsService } from './analytics.service';
-import { Bounty, Repository as RepositoryEntity } from '../common/entities';
+import {
+  Bounty,
+  Payment,
+  Repository as RepositoryEntity,
+} from '../common/entities';
 import * as sql from '../common/stats/contributor-stats.sql';
 import { heatmapRange } from '../common/stats/contributor-stats.sql';
 import { TtlCache } from './ttl-cache';
@@ -92,12 +96,16 @@ describe('AnalyticsService', () => {
   const mockRepositoryRepo = {
     count: jest.fn(),
   };
+  const mockPaymentRepo = {
+    createQueryBuilder: jest.fn(),
+  };
 
   beforeEach(async () => {
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         AnalyticsService,
         { provide: getRepositoryToken(Bounty), useValue: mockBountyRepo },
+        { provide: getRepositoryToken(Payment), useValue: mockPaymentRepo },
         {
           provide: getRepositoryToken(RepositoryEntity),
           useValue: mockRepositoryRepo,
@@ -189,11 +197,13 @@ describe('AnalyticsService', () => {
 
   it('serves platformSummary from cache until invalidate', async () => {
     mockBountyRepo.count.mockResolvedValue(4);
-    mockBountyRepo.createQueryBuilder.mockReturnValue({
+    const queryBuilder = {
       select: jest.fn().mockReturnThis(),
       where: jest.fn().mockReturnThis(),
+      andWhere: jest.fn().mockReturnThis(),
       getRawOne: jest.fn().mockResolvedValue({ total: '10' }),
-    });
+    };
+    mockPaymentRepo.createQueryBuilder.mockReturnValue(queryBuilder);
     mockRepositoryRepo.count.mockResolvedValue(2);
 
     const first = await service.platformSummary();
@@ -205,6 +215,13 @@ describe('AnalyticsService', () => {
     });
     expect(second).toEqual(first);
     expect(mockBountyRepo.count).toHaveBeenCalledTimes(1);
+    expect(queryBuilder.where).toHaveBeenCalledWith(
+      'payment.status = :status',
+      { status: 'confirmed' },
+    );
+    expect(queryBuilder.andWhere).toHaveBeenCalledWith(
+      'payment.isProtocolFee = false',
+    );
 
     service.invalidatePlatformSummary();
     mockBountyRepo.count.mockResolvedValue(5);

@@ -1,4 +1,7 @@
+import { BASE_FEE } from '@stellar/stellar-sdk';
 import { AssetType } from '../common/enums';
+
+const DEFAULT_SOROBAN_INCLUSION_FEE = Number(BASE_FEE) * 50;
 
 export interface AppConfig {
   env: string;
@@ -49,12 +52,18 @@ export interface AppConfig {
      */
     maintenancePoolContractId: string;
     treasurySecret: string;
+    /** Synthetic results are returned only when explicitly enabled. */
+    dryRun: boolean;
+    /** Transaction inclusion bid in stroops, before Soroban resource fees. */
+    inclusionFee: number;
+    /** Dry-run fallback; live payouts read the fee from the contract. */
+    protocolFeeBps: number;
     /**
      * Soroban token (SAC) contract addresses per supported asset. The real
      * `escrow::fund(issue_id, sponsor, token, amount, deadline)` takes the
      * token contract as a required argument (#158); this is where that
-     * address is resolved from `Escrow.asset`. Left blank in environments
-     * with no deployed contracts (calls dry-run regardless).
+     * address is resolved from `Escrow.asset`. Live funding fails explicitly
+     * when the selected asset has no configured contract.
      */
     assetContractIds: Record<AssetType, string>;
     /**
@@ -133,6 +142,12 @@ export default (): AppConfig => ({
     maintenancePoolContractId:
       process.env.MAINTENANCE_POOL_CONTRACT_ID ?? '',
     treasurySecret: process.env.TREASURY_SECRET ?? '',
+    dryRun: process.env.SOROBAN_DRY_RUN === 'true',
+    inclusionFee: Number(
+      process.env.SOROBAN_INCLUSION_FEE ??
+        String(DEFAULT_SOROBAN_INCLUSION_FEE),
+    ),
+    protocolFeeBps: Number(process.env.SOROBAN_FEE_BPS ?? '250'),
     assetContractIds: {
       USDC: process.env.USDC_TOKEN_CONTRACT_ID ?? '',
       XLM: process.env.XLM_TOKEN_CONTRACT_ID ?? '',

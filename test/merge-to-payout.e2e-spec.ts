@@ -57,8 +57,8 @@ const DATABASE_URL =
  * live at the joins (escrow vs bounty status committing apart, a team with no
  * splits marked PAID, payment amounts drifting from the escrow) are only
  * visible with the real modules wired to a real database, which is what this
- * file does. Only the Soroban client runs in its dry-run mode, exactly as it
- * does in every environment without ESCROW_CONTRACT_ID.
+ * file does. Soroban is explicitly configured for dry-run in this test so
+ * synthetic ledger entries cannot be mistaken for settled payouts.
  *
  * Isolated in its own schema so it can run alongside the other Postgres
  * specs without dropSchema races (same approach as escrow-lock.integration).
@@ -88,12 +88,16 @@ describe('Merge-to-payout (e2e, #848)', () => {
       'GITHUB_WEBHOOK_SECRET',
       'ESCROW_CONTRACT_ID',
       'TREASURY_SECRET',
+      'SOROBAN_DRY_RUN',
+      'SOROBAN_FEE_BPS',
     ]) {
       savedEnv[key] = process.env[key];
     }
     process.env.GITHUB_WEBHOOK_SECRET = WEBHOOK_SECRET;
     delete process.env.ESCROW_CONTRACT_ID;
     delete process.env.TREASURY_SECRET;
+    process.env.SOROBAN_DRY_RUN = 'true';
+    process.env.SOROBAN_FEE_BPS = '250';
 
     try {
       // synchronize/dropSchema work inside an existing schema but don't
@@ -323,27 +327,33 @@ describe('Merge-to-payout (e2e, #848)', () => {
     expect(paid.prNumber).toBe(1011);
 
     const escrow = await escrowRepo.findOneByOrFail({ id: bounty.escrowId! });
-    expect(escrow.status).toBe(EscrowStatus.RELEASED);
+    expect(escrow.status).toBe(EscrowStatus.DRY_RUN);
     expect(escrow.releaseTxHash).toBeTruthy();
 
     const payments = await paymentRepo.find({
       where: { escrowId: escrow.id },
     });
-    expect(payments).toHaveLength(1);
-    expect(payments[0]).toMatchObject({
+    expect(payments).toHaveLength(2);
+    const payout = payments.find((payment) => !payment.isProtocolFee)!;
+    const fee = payments.find((payment) => payment.isProtocolFee)!;
+    expect(payout).toMatchObject({
       recipientId: contributor.id,
       recipientAddress: contributor.stellarAddress,
       asset: AssetType.USDC,
-      status: PaymentStatus.CONFIRMED,
+      status: PaymentStatus.DRY_RUN,
       txHash: escrow.releaseTxHash,
     });
-    expect(amountToStroops(payments[0].amount)).toBe(
+    expect(fee).toMatchObject({
+      amount: '6.2625000',
+      status: PaymentStatus.DRY_RUN,
+    });
+    expect(escrow.protocolFeeAmount).toBe('6.2625000');
+    expect(amountToStroops(payout.amount) + amountToStroops(fee.amount)).toBe(
       amountToStroops(escrow.amount),
     );
-    expect(amountToStroops(payments[0].amount)).toBe(amountToStroops('250.5'));
 
     const after = await analytics.platformSummary();
-    expect(after.totalPaidOut).toBeCloseTo(before.totalPaidOut + 250.5, 7);
+    expect(after.totalPaidOut).toBe(before.totalPaidOut);
   });
 
   it('splits a team bounty into one payment per member summing to the escrow', async () => {
@@ -379,19 +389,23 @@ describe('Merge-to-payout (e2e, #848)', () => {
     expect(paid.status).toBe(BountyStatus.PAID);
 
     const escrow = await escrowRepo.findOneByOrFail({ id: bounty.escrowId! });
-    expect(escrow.status).toBe(EscrowStatus.RELEASED);
+    expect(escrow.status).toBe(EscrowStatus.DRY_RUN);
 
     const payments = await paymentRepo.find({
       where: { escrowId: escrow.id },
     });
-    expect(payments).toHaveLength(3);
+    expect(payments).toHaveLength(4);
+    const recipientPayments = payments.filter(
+      (payment) => !payment.isProtocolFee,
+    );
+    const fee = payments.find((payment) => payment.isProtocolFee)!;
 
     for (const { user, percentage } of members) {
-      const payment = payments.find((p) => p.recipientId === user.id);
+      const payment = recipientPayments.find((p) => p.recipientId === user.id);
       expect(payment).toBeDefined();
       expect(payment).toMatchObject({
         recipientAddress: user.stellarAddress,
-        status: PaymentStatus.CONFIRMED,
+        status: PaymentStatus.DRY_RUN,
         txHash: escrow.releaseTxHash,
       });
       expect(Number(payment!.splitPercentage)).toBeCloseTo(
@@ -400,15 +414,17 @@ describe('Merge-to-payout (e2e, #848)', () => {
       );
     }
 
-    const total = payments.reduce(
+    const total = recipientPayments.reduce(
       (sum, p) => sum + amountToStroops(p.amount),
       0n,
     );
-    expect(total).toBe(amountToStroops(escrow.amount));
-    expect(total).toBe(amountToStroops('100'));
+    expect(total + amountToStroops(fee.amount)).toBe(
+      amountToStroops(escrow.amount),
+    );
+    expect(fee.amount).toBe('2.5000000');
 
     const after = await analytics.platformSummary();
-    expect(after.totalPaidOut).toBeCloseTo(before.totalPaidOut + 100, 7);
+    expect(after.totalPaidOut).toBe(before.totalPaidOut);
   });
 
   it('rejects an unsigned delivery without touching the bounty', async () => {

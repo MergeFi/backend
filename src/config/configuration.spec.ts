@@ -13,6 +13,9 @@ const ENV_KEYS = [
   'ANALYTICS_PLATFORM_SUMMARY_TTL_MS',
   'ESCROW_CONTRACT_ID',
   'MAINTENANCE_POOL_CONTRACT_ID',
+  'SOROBAN_DRY_RUN',
+  'SOROBAN_INCLUSION_FEE',
+  'SOROBAN_FEE_BPS',
   'ESCROW_DEADLINE_SECONDS',
   'USDC_TOKEN_CONTRACT_ID',
   'XLM_TOKEN_CONTRACT_ID',
@@ -45,6 +48,9 @@ describe('configuration', () => {
     expect(config.analytics.platformSummaryTtlMs).toBe(60000);
     expect(config.stellar.escrowDeadlineSeconds).toBe(7776000);
     expect(config.stellar.assetContractIds).toEqual({ USDC: '', XLM: '' });
+    expect(config.stellar.dryRun).toBe(false);
+    expect(config.stellar.inclusionFee).toBe(5000);
+    expect(config.stellar.protocolFeeBps).toBe(250);
   });
 
   it('parses integers and booleans from the environment', () => {
@@ -52,11 +58,17 @@ describe('configuration', () => {
     process.env.ESCROW_DEADLINE_SECONDS = '120';
     process.env.DATABASE_SYNCHRONIZE = 'true';
     process.env.DATABASE_LOGGING = 'false';
+    process.env.SOROBAN_DRY_RUN = 'true';
+    process.env.SOROBAN_INCLUSION_FEE = '9000';
+    process.env.SOROBAN_FEE_BPS = '125';
     const config = configuration();
     expect(config.port).toBe(8080);
     expect(config.stellar.escrowDeadlineSeconds).toBe(120);
     expect(config.database.synchronize).toBe(true);
     expect(config.database.logging).toBe(false);
+    expect(config.stellar.dryRun).toBe(true);
+    expect(config.stellar.inclusionFee).toBe(9000);
+    expect(config.stellar.protocolFeeBps).toBe(125);
   });
 
   it('only treats the exact string "true" as a true boolean', () => {
@@ -72,12 +84,14 @@ describe('configuration', () => {
     expect(config.github.clientId).toBe('mock_client_id_12345');
   });
 
-  it('yields NaN for a non-numeric PORT or ESCROW_DEADLINE_SECONDS', () => {
+  it('yields NaN for non-numeric numeric configuration', () => {
     process.env.PORT = 'abc';
     process.env.ESCROW_DEADLINE_SECONDS = 'soon';
+    process.env.SOROBAN_INCLUSION_FEE = '5000stroops';
     const config = configuration();
     expect(config.port).toBeNaN();
     expect(config.stellar.escrowDeadlineSeconds).toBeNaN();
+    expect(config.stellar.inclusionFee).toBeNaN();
   });
 
   describe('maintenancePoolContractId', () => {

@@ -8,7 +8,7 @@ import {
   Payment,
   Repository as RepositoryEntity,
 } from '../common/entities';
-import { BountyStatus } from '../common/enums';
+import { PaymentStatus } from '../common/enums';
 import { AppConfig } from '../config/configuration';
 import {
   heatmapRange,
@@ -99,10 +99,13 @@ export class AnalyticsService {
   private async loadPlatformSummary(): Promise<PlatformSummary> {
     const [totalBounties, totalPaidRaw, totalRepos] = await Promise.all([
       this.bountyRepo.count(),
-      this.bountyRepo
-        .createQueryBuilder('bounty')
-        .select('COALESCE(SUM(bounty.amount), 0)', 'total')
-        .where('bounty.status = :status', { status: BountyStatus.PAID })
+      this.paymentRepo
+        .createQueryBuilder('payment')
+        .select('COALESCE(SUM(payment.amount), 0)', 'total')
+        .where('payment.status = :status', {
+          status: PaymentStatus.CONFIRMED,
+        })
+        .andWhere('payment.isProtocolFee = false')
         .getRawOne<{ total: string }>(),
       this.repositoryRepo.count(),
     ]);

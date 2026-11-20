@@ -4,12 +4,20 @@ import { DataSource, Repository, SelectQueryBuilder } from 'typeorm';
 import { entities } from '../common/entities/typeorm-entities';
 import {
   Bounty,
+  Escrow,
   Issue,
+  Payment,
   ReputationSnapshot,
   Repository as Repo,
   User,
 } from '../common/entities';
-import { AssetType, BountyDifficulty, BountyStatus } from '../common/enums';
+import {
+  AssetType,
+  BountyDifficulty,
+  BountyStatus,
+  EscrowStatus,
+  PaymentStatus,
+} from '../common/enums';
 import { AnalyticsService } from '../analytics/analytics.service';
 import { AppConfig } from '../config/configuration';
 import { computeContributorStats } from '../common/stats/contributor-stats.util';
@@ -37,6 +45,8 @@ import { ReputationService } from '../reputation/reputation.service';
 describe('Analytics SQL aggregation (integration)', () => {
   let dataSource: DataSource;
   let bountyRepo: Repository<Bounty>;
+  let escrowRepo: Repository<Escrow>;
+  let paymentRepo: Repository<Payment>;
   let issueRepo: Repository<Issue>;
   let repoRepo: Repository<Repo>;
   let userRepo: Repository<User>;
@@ -83,6 +93,8 @@ describe('Analytics SQL aggregation (integration)', () => {
     dbAvailable = true;
 
     bountyRepo = dataSource.getRepository(Bounty);
+    escrowRepo = dataSource.getRepository(Escrow);
+    paymentRepo = dataSource.getRepository(Payment);
     issueRepo = dataSource.getRepository(Issue);
     repoRepo = dataSource.getRepository(Repo);
     userRepo = dataSource.getRepository(User);
@@ -90,7 +102,12 @@ describe('Analytics SQL aggregation (integration)', () => {
     const configService = {
       get: () => ({ platformSummaryTtlMs: 60_000 }),
     } as unknown as ConfigService<AppConfig, true>;
-    analytics = new AnalyticsService(bountyRepo, repoRepo, configService);
+    analytics = new AnalyticsService(
+      bountyRepo,
+      paymentRepo,
+      repoRepo,
+      configService,
+    );
     reputation = new ReputationService(
       bountyRepo,
       dataSource.getRepository(ReputationSnapshot),
@@ -190,6 +207,25 @@ describe('Analytics SQL aggregation (integration)', () => {
         }),
       );
       claimed.push(bounty);
+      const escrow = await escrowRepo.save(
+        escrowRepo.create({
+          bounty,
+          bountyId: bounty.id,
+          sponsorId: spec.sponsorId,
+          amount: spec.amount,
+          asset: AssetType.USDC,
+          status: EscrowStatus.RELEASED,
+        }),
+      );
+      await paymentRepo.save(
+        paymentRepo.create({
+          escrowId: escrow.id,
+          recipientId: contributor.id,
+          amount: spec.amount,
+          asset: AssetType.USDC,
+          status: PaymentStatus.CONFIRMED,
+        }),
+      );
     }
 
     const js = computeContributorStats(claimed, issues);
@@ -244,8 +280,13 @@ describe('Analytics SQL aggregation (integration)', () => {
 
     const issueValues: Partial<Issue>[] = [];
     const bountyValues: Partial<Bounty>[] = [];
+    const escrowValues: Partial<Escrow>[] = [];
+    const paymentValues: Partial<Payment>[] = [];
     for (let i = 0; i < SEED_PAID; i++) {
       const issueId = randomUUID();
+      const bountyId = randomUUID();
+      const escrowId = randomUUID();
+      const sponsorId = sponsors[i % sponsors.length].id;
       const repo = repos[i % repos.length];
       issueValues.push({
         id: issueId,
@@ -258,10 +299,11 @@ describe('Analytics SQL aggregation (integration)', () => {
       });
       const day = i % SEED_DAYS;
       bountyValues.push({
-        id: randomUUID(),
+        id: bountyId,
         issueId,
-        sponsorId: sponsors[i % sponsors.length].id,
+        sponsorId,
         claimedById: contributor.id,
+        escrowId,
         amount: '10',
         asset: AssetType.USDC,
         difficulty: BountyDifficulty.INTERMEDIATE,
@@ -270,12 +312,32 @@ describe('Analytics SQL aggregation (integration)', () => {
         claimedAt: new Date(Date.UTC(2023, 11, 1, 0, 0, 0)),
         mergedAt: new Date(Date.UTC(2023, 11, 2, 0, 0, 0)),
       });
+      escrowValues.push({
+        id: escrowId,
+        bountyId,
+        sponsorId,
+        amount: '10',
+        asset: AssetType.USDC,
+        status: EscrowStatus.RELEASED,
+      });
+      paymentValues.push({
+        id: randomUUID(),
+        escrowId,
+        recipientId: contributor.id,
+        amount: '10',
+        asset: AssetType.USDC,
+        status: PaymentStatus.CONFIRMED,
+      });
     }
 
     const chunk = 500;
     for (let i = 0; i < issueValues.length; i += chunk) {
       await issueRepo.insert(issueValues.slice(i, i + chunk));
       await bountyRepo.insert(bountyValues.slice(i, i + chunk));
+    }
+    for (let i = 0; i < escrowValues.length; i += chunk) {
+      await escrowRepo.insert(escrowValues.slice(i, i + chunk));
+      await paymentRepo.insert(paymentValues.slice(i, i + chunk));
     }
 
     const findSpy = jest.spyOn(bountyRepo, 'find');

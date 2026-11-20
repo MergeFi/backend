@@ -10,6 +10,7 @@ import {
 } from './soroban-client.service';
 import { Escrow, Payment, User } from '../common/entities';
 import { AssetType, EscrowStatus, PaymentStatus } from '../common/enums';
+import { amountToStroops } from '../common/validators/money.validator';
 import { TOTAL_BASIS_POINTS } from './split-math.util';
 
 describe('EscrowService', () => {
@@ -23,10 +24,14 @@ describe('EscrowService', () => {
   };
   let soroban: {
     invoke: jest.Mock;
+    getProtocolFeeBps: jest.Mock;
     escrowContractId: string;
     maintenancePoolContractId: string;
     tokenContractId: jest.Mock;
     escrowDeadlineSeconds: number;
+    dryRunEnabled: boolean;
+    protocolFeeBps: number;
+    treasuryAddress: string | null;
   };
   let dataSource: {
     transaction: jest.Mock;
@@ -63,12 +68,16 @@ describe('EscrowService', () => {
         returnValue: null,
         status: 'SUCCESS',
       }),
-      // Dry-run defaults: no contract configured, so EscrowService persists a
-      // null contractId and passes an empty options object to invoke().
+      getProtocolFeeBps: jest.fn().mockResolvedValue(0),
+      // No configured contract means EscrowService passes an empty options
+      // object; dry-run behavior is enabled explicitly in tests that need it.
       escrowContractId: '',
       maintenancePoolContractId: '',
-      tokenContractId: jest.fn().mockReturnValue(''),
+      tokenContractId: jest.fn().mockReturnValue('CTOKEN'),
       escrowDeadlineSeconds: 7776000,
+      dryRunEnabled: false,
+      protocolFeeBps: 250,
+      treasuryAddress: 'GTREASURY',
     };
     // The transaction manager routes find/save(Entity, data) to the matching
     // repo mock so existing escrowRepo.findOne/save and paymentRepo.find/save
@@ -131,6 +140,43 @@ describe('EscrowService', () => {
       );
       expect(escrow.status).toBe(EscrowStatus.LOCKED);
       expect(escrow.fundTxHash).toBe('tx-hash-123');
+    });
+
+    it('records an explicitly simulated fund as DRY_RUN', async () => {
+      soroban.dryRunEnabled = true;
+      soroban.invoke.mockResolvedValueOnce({
+        txHash: 'dry-run-fund-123',
+        ledger: null,
+        returnValue: null,
+        status: 'DRY_RUN',
+      });
+
+      const escrow = await service.fund({
+        amount: '1.0000000',
+        asset: AssetType.USDC,
+        funderAddress: 'GFUNDER',
+        bountyId: 'bounty-dry-run',
+      });
+
+      expect(escrow.status).toBe(EscrowStatus.DRY_RUN);
+      expect(escrow.fundTxHash).toBe('dry-run-fund-123');
+      expect(escrow.lockedAt).toBeNull();
+    });
+
+    it('rejects live funding when the selected asset has no token contract', async () => {
+      soroban.tokenContractId.mockReturnValue('');
+
+      await expect(
+        service.fund({
+          amount: '1.0000000',
+          asset: AssetType.USDC,
+          funderAddress: 'GFUNDER',
+          bountyId: 'bounty-no-token',
+        }),
+      ).rejects.toThrow('No Soroban token contract is configured for USDC');
+
+      expect(escrowRepo.save).not.toHaveBeenCalled();
+      expect(soroban.invoke).not.toHaveBeenCalled();
     });
 
     it('sends the token address and a deadline, and persists them on the row (#158)', async () => {
@@ -540,6 +586,63 @@ describe('EscrowService', () => {
           recipientAddress: 'GRECIPIENT',
           amount: '50',
         }),
+      );
+    });
+
+    it('records net payout and protocol fee as separate ledger entries', async () => {
+      soroban.getProtocolFeeBps.mockResolvedValue(250);
+      const escrow = {
+        id: 'escrow-fee',
+        status: EscrowStatus.LOCKED,
+        amount: '50.0000000',
+        asset: AssetType.USDC,
+        protocolFeeAmount: '0.0000000',
+        bountyId: 'bounty-fee',
+      };
+      escrowRepo.findOne.mockResolvedValue(escrow);
+
+      await service.release('escrow-fee', 'GRECIPIENT');
+
+      expect(escrow.protocolFeeAmount).toBe('1.2500000');
+      expect(paymentRepo.save).toHaveBeenNthCalledWith(
+        1,
+        expect.objectContaining({
+          amount: '48.7500000',
+          isProtocolFee: false,
+        }),
+      );
+      expect(paymentRepo.save).toHaveBeenNthCalledWith(
+        2,
+        expect.objectContaining({
+          amount: '1.2500000',
+          isProtocolFee: true,
+          recipientAddress: 'GTREASURY',
+        }),
+      );
+    });
+
+    it('marks dry-run release and payment records as DRY_RUN', async () => {
+      soroban.dryRunEnabled = true;
+      soroban.invoke.mockResolvedValueOnce({
+        txHash: 'dry-run-release-123',
+        ledger: null,
+        returnValue: null,
+        status: 'DRY_RUN',
+      });
+      escrowRepo.findOne.mockResolvedValue({
+        id: 'escrow-dry-run',
+        status: EscrowStatus.DRY_RUN,
+        amount: '10.0000000',
+        asset: AssetType.USDC,
+        bountyId: 'bounty-dry-run',
+      });
+
+      const escrow = await service.release('escrow-dry-run', 'GRECIPIENT');
+
+      expect(escrow.status).toBe(EscrowStatus.DRY_RUN);
+      expect(escrow.releasedAt).toBeNull();
+      expect(paymentRepo.save).toHaveBeenCalledWith(
+        expect.objectContaining({ status: PaymentStatus.DRY_RUN }),
       );
     });
 
@@ -1148,6 +1251,37 @@ describe('EscrowService', () => {
       expect(payments[0].amount).toBe('40.0000000');
       expect(payments[1].amount).toBe('40.0000000');
       expect(payments[2].amount).toBe('20.0000000');
+    });
+
+    it('keeps recipient payouts plus the separate fee equal to the gross escrow', async () => {
+      soroban.getProtocolFeeBps.mockResolvedValue(250);
+      const escrow = {
+        id: 'escrow-split-fee',
+        status: EscrowStatus.LOCKED,
+        amount: '100.0000000',
+        protocolFeeAmount: '0.0000000',
+        asset: AssetType.USDC,
+        bountyId: 'bounty-split-fee',
+      };
+      escrowRepo.findOne.mockResolvedValue(escrow);
+
+      const payments = await service.splitRelease('escrow-split-fee', [
+        { recipientAddress: 'GA', percentage: 50 },
+        { recipientAddress: 'GB', percentage: 50 },
+      ]);
+      const payoutStroops = payments.reduce(
+        (sum, payment) => sum + amountToStroops(payment.amount),
+        0n,
+      );
+      const feePayment = paymentRepo.save.mock.calls
+        .map(([payment]) => payment as Payment)
+        .find((payment) => payment.isProtocolFee);
+
+      expect(escrow.protocolFeeAmount).toBe('2.5000000');
+      expect(feePayment?.amount).toBe('2.5000000');
+      expect(payoutStroops + amountToStroops(feePayment!.amount)).toBe(
+        amountToStroops(escrow.amount),
+      );
     });
 
     it('records split amounts that sum to exactly escrow.amount in stroops (#43)', async () => {

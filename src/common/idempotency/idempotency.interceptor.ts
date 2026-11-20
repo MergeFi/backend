@@ -37,9 +37,8 @@ export const IDEMPOTENCY_KEY_TTL_MS = 24 * 60 * 60 * 1000;
 
 /**
  * Safety multiplier applied to `POLL_CEILING_MS` when computing
- * `STALE_PROCESSING_MS`. The window must cover the full poll loop *plus*
- * getAccount/simulate/send RPC round-trips; 3× leaves ~3x headroom over
- * the poll ceiling itself (#810).
+ * `STALE_PROCESSING_MS`. The ceiling includes bounded transaction resubmission
+ * polls and queue-full delays; 3× leaves headroom for RPC round-trips (#810).
  *
  * Raising SOROBAN_TX_TIMEOUT_SECONDS (e.g. for congestion) automatically
  * raises POLL_CEILING_MS and therefore this window, keeping the invariant
@@ -54,11 +53,11 @@ const STALE_PROCESSING_SAFETY_FACTOR = 3;
  *
  * Must comfortably outlast the slowest legitimate handler: the escrow
  * mutations this interceptor guards go through
- * SorobanClientService.invoke → pollTransaction, which polls for the
- * transaction's full time bound (#527) *on top of* the getAccount/simulate/
- * send RPC round-trips. A 30s window was shorter than that worst case,
- * letting a client retry reclaim a row whose original request was still
- * actively running and re-execute a concurrent money-moving operation (#90).
+ * SorobanClientService.invoke polls for the transaction's full time bound
+ * and may rebuild/resubmit at a higher fee before returning (#527). A 30s
+ * window was shorter than that worst case, letting a client retry reclaim a
+ * row whose original request was still active and re-execute a money-moving
+ * operation (#90).
  *
  * Derived from POLL_CEILING_MS × STALE_PROCESSING_SAFETY_FACTOR instead of
  * a hardcoded constant so that tuning SOROBAN_TX_TIMEOUT_SECONDS

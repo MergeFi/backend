@@ -22,8 +22,8 @@ const OVERLAP_WINDOW_MS = 750;
 /**
  * Integration test for #844: `EscrowService.withLockedEscrow`'s
  * `SELECT ... FOR UPDATE` is the only thing preventing a double payout when
- * the Soroban client is in dry-run (every environment this suite runs in),
- * because the dry-run `invoke` succeeds unconditionally. escrow.service.spec
+ * the Soroban stub is explicitly configured to return dry-run results,
+ * because a synthetic `invoke` succeeds without on-chain guards. escrow.service.spec
  * mocks the repository, so it can only check that `lock: { mode:
  * 'pessimistic_write' }` is *passed*, not that it serialises anything — this
  * file runs two real concurrent transactions against Postgres instead.
@@ -49,6 +49,10 @@ describe('EscrowService row-lock serialisation (integration, #844)', () => {
   function createOverlappingSoroban(): SorobanClientService {
     let waiters: Array<() => void> = [];
     return {
+      getProtocolFeeBps: async () => 0,
+      dryRunEnabled: true,
+      protocolFeeBps: 0,
+      treasuryAddress: null,
       invoke: async (method: string): Promise<ContractInvocationResult> => {
         invocations.push(method);
         const arrived = new Promise<void>((resolve) => {
@@ -163,7 +167,7 @@ describe('EscrowService row-lock serialisation (integration, #844)', () => {
     expect(rejected).toHaveLength(1);
     expect(rejected[0].reason).toBeInstanceOf(BadRequestException);
     expect((rejected[0].reason as Error).message).toMatch(
-      /is not in LOCKED state \(current: released\)/,
+      /is not in LOCKED state \(current: dry_run\)/,
     );
 
     // The contract was only asked once: the second request was rejected
@@ -175,9 +179,10 @@ describe('EscrowService row-lock serialisation (integration, #844)', () => {
     });
     expect(payments).toHaveLength(1);
     expect(payments[0].amount).toBe('100.0000000');
+    expect(payments[0].status).toBe('dry_run');
 
     const reloaded = await escrowRepo.findOneByOrFail({ id: escrow.id });
-    expect(reloaded.status).toBe(EscrowStatus.RELEASED);
+    expect(reloaded.status).toBe(EscrowStatus.DRY_RUN);
   }, 15_000);
 
   it('does not let two concurrent partial releases together overshoot the escrow balance', async () => {

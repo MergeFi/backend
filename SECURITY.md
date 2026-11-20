@@ -18,8 +18,8 @@ Please include:
 - any suggested fix.
 
 Do not test against production deployments or real user accounts, and do not
-move or lock real funds. A local instance (see the README) runs Soroban in
-dry-run mode by default and is enough for almost every report.
+move or lock real funds. A local instance (see the README) can be configured
+with `SOROBAN_DRY_RUN=true` and is enough for almost every report.
 
 ## What to expect
 
