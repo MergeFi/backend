@@ -13,8 +13,8 @@ import { User } from './user.entity';
 import { AssetType, PaymentStatus } from '../enums';
 
 /**
- * A single payout leg from an escrow release — one per recipient (team splits
- * produce many).
+ * A single payout or protocol-fee leg from an escrow release — one recipient
+ * row per payout leg, plus a separately tagged protocol-fee row when charged.
  *
  * `IDX_payment_escrow` serves `WHERE escrowId = :escrowId`, the lookup
  * `EscrowService.releasePartial` runs on every call to compute the
@@ -62,6 +62,9 @@ export class Payment {
 
   @Column({ type: 'decimal', precision: 20, scale: 7 })
   amount: string;
+
+  @Column({ type: 'boolean', default: false })
+  isProtocolFee: boolean;
 
   @Column({ type: 'enum', enum: AssetType, default: AssetType.USDC })
   asset: AssetType;

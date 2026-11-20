@@ -6,6 +6,7 @@ import {
   Payment,
   Repository as RepositoryEntity,
 } from '../common/entities';
+import { PaymentStatus } from '../common/enums';
 import { BountyStatus } from '../common/enums';
 import { AssetType, PaymentStatus } from '../common/enums';
 import { AppConfig } from '../config/configuration';
@@ -92,6 +93,12 @@ export class AnalyticsService {
       this.bountyRepo.count(),
       this.paymentRepo
         .createQueryBuilder('payment')
+        .select('COALESCE(SUM(payment.amount), 0)', 'total')
+        .where('payment.status = :status', {
+          status: PaymentStatus.CONFIRMED,
+        })
+        .andWhere('payment.isProtocolFee = false')
+        .getRawOne<{ total: string }>(),
         .select('payment.asset', 'asset')
         .addSelect('COALESCE(SUM(payment.amount), 0)', 'total')
         .where('payment.status = :status', {

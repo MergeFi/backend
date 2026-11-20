@@ -25,6 +25,9 @@ const baseStellarConfig: StellarConfig = {
   treasurySecret: '',
   assetContractIds: { USDC: '', XLM: '' },
   escrowDeadlineSeconds: 7776000,
+  dryRun: false,
+  inclusionFee: 5000,
+  protocolFeeBps: 250,
 };
 
 function makeService(
@@ -116,9 +119,6 @@ describe('SorobanClientService', () => {
     });
   });
 
-  // The dry-run short-circuit is the path every test, local run and
-  // unconfigured deployment takes, and it writes LOCKED/CONFIRMED/PAID rows
-  // for transactions that never happened (#839).
   describe('invoke (dry-run gating)', () => {
     const unconfigured: [string, Partial<StellarConfig>][] = [
       ['neither variable is set', {}],
@@ -142,37 +142,40 @@ describe('SorobanClientService', () => {
       );
     });
 
+    it('dry-runs without RPC only when explicitly enabled', async () => {
+      const service = makeService({ dryRun: true });
+
+      const result = await service.invoke('release', ['ref-1']);
+
+      expect(result).toEqual({
+        txHash: expect.stringMatching(/^dry-run-release-\d+$/),
+        ledger: null,
+        returnValue: null,
+        status: 'DRY_RUN',
+      });
+      for (const spy of rpcSpies) expect(spy).not.toHaveBeenCalled();
+    });
+
     it.each(unconfigured)(
-      'dry-runs without any RPC call when %s',
+      'rejects missing live configuration when dry-run is not enabled (%s)',
       async (_label, overrides) => {
         const service = makeService(overrides);
-        expect(service.isConfigured()).toBe(false);
-
-        const result = await service.invoke('release', ['ref-1']);
-
-        // `dry-run-` is the only way to identify a synthetic record after
-        // the fact (see README "Dry-run mode").
-        expect(result).toEqual({
-          txHash: expect.stringMatching(/^dry-run-release-\d+$/),
-          ledger: null,
-          returnValue: null,
-          status: 'DRY_RUN',
-        });
-        for (const spy of rpcSpies) expect(spy).not.toHaveBeenCalled();
-      },
-    );
-
-    it.each(unconfigured)(
-      'throws instead of dry-running in production when %s',
-      async (_label, overrides) => {
-        const service = makeService(overrides, 'production');
 
         await expect(service.invoke('release', ['ref-1'])).rejects.toThrow(
-          'Refusing to dry-run "release" in production',
+          'Refusing to invoke "release" without Soroban configuration',
         );
         for (const spy of rpcSpies) expect(spy).not.toHaveBeenCalled();
       },
     );
+
+    it('does not silently dry-run in production when the flag is unset', async () => {
+      const service = makeService({}, 'production');
+
+      await expect(service.invoke('release', ['ref-1'])).rejects.toThrow(
+        'Refusing to invoke "release" without Soroban configuration',
+      );
+      for (const spy of rpcSpies) expect(spy).not.toHaveBeenCalled();
+    });
   });
 
   describe('invoke (configured pipeline)', () => {
@@ -248,6 +251,60 @@ describe('SorobanClientService', () => {
 
       await expect(service.invoke('refund', ['ref-1'])).rejects.toThrow(
         'Soroban transaction submission failed',
+      );
+    });
+
+    it('retries TRY_AGAIN_LATER before polling the accepted transaction', async () => {
+      jest.useFakeTimers();
+      const sendSpy = jest
+        .spyOn(rpc.Server.prototype, 'sendTransaction')
+        .mockResolvedValueOnce({ status: 'TRY_AGAIN_LATER' } as never)
+        .mockResolvedValueOnce({
+          status: 'PENDING',
+          hash: 'accepted-hash',
+        } as never);
+      const pending = service.invoke('fund', ['ref-1']);
+
+      await jest.advanceTimersByTimeAsync(1000);
+      const result = await pending;
+
+      expect(sendSpy).toHaveBeenCalledTimes(2);
+      expect(result.txHash).toBe('accepted-hash');
+      expect(rpc.Server.prototype.getTransaction).toHaveBeenCalled();
+    });
+
+    it('stops after bounded TRY_AGAIN_LATER retries without polling', async () => {
+      jest.useFakeTimers();
+      const sendSpy = jest
+        .spyOn(rpc.Server.prototype, 'sendTransaction')
+        .mockResolvedValue({ status: 'TRY_AGAIN_LATER' } as never);
+      const settled = service.invoke('fund', ['ref-1']).catch((error: Error) =>
+        error,
+      );
+
+      await jest.advanceTimersByTimeAsync(4000);
+      const error = await settled;
+
+      expect(sendSpy).toHaveBeenCalledTimes(4);
+      expect(error.message).toContain(
+        'TRY_AGAIN_LATER after 4 attempts',
+      );
+      expect(rpc.Server.prototype.getTransaction).not.toHaveBeenCalled();
+    });
+
+    it('polls the existing transaction after DUPLICATE', async () => {
+      jest
+        .spyOn(rpc.Server.prototype, 'sendTransaction')
+        .mockResolvedValue({
+          status: 'DUPLICATE',
+          hash: 'duplicate-hash',
+        } as never);
+
+      const result = await service.invoke('release', ['ref-1']);
+
+      expect(result.txHash).toBe('duplicate-hash');
+      expect(rpc.Server.prototype.getTransaction).toHaveBeenCalledWith(
+        'duplicate-hash',
       );
     });
   });
@@ -395,6 +452,28 @@ describe('SorobanClientService', () => {
       expect((err as Error).message).toContain(
         'Timed out waiting for Soroban transaction mock-hash to finalize',
       );
+    });
+
+    it('rebuilds an expired, never-included transaction at a higher fee', async () => {
+      const getTxSpy = jest
+        .spyOn(rpc.Server.prototype, 'getTransaction')
+        .mockResolvedValueOnce(
+          txResponse({ status: 'NOT_FOUND' }),
+        );
+      for (let i = 0; i < 30; i++) {
+        getTxSpy.mockResolvedValueOnce(txResponse({ status: 'NOT_FOUND' }));
+      }
+      getTxSpy.mockResolvedValueOnce(
+        txResponse({ status: 'SUCCESS', ledger: 10, returnValue: null }),
+      );
+      const assembleSpy = jest.spyOn(rpc, 'assembleTransaction');
+      const pending = service.invoke('release', ['ref-1']);
+
+      await jest.advanceTimersByTimeAsync(70_000);
+      await pending;
+
+      expect(assembleSpy).toHaveBeenCalledTimes(2);
+      expect(rpc.Server.prototype.getAccount).toHaveBeenCalledTimes(2);
     });
   });
 

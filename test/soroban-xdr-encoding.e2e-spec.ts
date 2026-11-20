@@ -18,8 +18,8 @@ import {
  * `SorobanClientService.toScVal` is the only place the backend's intent is
  * translated into the contract ABI, and a wrong ScVal type only surfaces as
  * a host-side binding error during simulation against a real deployment —
- * every environment without ESCROW_CONTRACT_ID dry-runs and never encodes
- * at all. soroban-client.service.spec.ts runs under the unit Jest config,
+ * environments explicitly configured for dry-run never encode transactions.
+ * soroban-client.service.spec.ts runs under the unit Jest config,
  * which maps @stellar/stellar-sdk to a stub whose nativeToScVal is the
  * identity, so it can only assert what the encoder *asked for*. This file
  * lives under the e2e config, which loads the real SDK, so it asserts on the
@@ -48,6 +48,9 @@ const stellarConfig: AppConfig['stellar'] = {
   treasurySecret: '',
   assetContractIds: { USDC: USDC_TOKEN, XLM: '' },
   escrowDeadlineSeconds: 7776000,
+  dryRun: false,
+  inclusionFee: 5000,
+  protocolFeeBps: 250,
 };
 
 function makeSoroban(): SorobanClientService {
@@ -147,6 +150,8 @@ describe('SorobanClientService XDR encoding (#840)', () => {
       // Dry-run-shaped stand-in that records the *encoded* args and delegates
       // everything else EscrowService reads to the real client.
       const capturing = Object.create(soroban) as SorobanClientService;
+      Object.defineProperty(capturing, 'dryRunEnabled', { value: true });
+      capturing.getProtocolFeeBps = async () => 0;
       capturing.invoke = (
         method: string,
         args: unknown[],

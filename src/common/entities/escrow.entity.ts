@@ -130,6 +130,14 @@ export class Escrow {
   @Column({ type: 'decimal', precision: 20, scale: 7 })
   amount: string;
 
+  @Column({
+    type: 'decimal',
+    precision: 20,
+    scale: 7,
+    default: '0.0000000',
+  })
+  protocolFeeAmount: string;
+
   @Column({ type: 'enum', enum: AssetType, default: AssetType.USDC })
   asset: AssetType;
 

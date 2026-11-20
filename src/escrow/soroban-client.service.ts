@@ -18,6 +18,9 @@ import { AppConfig } from '../config/configuration';
 /** Transaction time bound set on every invocation (`setTimeout`), in seconds. */
 export const SOROBAN_TX_TIMEOUT_SECONDS = 60;
 const POLL_DELAY_MS = 2000;
+const SUBMISSION_RETRY_DELAY_MS = 1000;
+const SUBMISSION_RETRIES = 3;
+const INCLUSION_FEE_BUMP_RETRIES = 2;
 /**
  * Poll at least as long as the transaction's time bound (+1 attempt), so a
  * timeout really means "outcome still unknown at expiry", not "gave up early" (#527).
@@ -32,10 +35,14 @@ const POLL_ATTEMPTS =
  * from this value rather than a hardcoded constant that silently falls out
  * of sync when SOROBAN_TX_TIMEOUT_SECONDS changes (#810).
  *
- * This is the poll loop alone; real callers also pay getAccount/simulate/
- * send latency, which the safety multiplier in STALE_PROCESSING_MS covers.
+ * Includes every bounded poll and TRY_AGAIN_LATER delay in invoke's retry
+ * path; RPC latency remains covered by the idempotency safety multiplier.
  */
-export const POLL_CEILING_MS = POLL_ATTEMPTS * POLL_DELAY_MS;
+export const POLL_CEILING_MS =
+  POLL_ATTEMPTS * POLL_DELAY_MS * (INCLUSION_FEE_BUMP_RETRIES + 1) +
+  SUBMISSION_RETRIES *
+    SUBMISSION_RETRY_DELAY_MS *
+    (INCLUSION_FEE_BUMP_RETRIES + 1);
 
 /**
  * The transaction was accepted (`sendTransaction` → PENDING) but had not
@@ -89,10 +96,9 @@ export function u64(value: bigint | number | string): U64Arg {
  * escrow smart contract deployed by the sibling `mergefi-contracts` repo.
  *
  * The bounty/milestone escrow signatures below track `mergefi-contracts`'
- * `contracts/escrow/src/lib.rs`. Adjust argument encoding once the real
- * generated bindings are available. Until ESCROW_CONTRACT_ID is configured,
- * calls run in "simulate-only" dry-run mode and never submit a real
- * transaction.
+ * `contracts/escrow/src/lib.rs`. Calls use synthetic results only when
+ * SOROBAN_DRY_RUN is explicitly enabled; missing live configuration otherwise
+ * fails instead of simulating a successful operation.
  *
  * Bounty/milestone escrow interface (Rust):
  *   fn fund(env, issue_id: u64, sponsor: Address, token: Address, amount: i128, deadline: u64) -> Result<(), Error>
@@ -132,12 +138,9 @@ export class SorobanClientService {
   private readonly server: rpc.Server;
   private readonly networkPassphrase: string;
   private readonly stellar: AppConfig['stellar'];
-  private readonly isProduction: boolean;
 
   constructor(private readonly configService: ConfigService<AppConfig, true>) {
     this.stellar = this.configService.get('stellar', { infer: true });
-    this.isProduction =
-      this.configService.get('env', { infer: true }) === 'production';
     this.networkPassphrase = this.stellar.networkPassphrase || Networks.TESTNET;
     this.server = new rpc.Server(this.stellar.sorobanRpcUrl, {
       allowHttp: this.stellar.sorobanRpcUrl.startsWith('http://'),
@@ -149,6 +152,20 @@ export class SorobanClientService {
     return Boolean(
       this.stellar.escrowContractId && this.stellar.treasurySecret,
     );
+  }
+
+  get dryRunEnabled(): boolean {
+    return this.stellar.dryRun;
+  }
+
+  get protocolFeeBps(): number {
+    return this.stellar.protocolFeeBps;
+  }
+
+  get treasuryAddress(): string | null {
+    return this.stellar.treasurySecret
+      ? Keypair.fromSecret(this.stellar.treasurySecret).publicKey()
+      : null;
   }
 
   /** Deployed contract ID for single-issue bounty/milestone escrows. */
@@ -203,32 +220,18 @@ export class SorobanClientService {
   }
 
   /**
-   * Builds, simulates, signs, and submits a contract invocation. When no
-   * contract ID / treasury secret is configured (local dev without deployed
-   * contracts), this short-circuits into a deterministic dry-run result so
-   * the rest of the orchestration (DB writes, status transitions) can still
-   * be exercised end-to-end without live infrastructure.
-   *
-   * Production never dry-runs: a synthetic success there would write
-   * LOCKED escrows, CONFIRMED payments and PAID bounties for transactions
-   * that never happened. `assertRequiredConfig` already refuses to boot
-   * without both variables; this is the same guard at the point of use (#839).
+   * Builds, simulates, signs, and submits a contract invocation. The synthetic
+   * result path is available only through the explicit SOROBAN_DRY_RUN flag;
+   * callers persist dry_run ledger statuses for these results.
    */
   async invoke(
     method: string,
     args: unknown[],
     opts: { contractId?: string } = {},
   ): Promise<ContractInvocationResult> {
-    if (!this.isConfigured()) {
-      if (this.isProduction) {
-        throw new Error(
-          `Refusing to dry-run "${method}" in production: ESCROW_CONTRACT_ID ` +
-            'and TREASURY_SECRET must both be set.',
-        );
-      }
+    if (this.dryRunEnabled) {
       this.logger.warn(
-        `Soroban not configured (ESCROW_CONTRACT_ID/TREASURY_SECRET missing) — ` +
-          `dry-running "${method}" instead of submitting an on-chain transaction.`,
+        `SOROBAN_DRY_RUN=true — dry-running "${method}" instead of submitting an on-chain transaction.`,
       );
       return {
         txHash: `dry-run-${method}-${Date.now()}`,
@@ -236,6 +239,13 @@ export class SorobanClientService {
         returnValue: null,
         status: 'DRY_RUN',
       };
+    }
+
+    if (!this.isConfigured()) {
+      throw new Error(
+        `Refusing to invoke "${method}" without Soroban configuration. ` +
+          'Set ESCROW_CONTRACT_ID and TREASURY_SECRET, or explicitly enable SOROBAN_DRY_RUN=true.',
+      );
     }
 
     const keypair = this.getTreasuryKeypair();
@@ -246,49 +256,106 @@ export class SorobanClientService {
     }
 
     const contract = this.getContract(opts.contractId);
-    const account = await this.server.getAccount(keypair.publicKey());
-
     const scArgs = args.map((arg) => this.toScVal(arg));
+    for (let feeAttempt = 0; ; feeAttempt++) {
+      const inclusionFee = this.stellar.inclusionFee * 2 ** feeAttempt;
+      if (!Number.isSafeInteger(inclusionFee)) {
+        throw new Error('Soroban inclusion fee escalation exceeded safe limits');
+      }
+      this.logger.log(
+        `Submitting Soroban "${method}" with inclusion fee ${inclusionFee} stroops`,
+      );
 
-    const tx = new TransactionBuilder(account, {
-      fee: BASE_FEE,
-      networkPassphrase: this.networkPassphrase,
-    })
-      .addOperation(contract.call(method, ...scArgs))
-      .setTimeout(SOROBAN_TX_TIMEOUT_SECONDS)
-      .build();
+      const account = await this.server.getAccount(keypair.publicKey());
+      const tx = new TransactionBuilder(account, {
+        fee: String(inclusionFee),
+        networkPassphrase: this.networkPassphrase,
+      })
+        .addOperation(contract.call(method, ...scArgs))
+        .setTimeout(SOROBAN_TX_TIMEOUT_SECONDS)
+        .build();
 
-    const simulated = await this.server.simulateTransaction(tx);
-    if (rpc.Api.isSimulationError(simulated)) {
-      throw new Error(`Soroban simulation failed: ${simulated.error}`);
+      const simulated = await this.server.simulateTransaction(tx);
+      if (rpc.Api.isSimulationError(simulated)) {
+        throw new Error(`Soroban simulation failed: ${simulated.error}`);
+      }
+
+      const prepared = rpc.assembleTransaction(tx, simulated).build();
+      prepared.sign(keypair);
+      const send = await this.submitTransaction(prepared, method);
+
+      let result: rpc.Api.GetTransactionResponse;
+      try {
+        result = await this.pollTransaction(send.hash);
+      } catch (error) {
+        if (
+          !(error instanceof SorobanPendingError) ||
+          feeAttempt >= INCLUSION_FEE_BUMP_RETRIES
+        ) {
+          throw error;
+        }
+        this.logger.warn(
+          `Soroban transaction ${send.hash} was not included before expiry; rebuilding "${method}" with a higher inclusion fee`,
+        );
+        continue;
+      }
+
+      if (result.status !== rpc.Api.GetTransactionStatus.SUCCESS) {
+        throw new Error(
+          `Soroban transaction ${send.hash} did not succeed on-chain (status: ${result.status})`,
+        );
+      }
+
+      return {
+        txHash: send.hash,
+        ledger: 'ledger' in result ? (result.ledger ?? null) : null,
+        returnValue:
+          'returnValue' in result && result.returnValue
+            ? scValToNative(result.returnValue)
+            : null,
+        status: result.status,
+      };
     }
+  }
 
-    const prepared = rpc.assembleTransaction(tx, simulated).build();
-    prepared.sign(keypair);
-
-    const send = await this.server.sendTransaction(prepared);
-    if (send.status === 'ERROR') {
+  private async submitTransaction(
+    prepared: Parameters<rpc.Server['sendTransaction']>[0],
+    method: string,
+  ): Promise<{ status: 'PENDING' | 'DUPLICATE'; hash: string }> {
+    for (let attempt = 0; ; attempt++) {
+      const send = await this.server.sendTransaction(prepared);
+      if (send.status === 'ERROR') {
+        throw new Error(
+          `Soroban transaction submission failed: ${JSON.stringify(send.errorResult)}`,
+        );
+      }
+      if (send.status === 'TRY_AGAIN_LATER') {
+        if (attempt >= SUBMISSION_RETRIES) {
+          throw new Error(
+            `Soroban transaction submission for "${method}" was rejected with TRY_AGAIN_LATER after ${attempt + 1} attempts`,
+          );
+        }
+        this.logger.warn(
+          `Soroban submission queue is full for "${method}"; retrying in ${SUBMISSION_RETRY_DELAY_MS}ms`,
+        );
+        await new Promise((resolve) =>
+          setTimeout(resolve, SUBMISSION_RETRY_DELAY_MS),
+        );
+        continue;
+      }
+      if (send.status === 'DUPLICATE') {
+        this.logger.warn(
+          `Soroban reports "${method}" transaction ${send.hash} as DUPLICATE; polling the existing transaction`,
+        );
+        return { status: 'DUPLICATE', hash: send.hash };
+      }
+      if (send.status === 'PENDING') {
+        return { status: 'PENDING', hash: send.hash };
+      }
       throw new Error(
-        `Soroban transaction submission failed: ${JSON.stringify(send.errorResult)}`,
+        `Soroban returned an unexpected submission status for "${method}": ${String(send.status)}`,
       );
     }
-
-    const result = await this.pollTransaction(send.hash);
-    if (result.status !== rpc.Api.GetTransactionStatus.SUCCESS) {
-      throw new Error(
-        `Soroban transaction ${send.hash} did not succeed on-chain (status: ${result.status})`,
-      );
-    }
-
-    return {
-      txHash: send.hash,
-      ledger: 'ledger' in result ? (result.ledger ?? null) : null,
-      returnValue:
-        'returnValue' in result && result.returnValue
-          ? scValToNative(result.returnValue)
-          : null,
-      status: result.status,
-    };
   }
 
   /**
@@ -301,7 +368,7 @@ export class SorobanClientService {
    * submitted, so there is nothing to look up.
    */
   async getTransaction(hash: string): Promise<TransactionLookup | null> {
-    if (!this.isConfigured()) return null;
+    if (this.dryRunEnabled || !this.isConfigured()) return null;
     const res = await this.server.getTransaction(hash);
     if (res.status === rpc.Api.GetTransactionStatus.NOT_FOUND) {
       return { status: 'NOT_FOUND', ledger: null, returnValue: null };
@@ -333,7 +400,9 @@ export class SorobanClientService {
     opts: { contractId?: string } = {},
   ): Promise<unknown> {
     const keypair = this.getTreasuryKeypair();
-    if (!this.isConfigured() || !keypair) return undefined;
+    if (this.dryRunEnabled || !this.isConfigured() || !keypair) {
+      return undefined;
+    }
 
     const contract = this.getContract(opts.contractId);
     const account = await this.server.getAccount(keypair.publicKey());
@@ -353,6 +422,25 @@ export class SorobanClientService {
     }
     const retval = simulated.result?.retval;
     return retval ? (scValToNative(retval) ?? null) : null;
+  }
+
+  async getProtocolFeeBps(opts: { contractId?: string } = {}): Promise<number> {
+    if (this.dryRunEnabled) return this.protocolFeeBps;
+    const value = await this.read('get_fee_bps', [], opts);
+    const feeBps =
+      typeof value === 'bigint'
+        ? Number(value)
+        : typeof value === 'number'
+          ? value
+          : typeof value === 'string' && /^\d+$/.test(value)
+            ? Number(value)
+            : NaN;
+    if (!Number.isSafeInteger(feeBps) || feeBps < 0 || feeBps > 10_000) {
+      throw new Error(
+        `Soroban get_fee_bps returned an invalid basis-point value: ${String(value)}`,
+      );
+    }
+    return feeBps;
   }
 
   private async pollTransaction(

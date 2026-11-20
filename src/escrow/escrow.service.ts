@@ -92,6 +92,14 @@ export class EscrowService {
   /** Locks funds for a bounty/milestone/pool by calling the escrow contract's `fund`. */
   async fund(input: FundEscrowInput): Promise<Escrow> {
     this.assertValidFundInput(input);
+    if (
+      !this.soroban.dryRunEnabled &&
+      !this.resolveTokenAddress(input.asset)
+    ) {
+      throw new BadRequestException(
+        `No Soroban token contract is configured for ${input.asset}`,
+      );
+    }
 
     const escrow = this.escrowRepo.create({
       amount: input.amount,
@@ -149,9 +157,10 @@ export class EscrowService {
       throw err;
     }
 
-    escrow.status = EscrowStatus.LOCKED;
+    escrow.status =
+      result.status === 'DRY_RUN' ? EscrowStatus.DRY_RUN : EscrowStatus.LOCKED;
     escrow.fundTxHash = result.txHash;
-    escrow.lockedAt = new Date();
+    escrow.lockedAt = result.status === 'DRY_RUN' ? null : new Date();
     escrow.metadata = { fund: result };
 
     try {
@@ -227,6 +236,11 @@ export class EscrowService {
     // observes the RELEASED status written by the first and is rejected —
     // instead of both passing the LOCKED check and double-paying (#303).
     return this.withLockedEscrow(escrowId, async (escrow, manager) => {
+      const grossStroops = amountToStroops(escrow.amount);
+      const feeBps = await this.soroban.getProtocolFeeBps(
+        this.contractOpts(escrow),
+      );
+      const feeStroops = this.calculateProtocolFee(grossStroops, feeBps);
       const result = await this.invokeRelease(
         escrow,
         'release',
@@ -239,9 +253,13 @@ export class EscrowService {
       // Payment-insert failure can never leave a permanently-mismarked escrow
       // with no record of who was paid (#154). The lock makes that whole span
       // one indivisible unit.
-      escrow.status = EscrowStatus.RELEASED;
+      escrow.status =
+        result.status === 'DRY_RUN'
+          ? EscrowStatus.DRY_RUN
+          : EscrowStatus.RELEASED;
       escrow.releaseTxHash = result.txHash;
-      escrow.releasedAt = new Date();
+      escrow.releasedAt = result.status === 'DRY_RUN' ? null : new Date();
+      this.accrueProtocolFee(escrow, feeStroops);
       await manager.save(Escrow, escrow);
 
       await manager.save(
@@ -250,11 +268,19 @@ export class EscrowService {
           escrowId: escrow.id,
           recipientId: recipientId ?? null,
           recipientAddress,
-          amount: escrow.amount,
+          amount: stroopsToAmount(grossStroops - feeStroops),
           asset: escrow.asset,
-          status: PaymentStatus.CONFIRMED,
+          isProtocolFee: false,
+          status: this.paymentStatus(result.status),
           txHash: result.txHash,
         }),
+      );
+      await this.saveProtocolFeePayment(
+        manager,
+        escrow,
+        feeStroops,
+        result.txHash,
+        result.status,
       );
 
       return escrow;
@@ -269,8 +295,8 @@ export class EscrowService {
    * basis-point integers sent on-chain — not recomputed independently from the
    * raw percentages — so the local ledger can never drift from what was
    * instructed to the contract. Shares are allocated in whole stroops via a
-   * largest-remainder method, guaranteeing `sum(payments.amount) ===
-   * escrow.amount` exactly (#43).
+   * largest-remainder method. Recipient payments sum to the net escrow amount;
+   * a separate protocol-fee payment preserves the gross ledger invariant.
    */
   async splitRelease(
     escrowId: string,
@@ -284,6 +310,11 @@ export class EscrowService {
     // one escrow must serialise rather than each observing LOCKED (#303).
     return this.withLockedEscrow(escrowId, async (escrow, manager) => {
       const totalStroops = amountToStroops(escrow.amount);
+      const feeBps = await this.soroban.getProtocolFeeBps(
+        this.contractOpts(escrow),
+      );
+      const feeStroops = this.calculateProtocolFee(totalStroops, feeBps);
+      const recipientStroops = totalStroops - feeStroops;
       // Single source of truth for the split: integer basis points summing to
       // exactly 10,000 (100.00%), used both on-chain and to derive the ledger.
       const bps = apportionBasisPoints(recipients.map((r) => r.percentage));
@@ -297,7 +328,7 @@ export class EscrowService {
         manager,
       );
 
-      const shares = splitStroops(totalStroops, bps);
+      const shares = splitStroops(recipientStroops, bps);
       const reconcile = this.reconcileSplitResult(
         escrow.id,
         totalStroops,
@@ -313,11 +344,15 @@ export class EscrowService {
       // metadata.reconciliation so the reconciliation job can query and act
       // on it (#814).
       const payments: Payment[] = [];
-      escrow.status = reconcile.diverged
-        ? EscrowStatus.RECONCILIATION_PENDING
-        : EscrowStatus.RELEASED;
+      escrow.status =
+        result.status === 'DRY_RUN'
+          ? EscrowStatus.DRY_RUN
+          : reconcile.diverged
+            ? EscrowStatus.RECONCILIATION_PENDING
+            : EscrowStatus.RELEASED;
       escrow.releaseTxHash = result.txHash;
-      escrow.releasedAt = new Date();
+      escrow.releasedAt = result.status === 'DRY_RUN' ? null : new Date();
+      this.accrueProtocolFee(escrow, feeStroops);
       escrow.metadata = {
         ...(escrow.metadata ?? {}),
         splitRelease: result,
@@ -344,13 +379,21 @@ export class EscrowService {
             recipientAddress: recipient.recipientAddress,
             amount: stroopsToAmount(shares[i]),
             asset: escrow.asset,
+            isProtocolFee: false,
             splitPercentage: (bps[i] / 100).toFixed(2),
-            status: PaymentStatus.CONFIRMED,
+            status: this.paymentStatus(result.status),
             txHash: result.txHash,
           }),
         );
         payments.push(payment);
       }
+      await this.saveProtocolFeePayment(
+        manager,
+        escrow,
+        feeStroops,
+        result.txHash,
+        result.status,
+      );
       return payments;
     }, manager);
   }
@@ -401,6 +444,13 @@ export class EscrowService {
             `Partial release of ${amount} would exceed remaining escrow balance`,
           );
         }
+        const feeBps = await this.soroban.getProtocolFeeBps(
+          this.contractOpts(escrow),
+        );
+        const feeStroops = this.calculateProtocolFee(
+          requestedStroops,
+          feeBps,
+        );
 
         const result = await this.invokeOnLockedEscrow(
           escrow,
@@ -429,19 +479,34 @@ export class EscrowService {
             escrowId: escrow.id,
             recipientId: recipientId ?? null,
             recipientAddress,
-            amount,
+            amount: stroopsToAmount(requestedStroops - feeStroops),
             asset: escrow.asset,
-            status: PaymentStatus.CONFIRMED,
+            isProtocolFee: false,
+            status: this.paymentStatus(result.status),
             txHash: result.txHash,
           }),
         );
 
-        if (releasedSoFarStroops + requestedStroops >= escrowStroops) {
+        this.accrueProtocolFee(escrow, feeStroops);
+        const isComplete =
+          releasedSoFarStroops + requestedStroops >= escrowStroops;
+        if (result.status === 'DRY_RUN') {
+          escrow.status = EscrowStatus.DRY_RUN;
+        } else if (isComplete) {
           escrow.status = EscrowStatus.RELEASED;
           escrow.releaseTxHash = result.txHash;
           escrow.releasedAt = new Date();
+        }
+        if (feeStroops > 0n || isComplete || result.status === 'DRY_RUN') {
           await mgr.save(Escrow, escrow);
         }
+        await this.saveProtocolFeePayment(
+          mgr,
+          escrow,
+          feeStroops,
+          result.txHash,
+          result.status,
+        );
 
         return payment;
       },
@@ -512,7 +577,8 @@ export class EscrowService {
           issueId: issueId ?? null,
           amount,
           asset: escrow.asset,
-          status: PaymentStatus.CONFIRMED,
+          isProtocolFee: false,
+          status: this.paymentStatus(result.status),
           txHash: result.txHash,
         }),
       );
@@ -542,9 +608,12 @@ export class EscrowService {
           mgr,
         );
 
-        escrow.status = EscrowStatus.REFUNDED;
+        escrow.status =
+          result.status === 'DRY_RUN'
+            ? EscrowStatus.DRY_RUN
+            : EscrowStatus.REFUNDED;
         escrow.refundTxHash = result.txHash;
-        escrow.refundedAt = new Date();
+        escrow.refundedAt = result.status === 'DRY_RUN' ? null : new Date();
         return mgr.save(Escrow, escrow);
       },
       manager,
@@ -598,7 +667,10 @@ export class EscrowService {
   }
 
   private assertLocked(escrow: Escrow) {
-    if (escrow.status !== EscrowStatus.LOCKED) {
+    if (
+      escrow.status !== EscrowStatus.LOCKED &&
+      !(this.soroban.dryRunEnabled && escrow.status === EscrowStatus.DRY_RUN)
+    ) {
       throw new BadRequestException(
         `Escrow ${escrow.id} is not in LOCKED state (current: ${escrow.status})`,
       );
@@ -726,6 +798,51 @@ export class EscrowService {
    */
   private contractOpts(escrow: Escrow): { contractId?: string } {
     return escrow.contractId ? { contractId: escrow.contractId } : {};
+  }
+
+  private calculateProtocolFee(grossStroops: bigint, feeBps: number): bigint {
+    if (
+      !Number.isInteger(feeBps) ||
+      feeBps < 0 ||
+      feeBps > TOTAL_BASIS_POINTS
+    ) {
+      throw new Error(`Invalid Soroban protocol fee: ${feeBps} basis points`);
+    }
+    return (grossStroops * BigInt(feeBps)) / BigInt(TOTAL_BASIS_POINTS);
+  }
+
+  private accrueProtocolFee(escrow: Escrow, feeStroops: bigint): void {
+    if (feeStroops === 0n) return;
+    const previousFee = amountToStroops(escrow.protocolFeeAmount ?? '0');
+    escrow.protocolFeeAmount = stroopsToAmount(previousFee + feeStroops);
+  }
+
+  private async saveProtocolFeePayment(
+    manager: EntityManager,
+    escrow: Escrow,
+    feeStroops: bigint,
+    txHash: string,
+    invocationStatus: string,
+  ): Promise<void> {
+    if (feeStroops === 0n) return;
+    await manager.save(
+      Payment,
+      this.paymentRepo.create({
+        escrowId: escrow.id,
+        recipientAddress: this.soroban.treasuryAddress,
+        amount: stroopsToAmount(feeStroops),
+        asset: escrow.asset,
+        isProtocolFee: true,
+        status: this.paymentStatus(invocationStatus),
+        txHash,
+      }),
+    );
+  }
+
+  private paymentStatus(invocationStatus: string): PaymentStatus {
+    return invocationStatus === 'DRY_RUN'
+      ? PaymentStatus.DRY_RUN
+      : PaymentStatus.CONFIRMED;
   }
 
   /**

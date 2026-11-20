@@ -153,6 +153,9 @@ describe('SponsorsService', () => {
       expect(qb.andWhere).toHaveBeenCalledWith('payment.status = :status', {
         status: PaymentStatus.CONFIRMED,
       });
+      expect(qb.andWhere).toHaveBeenCalledWith(
+        'payment.isProtocolFee = false',
+      );
       expect(total).toBe(300);
     });
 

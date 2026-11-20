@@ -98,6 +98,9 @@ describe('AnalyticsService', () => {
   const mockRepositoryRepo = {
     count: jest.fn(),
   };
+  const mockPaymentRepo = {
+    createQueryBuilder: jest.fn(),
+  };
 
   beforeEach(async () => {
     const module: TestingModule = await Test.createTestingModule({
@@ -238,10 +241,15 @@ describe('AnalyticsService', () => {
 
   it('serves platformSummary from cache until invalidate', async () => {
     mockBountyRepo.count.mockResolvedValue(4);
+    const queryBuilder = {
     mockPaymentRepo.createQueryBuilder.mockReturnValue({
       select: jest.fn().mockReturnThis(),
       addSelect: jest.fn().mockReturnThis(),
       where: jest.fn().mockReturnThis(),
+      andWhere: jest.fn().mockReturnThis(),
+      getRawOne: jest.fn().mockResolvedValue({ total: '10' }),
+    };
+    mockPaymentRepo.createQueryBuilder.mockReturnValue(queryBuilder);
       groupBy: jest.fn().mockReturnThis(),
       getRawMany: jest.fn().mockResolvedValue([{ asset: 'USDC', total: '10' }]),
     });
@@ -257,6 +265,13 @@ describe('AnalyticsService', () => {
     });
     expect(second).toEqual(first);
     expect(mockBountyRepo.count).toHaveBeenCalledTimes(1);
+    expect(queryBuilder.where).toHaveBeenCalledWith(
+      'payment.status = :status',
+      { status: 'confirmed' },
+    );
+    expect(queryBuilder.andWhere).toHaveBeenCalledWith(
+      'payment.isProtocolFee = false',
+    );
 
     service.invalidatePlatformSummary();
     mockBountyRepo.count.mockResolvedValue(5);

@@ -29,8 +29,9 @@ docker compose up -d db   # or point DATABASE_URL at your own Postgres 16
 npm run start:dev
 ```
 
-A fresh `.env` runs Soroban in **dry-run mode**: escrow calls are faked and
-nothing settles on-chain. Read README ["Dry-run mode"](./README.md#dry-run-mode)
+A fresh `.env` does not enable Soroban dry-run. Set `SOROBAN_DRY_RUN=true`
+explicitly when testing without a deployed contract; synthetic escrow/payment
+records are marked `dry_run`. Read README ["Dry-run mode"](./README.md#dry-run-mode)
 before testing anything payout-related.
 
 ## Making a change
