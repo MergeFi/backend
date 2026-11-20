@@ -9,6 +9,7 @@ import {
   Param,
   ParseUUIDPipe,
   Patch,
+  Query,
   UseGuards,
 } from '@nestjs/common';
 import { ApiBearerAuth, ApiProperty, ApiTags } from '@nestjs/swagger';
@@ -28,6 +29,12 @@ export class SetStellarAddressDto {
   stellarAddress: string;
 }
 
+function parseOptionalInt(value?: string): number | undefined {
+  if (value === undefined || value === '') return undefined;
+  const n = Number.parseInt(value, 10);
+  return Number.isFinite(n) ? n : undefined;
+}
+
 @ApiTags('users')
 @Controller('users')
 @ApiInternalErrorResponse()
@@ -37,8 +44,16 @@ export class UsersController {
   @ApiBearerAuth()
   @UseGuards(JwtAuthGuard)
   @Get()
-  list() {
-    return this.usersService.list();
+  list(
+    @Query('limit') limit?: string,
+    @Query('offset') offset?: string,
+    @Query('username') username?: string,
+  ) {
+    return this.usersService.list({
+      limit: parseOptionalInt(limit),
+      offset: parseOptionalInt(offset),
+      username: username?.trim() || undefined,
+    });
   }
 
   @ApiBearerAuth()
