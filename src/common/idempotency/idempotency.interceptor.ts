@@ -70,7 +70,15 @@ export const STALE_PROCESSING_MS = POLL_CEILING_MS * STALE_PROCESSING_SAFETY_FAC
 const PG_UNIQUE_VIOLATION = '23505';
 
 /** Attempts to record a successful outcome before giving up (#546). */
-const COMPLETE_WRITE_ATTEMPTS = 2;
+// Backoff between attempts to record COMPLETED. The failures this survives are transient (a reset connection, a pool
+// timeout, a failover), so an immediate retry reuses the same broken state (#800).
+const COMPLETE_WRITE_RETRY_DELAYS_MS = [50, 250, 750];
+const COMPLETE_WRITE_ATTEMPTS = COMPLETE_WRITE_RETRY_DELAYS_MS.length + 1;
+// Bound on re-reads in resolveExisting when a reclaim keeps losing the compare-and-swap (#801).
+const MAX_RESOLVE_ATTEMPTS = 4;
+
+const sleep = (ms: number): Promise<void> =>
+  new Promise((resolve) => setTimeout(resolve, ms));
 
 function isUniqueViolation(error: unknown): boolean {
   const driverError = (error as { driverError?: { code?: string } } | null)
@@ -306,6 +314,7 @@ export class IdempotencyInterceptor implements NestInterceptor {
     existing: IdempotencyKey,
     identity: KeyIdentity,
     fingerprint: string,
+    attempt = 1,
   ): Promise<CachedOutcome | null> {
     // A null stored fingerprint means this row predates the column
     // (migration deploy transition) — nothing to compare against, so it's
@@ -354,16 +363,23 @@ export class IdempotencyInterceptor implements NestInterceptor {
     }
 
     // Someone else reclaimed or completed it first — read back the current
-    // state and defer to it rather than assuming.
+    // state and defer to it rather than assuming. Bounded: under contention
+    // the key is busy right now, so the caller gets the same 409 it would
+    // get for an in-flight request (#801).
+    if (attempt >= MAX_RESOLVE_ATTEMPTS) {
+      throw new ConflictException(
+        'A request with this Idempotency-Key is already being processed',
+      );
+    }
     const current = await this.repo.findOneBy(identity);
     if (!current) {
       return null;
     }
-    return this.resolveExisting(current, identity, fingerprint);
+    return this.resolveExisting(current, identity, fingerprint, attempt + 1);
   }
 
   /**
-   * Records a successful handler outcome. Retries the write once; if it still
+   * Records a successful handler outcome. Retries the write with backoff; if it still
    * fails, logs and leaves the row PROCESSING. A retry with the same key then
    * gets 409 until the row goes stale instead of re-executing, and this
    * request still returns the handler's real response (#546).
@@ -384,6 +400,8 @@ export class IdempotencyInterceptor implements NestInterceptor {
               `rather than re-executed`,
             error instanceof Error ? error.stack : String(error),
           );
+        } else {
+          await sleep(COMPLETE_WRITE_RETRY_DELAYS_MS[attempt - 1]);
         }
       }
     }
