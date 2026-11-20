@@ -121,6 +121,7 @@ function createContext(
     ip?: string;
     params?: Record<string, string>;
     body?: unknown;
+    route?: { path: string };
   } = {},
 ): ExecutionContext {
   const request = {
@@ -130,6 +131,7 @@ function createContext(
     ip: overrides.ip ?? DEFAULT_IP,
     params: overrides.params ?? {},
     body: overrides.body ?? {},
+    route: overrides.route,
   };
   return {
     switchToHttp: () => ({
@@ -616,6 +618,81 @@ describe('IdempotencyInterceptor', () => {
 
       expect(result).toEqual({ legacy: true });
       expect(next.handle).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('request method and route in the fingerprint (#805)', () => {
+    it('rejects reusing a key on the same scope and params when the HTTP method differs', async () => {
+      const post = createContext({
+        headers: { 'idempotency-key': KEY_A },
+        method: 'POST',
+        params: { id: 'bounty-1' },
+        body: {},
+      });
+      const del = createContext({
+        headers: { 'idempotency-key': KEY_A },
+        method: 'DELETE',
+        params: { id: 'bounty-1' },
+        body: {},
+      });
+
+      const nextPost = createNext(() => of({ claimed: true }));
+      await lastValueFrom(await interceptor.intercept(post, nextPost));
+
+      const nextDelete = createNext(() => of({ deleted: true }));
+      await expect(
+        interceptor.intercept(del, nextDelete),
+      ).rejects.toBeInstanceOf(UnprocessableEntityException);
+      expect(nextDelete.handle).not.toHaveBeenCalled();
+    });
+
+    it('rejects reusing a key on the same scope and params when the route path differs', async () => {
+      const release = createContext({
+        headers: { 'idempotency-key': KEY_A },
+        route: { path: '/escrow/:id/release' },
+        params: { id: 'escrow-1' },
+        body: {},
+      });
+      const splitRelease = createContext({
+        headers: { 'idempotency-key': KEY_A },
+        route: { path: '/escrow/:id/split-release' },
+        params: { id: 'escrow-1' },
+        body: {},
+      });
+
+      const nextRelease = createNext(() => of({ released: true }));
+      await lastValueFrom(await interceptor.intercept(release, nextRelease));
+
+      const nextSplit = createNext(() => of({ split: true }));
+      await expect(
+        interceptor.intercept(splitRelease, nextSplit),
+      ).rejects.toBeInstanceOf(UnprocessableEntityException);
+      expect(nextSplit.handle).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('when the row was already completed by another request (#806)', () => {
+    it('does not overwrite a COMPLETED outcome recorded by another request', async () => {
+      const next = createNext(() => {
+        // Another request reclaims the stale row and completes it while this
+        // handler is still running.
+        const row = repo.rows[0];
+        row.status = IdempotencyKeyStatus.COMPLETED;
+        row.responseStatus = 201;
+        row.responseBody = { owner: 'other-request' };
+        return of({ owner: 'this-request' });
+      });
+      const context = createContext({
+        headers: { 'idempotency-key': KEY_A },
+        params: { id: 'bounty-1' },
+        body: {},
+      });
+
+      await lastValueFrom(await interceptor.intercept(context, next));
+
+      expect(repo.rows).toHaveLength(1);
+      expect(repo.rows[0].responseStatus).toBe(201);
+      expect(repo.rows[0].responseBody).toEqual({ owner: 'other-request' });
     });
   });
 
