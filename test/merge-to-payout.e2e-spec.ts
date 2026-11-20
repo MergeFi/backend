@@ -61,7 +61,7 @@ const DATABASE_URL =
  * synthetic ledger entries cannot be mistaken for settled payouts.
  *
  * Isolated in its own schema so it can run alongside the other Postgres
- * specs without dropSchema races (same approach as escrow-lock.integration).
+ * specs without schema races (same approach as escrow-lock.integration).
  */
 describe('Merge-to-payout (e2e, #848)', () => {
   let app: INestApplication<App>;
@@ -100,11 +100,11 @@ describe('Merge-to-payout (e2e, #848)', () => {
     process.env.SOROBAN_FEE_BPS = '250';
 
     try {
-      // synchronize/dropSchema work inside an existing schema but don't
-      // create it — see analytics.integration.spec.ts.
+      // Start from an empty schema every run; the migrations below build it.
       const bootstrap = new DataSource({ type: 'postgres', url: DATABASE_URL });
       await bootstrap.initialize();
-      await bootstrap.query(`CREATE SCHEMA IF NOT EXISTS ${SCHEMA}`);
+      await bootstrap.query(`DROP SCHEMA IF EXISTS ${SCHEMA} CASCADE`);
+      await bootstrap.query(`CREATE SCHEMA ${SCHEMA}`);
       await bootstrap.destroy();
     } catch (err) {
       console.warn(
@@ -127,8 +127,14 @@ describe('Merge-to-payout (e2e, #848)', () => {
           url: DATABASE_URL,
           schema: SCHEMA,
           entities,
-          synchronize: true,
-          dropSchema: true,
+          // The schema under test is the one the migrations produce, not one
+          // derived from the entities by `synchronize` (#830) — so the DB
+          // constraints production relies on (e.g. the split-sum triggers,
+          // #836) are in force here too. The migrations are plain SQL, so
+          // search_path points their unqualified names at SCHEMA.
+          migrations: [__dirname + '/../src/database/migrations/*.ts'],
+          migrationsRun: true,
+          extra: { options: `-c search_path=${SCHEMA},public` },
         }),
         IdempotencyModule,
         GithubModule,

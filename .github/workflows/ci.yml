@@ -76,6 +76,12 @@ jobs:
       - name: Install Dependencies
         run: npm ci
 
+      # Fail on any high/critical advisory in the installed tree, matching
+      # MergeFi/frontend (#829). Dependabot (.github/dependabot.yml) opens the
+      # upgrade PRs; this is what makes an unpatched one visible on every PR.
+      - name: Audit Dependencies
+        run: npm audit --audit-level=high
+
       # Fail immediately when two migration files share the same timestamp
       # prefix: TypeORM uses the prefix as a primary key in the migrations
       # table, so duplicates cause one of the colliding files to be silently
@@ -94,6 +100,45 @@ jobs:
       - name: Build Application
         run: npm run build
 
+      # The migrations are the schema contract production runs on, but the
+      # tests used to build their schema with `synchronize`, so nothing proved
+      # the migration set applies (#830). Run it against the empty service
+      # database, revert every migration (catches a missing or broken down()),
+      # check that left nothing behind, then apply it again and check the
+      # round trip reproduced the same schema. The e2e step below then runs
+      # on this migrated schema.
+      - name: Run, Revert and Re-run Migrations
+        env:
+          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/mergefi
+          PGPASSWORD: postgres
+        run: |
+          set -euo pipefail
+          dump_schema() {
+            pg_dump -h localhost -U postgres -d mergefi --schema-only \
+              --no-owner --no-privileges \
+              -T migrations -T migrations_id_seq | grep -v '^\\\|^--'
+          }
+
+          npm run migration:run
+          dump_schema > /tmp/schema-first.sql
+
+          count=$(ls src/database/migrations/*.ts | wc -l)
+          for _ in $(seq "$count"); do
+            npm run migration:revert
+          done
+          leftover=$(psql -h localhost -U postgres -d mergefi -tAc \
+            "SELECT count(*) FROM pg_tables WHERE schemaname = 'public' AND tablename <> 'migrations'")
+          applied=$(psql -h localhost -U postgres -d mergefi -tAc "SELECT count(*) FROM migrations")
+          if [ "$leftover" != "0" ] || [ "$applied" != "0" ]; then
+            echo "::error::Reverting every migration left $leftover table(s) and $applied applied migration(s)"
+            exit 1
+          fi
+
+          npm run migration:run
+          dump_schema > /tmp/schema-second.sql
+          diff -u /tmp/schema-first.sql /tmp/schema-second.sql
+        shell: bash
+
       # A single instrumented run: a plain `npm run test` before it executed
       # the same suite twice for no extra signal (#828). The coverageThreshold
       # in package.json fails this step if coverage regresses.
@@ -105,7 +150,7 @@ jobs:
 
       - name: Upload Coverage Report
         if: ${{ !cancelled() }}
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: coverage-report
           path: coverage/
@@ -116,6 +161,8 @@ jobs:
       # mocked Stellar SDK; none of them use GITHUB_CLIENT_ID/SECRET. The step
       # used to be gated on those (never-configured) secrets, so `npm run
       # test:e2e` had never actually executed in CI (#164). Run it always.
+      # DATABASE_SYNCHRONIZE is unset, so AppModule uses the schema the
+      # migration step built rather than deriving one from the entities (#830).
       - name: Run E2E Tests
         env:
           DATABASE_URL: postgresql://postgres:postgres@localhost:5432/mergefi

@@ -1,5 +1,17 @@
 version: 2
 updates:
+  # Mirrors MergeFi/frontend (#829). No custom `labels:` — Dependabot applies,
+  # and creates if missing, its defaults: `dependencies` plus the ecosystem
+  # label (`javascript` / `github_actions`), as in the sibling repositories.
+  - package-ecosystem: "npm"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 10
+    commit-message:
+      prefix: "chore(deps):"
+
   # GitHub Actions used by CI. The workflows pin each action to a full commit
   # SHA (#833); this keeps those pins, and their trailing version comments,
   # current instead of letting them silently age.
@@ -7,3 +19,7 @@ updates:
     directory: "/"
     schedule:
       interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "chore(deps):"

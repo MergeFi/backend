@@ -111,11 +111,13 @@ export function u64(value: bigint | number | string): U64Arg {
  * vector a team split uses; there is no separate `split_release` (#161).
  *
  * The `mergefi-maintenance-pool` contract is a distinct deposit/withdraw
- * model (no lock step, no split): a running on-chain balance topped up by
+ * model (no lock step): a running on-chain balance topped up by
  * any sponsor via repeated `deposit()`, paid out by an admin against the
  * live balance — see `EscrowService.poolWithdraw` (#163):
  *   fn deposit(env: Env, sponsor: Address, pool_id: BytesN<32>, amount: i128, token: Address)
- *   fn withdraw(env: Env, pool_id: BytesN<32>, recipient: Address, amount: i128) -> i128
+ *   fn withdraw(
+ *     env: Env, pool_id: u64, recipients: Vec<(Address, u32)>, amount: i128
+ *   ) -> Result<(), Error>
  *
  * The `mergefi-milestones` contract is a two-step allocate/release model with
  * no "partially drain one locked escrow" primitive (#160, #162):

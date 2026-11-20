@@ -19,7 +19,7 @@ describe('MaintenancePoolService', () => {
     create: jest.Mock;
     find: jest.Mock;
     update: jest.Mock;
-    increment: jest.Mock;
+    query: jest.Mock;
     decrement: jest.Mock;
     createQueryBuilder: jest.Mock;
   };
@@ -41,7 +41,7 @@ describe('MaintenancePoolService', () => {
       findOne: jest.fn(),
       find: jest.fn(),
       update: jest.fn().mockResolvedValue({ affected: 1 }),
-      increment: jest.fn().mockResolvedValue({ affected: 1 }),
+      query: jest.fn().mockResolvedValue([]),
       decrement: jest.fn().mockResolvedValue({ affected: 1 }),
       createQueryBuilder: jest.fn(),
     };
@@ -175,7 +175,7 @@ describe('MaintenancePoolService', () => {
 
     // #798: deposit() used to accept any caller. Only the pool's creator may
     // fund it, so a non-creator's deposit must be rejected before any escrow
-    // is funded and before the balance is incremented.
+    // is funded and before the balance is credited.
     it('rejects a deposit from a caller who is not the pool creator (#798)', async () => {
       const row = {
         id: 'pool-1',
@@ -193,7 +193,7 @@ describe('MaintenancePoolService', () => {
         service.deposit('pool-1', '50', 'GFUNDER', 'intruder-9'),
       ).rejects.toThrow(ForbiddenException);
       expect(escrowService.fund).not.toHaveBeenCalled();
-      expect(poolRepo.increment).not.toHaveBeenCalled();
+      expect(poolRepo.query).not.toHaveBeenCalled();
       expect(row.balance).toBe('100');
     });
 
@@ -217,7 +217,7 @@ describe('MaintenancePoolService', () => {
         service.deposit('pool-1', '50', 'GOTHER', 'creator-1'),
       ).rejects.toThrow(ForbiddenException);
       expect(escrowService.fund).not.toHaveBeenCalled();
-      expect(poolRepo.increment).not.toHaveBeenCalled();
+      expect(poolRepo.query).not.toHaveBeenCalled();
     });
 
     // #798: the entitled caller depositing from their own verified address
@@ -239,10 +239,13 @@ describe('MaintenancePoolService', () => {
           return Promise.resolve({ affected: 1 });
         },
       );
-      poolRepo.increment.mockImplementation(
-        (_where: { id: string }, column: 'balance', value: number) => {
-          row[column] = (Number(row[column]) + value).toFixed(7);
-          return Promise.resolve({ affected: 1 });
+      poolRepo.query.mockImplementation(
+        (_sql: string, [amount, id]: [string, string]) => {
+          // Mirrors UPDATE ... SET balance = balance + CAST($1 AS numeric) WHERE id = $2
+          if (id === row.id) {
+            row.balance = (Number(row.balance) + Number(amount)).toFixed(7);
+          }
+          return Promise.resolve([]);
         },
       );
       poolRepo.findOne.mockResolvedValue(row);
@@ -259,7 +262,7 @@ describe('MaintenancePoolService', () => {
     });
 
     it('funds a new escrow and sets escrowId on the first deposit', async () => {
-      // A stateful row, mutated by `update`/`increment` exactly as the real
+      // A stateful row, mutated by `update`/`query` exactly as the real
       // atomic SQL statements would mutate the Postgres row — lets us assert
       // on the final re-fetched state returned by deposit().
       const row = {
@@ -278,10 +281,13 @@ describe('MaintenancePoolService', () => {
           return Promise.resolve({ affected: 1 });
         },
       );
-      poolRepo.increment.mockImplementation(
-        (_where: { id: string }, column: 'balance', value: number) => {
-          row[column] = (Number(row[column]) + value).toFixed(7);
-          return Promise.resolve({ affected: 1 });
+      poolRepo.query.mockImplementation(
+        (_sql: string, [amount, id]: [string, string]) => {
+          // Mirrors UPDATE ... SET balance = balance + CAST($1 AS numeric) WHERE id = $2
+          if (id === row.id) {
+            row.balance = (Number(row.balance) + Number(amount)).toFixed(7);
+          }
+          return Promise.resolve([]);
         },
       );
       escrowService.fund.mockResolvedValue({
@@ -347,10 +353,13 @@ describe('MaintenancePoolService', () => {
         escrowId: 'escrow-1',
       };
       poolRepo.createQueryBuilder().getOne.mockResolvedValue(row);
-      poolRepo.increment.mockImplementation(
-        (_where: { id: string }, column: 'balance', value: number) => {
-          row[column] = (Number(row[column]) + value).toFixed(7);
-          return Promise.resolve({ affected: 1 });
+      poolRepo.query.mockImplementation(
+        (_sql: string, [amount, id]: [string, string]) => {
+          // Mirrors UPDATE ... SET balance = balance + CAST($1 AS numeric) WHERE id = $2
+          if (id === row.id) {
+            row.balance = (Number(row.balance) + Number(amount)).toFixed(7);
+          }
+          return Promise.resolve([]);
         },
       );
       escrowService.fund.mockResolvedValue({

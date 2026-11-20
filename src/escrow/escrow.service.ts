@@ -59,7 +59,7 @@ export interface FundEscrowInput {
    * `now + stellar.escrowDeadlineSeconds` when the funding bounty/milestone
    * has none of its own.
    */
-  deadline?: Date | null;
+  deadline?: string | Date | null;
 }
 
 export interface SplitRecipient {
@@ -187,6 +187,37 @@ export class EscrowService {
       await this.escrowRepo.save(escrow).catch(() => undefined);
       throw err;
     }
+  }
+
+  /**
+   * Adds a sponsor deposit to a maintenance pool's existing escrow (#781). It calls the pool contract's
+   * `deposit` on the escrow row the pool already points at, so repeated deposits share one escrow and
+   * no new row is created. The call runs under the row lock, like the other escrow operations.
+   */
+  async depositToPool(
+    escrowId: string,
+    input: { amount: string; asset: AssetType; funderAddress: string },
+  ): Promise<Escrow> {
+    this.assertValidAmount(input.amount);
+    return this.withLockedEscrow(escrowId, async (escrow, manager) => {
+      await this.invokeOnLockedEscrow(
+        escrow,
+        'poolDeposit',
+        () =>
+          this.soroban.invoke(
+            'deposit',
+            [
+              input.funderAddress,
+              this.onChainKeyFor(escrow),
+              this.toStroops(input.amount),
+              this.resolveTokenAddress(input.asset),
+            ],
+            this.contractOpts(escrow),
+          ),
+        manager,
+      );
+      return escrow;
+    });
   }
 
   /** Releases the full escrowed amount to a single recipient (standard bounty payout). */
@@ -489,8 +520,8 @@ export class EscrowService {
    * The real `mergefi-maintenance-pool` contract has no
    * LOCKED-escrow-with-partial-release concept: it accrues an on-chain
    * `balance` through repeated `deposit()` calls and pays out via
-   * `withdraw(pool_id, recipient, amount)` against the live balance, with no
-   * pre-`lock` step and no "fully released" terminal state (#163).
+   * `withdraw(pool_id: u64, recipients: Vec<(Address, u32)>, amount)` against
+   * the live balance, with no pre-`lock` step and no "fully released" state.
    *
    * So unlike {@link releasePartial} — which is milestone-shaped: it checks
    * the cumulative payouts against a fixed locked `escrow.amount` and flips
@@ -525,7 +556,11 @@ export class EscrowService {
         () =>
           this.soroban.invoke(
             'withdraw',
-            [this.onChainKeyFor(escrow), recipientAddress, this.toStroops(amount)],
+            [
+              u64(this.onChainKeyFor(escrow)),
+              [[recipientAddress, TOTAL_BASIS_POINTS]],
+              this.toStroops(amount),
+            ],
             this.contractOpts(escrow),
           ),
         manager,
@@ -859,7 +894,11 @@ export class EscrowService {
 
   /** Resolves the funding deadline: the parent's own, or the configured default window. */
   private resolveDeadline(input: FundEscrowInput): Date {
-    if (input.deadline) return input.deadline;
+    if (input.deadline) {
+      return input.deadline instanceof Date
+        ? input.deadline
+        : new Date(input.deadline);
+    }
     return new Date(Date.now() + this.soroban.escrowDeadlineSeconds * 1000);
   }
 

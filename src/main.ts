@@ -1,9 +1,12 @@
 import { NestFactory } from '@nestjs/core';
+import { NestExpressApplication } from '@nestjs/platform-express';
 import { ConfigService } from '@nestjs/config';
 import { Logger, ValidationPipe } from '@nestjs/common';
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
 import helmet from 'helmet';
 import { AppModule } from './app.module';
+import { AppConfig } from './config/configuration';
+import { buildCorsOriginHandler } from './config/cors-origins';
 import configuration, { AppConfig } from './config/configuration';
 import { assertRequiredConfig } from './config/validate-required-config';
 import { GlobalExceptionFilter } from './common/filters/global-exception.filter';
@@ -27,17 +30,30 @@ export async function bootstrap() {
 
   // rawBody: true preserves the raw request buffer on req.rawBody, which the
   // GitHub webhooks controller needs to verify the HMAC-SHA256 signature.
+  const app = await NestFactory.create<NestExpressApplication>(AppModule, {
+    rawBody: true,
+  });
   const app = await NestFactory.create(AppModule, { rawBody: true });
+  app.enableShutdownHooks();
 
   const configService = app.get(ConfigService<AppConfig, true>);
+  app
+    .getHttpAdapter()
+    .getInstance()
+    .set('trust proxy', configService.get('trustProxy', { infer: true }));
 
   const env = configService.get('env', { infer: true });
   const logLevel = configService.get('logLevel', { infer: true });
   app.useLogger(resolveLogLevels(logLevel || 'log'));
 
   app.use(helmet());
+  // CORS_ALLOWED_ORIGINS (comma-separated) supports multiple origins and
+  // *.suffix patterns for preview deployments. FRONTEND_URL is kept as a
+  // separate single-value setting used only for the OAuth redirect (#768).
   app.enableCors({
-    origin: configService.get('frontendUrl', { infer: true }),
+    origin: buildCorsOriginHandler(
+      configService.get('corsAllowedOrigins', { infer: true }),
+    ),
     credentials: true,
   });
   app.setGlobalPrefix('api', { exclude: ['/'] });

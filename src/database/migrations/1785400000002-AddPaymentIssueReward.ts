@@ -5,8 +5,8 @@ import { MigrationInterface, QueryRunner } from 'typeorm';
  * reward per issue per escrow (#779). The unique index is partial, so payouts
  * that have no issue are not affected.
  */
-export class AddPaymentIssueReward1785400000000 implements MigrationInterface {
-  name = 'AddPaymentIssueReward1785400000000';
+export class AddPaymentIssueReward1785400000002 implements MigrationInterface {
+  name = 'AddPaymentIssueReward1785400000002';
 
   public async up(queryRunner: QueryRunner): Promise<void> {
     await queryRunner.query(
@@ -19,6 +19,8 @@ export class AddPaymentIssueReward1785400000000 implements MigrationInterface {
 
   public async down(queryRunner: QueryRunner): Promise<void> {
     await queryRunner.query(`DROP INDEX IF EXISTS "UQ_payment_escrow_issue"`);
-    await queryRunner.query(`ALTER TABLE "payments" DROP COLUMN IF EXISTS "issueId"`);
+    await queryRunner.query(
+      `ALTER TABLE "payments" DROP COLUMN IF EXISTS "issueId"`,
+    );
   }
 }

@@ -91,6 +91,8 @@ describe('AnalyticsService', () => {
   const mockBountyRepo = {
     find: jest.fn(),
     count: jest.fn(),
+  };
+  const mockPaymentRepo = {
     createQueryBuilder: jest.fn(),
   };
   const mockRepositoryRepo = {
@@ -195,15 +197,62 @@ describe('AnalyticsService', () => {
     ]);
   });
 
+  it('sums confirmed payments per asset and keeps XLM out of the USDC headline (#787)', async () => {
+    mockBountyRepo.count.mockResolvedValue(4);
+    const qb = {
+      select: jest.fn().mockReturnThis(),
+      addSelect: jest.fn().mockReturnThis(),
+      where: jest.fn().mockReturnThis(),
+      groupBy: jest.fn().mockReturnThis(),
+      getRawMany: jest.fn().mockResolvedValue([
+        { asset: 'USDC', total: '10' },
+        { asset: 'XLM', total: '500' },
+      ]),
+    };
+    mockPaymentRepo.createQueryBuilder.mockReturnValue(qb);
+    mockRepositoryRepo.count.mockResolvedValue(2);
+
+    const summary = await service.platformSummary();
+
+    expect(qb.where).toHaveBeenCalledWith('payment.status = :status', {
+      status: 'confirmed',
+    });
+    expect(qb.groupBy).toHaveBeenCalledWith('payment.asset');
+    expect(summary.totalPaidOut).toBe(10);
+    expect(summary.paidOutByAsset).toEqual({ USDC: 10, XLM: 500 });
+  });
+
+  it('reports totalPaidOut as 0 when there are no USDC payments', async () => {
+    mockBountyRepo.count.mockResolvedValue(0);
+    mockPaymentRepo.createQueryBuilder.mockReturnValue({
+      select: jest.fn().mockReturnThis(),
+      addSelect: jest.fn().mockReturnThis(),
+      where: jest.fn().mockReturnThis(),
+      groupBy: jest.fn().mockReturnThis(),
+      getRawMany: jest.fn().mockResolvedValue([]),
+    });
+    mockRepositoryRepo.count.mockResolvedValue(0);
+
+    const summary = await service.platformSummary();
+
+    expect(summary.totalPaidOut).toBe(0);
+    expect(summary.paidOutByAsset).toEqual({});
+  });
+
   it('serves platformSummary from cache until invalidate', async () => {
     mockBountyRepo.count.mockResolvedValue(4);
     const queryBuilder = {
+    mockPaymentRepo.createQueryBuilder.mockReturnValue({
       select: jest.fn().mockReturnThis(),
+      addSelect: jest.fn().mockReturnThis(),
       where: jest.fn().mockReturnThis(),
       andWhere: jest.fn().mockReturnThis(),
       getRawOne: jest.fn().mockResolvedValue({ total: '10' }),
     };
     mockPaymentRepo.createQueryBuilder.mockReturnValue(queryBuilder);
+      groupBy: jest.fn().mockReturnThis(),
+      getRawMany: jest.fn().mockResolvedValue([{ asset: 'USDC', total: '10' }]),
+    });
     mockRepositoryRepo.count.mockResolvedValue(2);
 
     const first = await service.platformSummary();
@@ -211,6 +260,7 @@ describe('AnalyticsService', () => {
     expect(first).toEqual({
       totalBounties: 4,
       totalPaidOut: 10,
+      paidOutByAsset: { USDC: 10 },
       totalRepos: 2,
     });
     expect(second).toEqual(first);

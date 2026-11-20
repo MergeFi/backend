@@ -5,6 +5,7 @@ import { DataSource } from 'typeorm';
 import { AppConfig } from '../config/configuration';
 import { BountiesService } from './bounties.service';
 import { runWithAdvisoryLock } from '../common/advisory-lock';
+import { ADVISORY_LOCK_IDS } from '../common/advisory-lock-ids';
 
 /**
  * Runs `BountiesService.expireOverdue()` on a schedule.
@@ -33,7 +34,7 @@ export class BountyExpiryScheduler {
       return;
     }
 
-    const lockId = 847291;
+    const lockId = ADVISORY_LOCK_IDS.BOUNTY_EXPIRY;
     const work = async (): Promise<void> => {
       const expired = await this.bountiesService.expireOverdue();
       if (expired > 0) {
@@ -41,15 +42,35 @@ export class BountyExpiryScheduler {
       }
     };
 
+    // Fail-open, documented exception: without an initialized DataSource there
+    // is no database to coordinate through. This only happens in unit tests,
+    // which run the sweep directly.
     if (!this.dataSource?.isInitialized) {
       await work();
       return;
     }
 
     // Lock and unlock on one connection (#784), so the lock is always released.
-    const outcome = await runWithAdvisoryLock(this.dataSource, lockId, work);
-    if (!outcome.acquired) {
-      this.logger.debug('Skipping sweep: another instance holds advisory lock');
+    // Fail closed (#785): if taking the lock fails (for example a transient DB
+    // error), the sweep is skipped instead of running on every replica at once.
+    // runWithAdvisoryLock cannot tell a lock-query failure from a failure inside
+    // work(), so both land in this catch and are logged at error level. The
+    // next hourly run retries.
+    try {
+      const outcome = await runWithAdvisoryLock(
+        this.dataSource,
+        lockId,
+        work,
+      );
+      if (!outcome.acquired) {
+        this.logger.debug(
+          'Skipping sweep: another instance holds advisory lock',
+        );
+      }
+    } catch (err) {
+      this.logger.error(
+        `Skipping sweep: advisory lock or sweep failed: ${String(err)}`,
+      );
     }
   }
 }

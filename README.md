@@ -35,7 +35,9 @@ RPC and mirrors on-chain state into Postgres for fast reads.
 - [API overview](#api-overview)
 - [Setup, run, test](#setup-run-test)
   - [Node.js version](#nodejs-version)
+  - [Dependency overrides](#dependency-overrides)
 - [Roadmap](#roadmap)
+- [License](#license)
 
 ---
 
@@ -132,8 +134,9 @@ See [`.env.example`](./.env.example) for the full annotated list. Highlights:
 | Variable | Purpose |
 |---|---|
 | `DATABASE_URL` | Postgres connection string (TypeORM). |
+| `TRUST_PROXY` | Express proxy trust configuration: `false` by default, a fixed hop count (for example `1` behind one trusted ingress), or a comma-separated trusted address/subnet list. Do not use `true`, which can let clients spoof forwarded IPs. |
 | `JWT_SECRET`, `JWT_EXPIRES_IN` | Session token signing. |
-| `GITHUB_CLIENT_ID` / `_SECRET`, `GITHUB_OAUTH_CALLBACK_URL` | GitHub OAuth login app. |
+| `GITHUB_CLIENT_ID` / `_SECRET`, `GITHUB_OAUTH_CALLBACK_URL` | GitHub OAuth login app. The callback defaults to `${APP_URL}/api/auth/github/callback`; `APP_URL` defaults to `http://localhost:${PORT}`. |
 | `GITHUB_API_TOKEN` | Token used by Octokit for repo/issue sync (PAT for now; see roadmap). |
 | `GITHUB_WEBHOOK_SECRET` | HMAC-SHA256 secret configured on the GitHub webhook. |
 | `ANALYTICS_PLATFORM_SUMMARY_TTL_MS` | In-process TTL for `GET /analytics/platform` (default `60000`). Also invalidated on bounty create/pay and first repository sync. |
@@ -146,6 +149,12 @@ See [`.env.example`](./.env.example) for the full annotated list. Highlights:
 | `TREASURY_SECRET` | Platform signer used to submit release/refund transactions; required for live Soroban calls. |
 | `SOROBAN_INCLUSION_FEE` | Transaction inclusion bid in stroops (default `5000`, 50× `BASE_FEE`); resource fees are added by Soroban transaction assembly. The bid doubles for up to two resubmissions after a never-included transaction expires. |
 | `SOROBAN_FEE_BPS` | Fallback protocol fee in basis points for explicit dry-run mode (default `250`). Live releases read `get_fee_bps` from the escrow contract. |
+
+`docker-compose.yml` exposes the app directly and does not add a reverse proxy,
+so keep `TRUST_PROXY=false` for that setup. For an ingress deployment, set it
+to the number of fixed, trusted proxy hops (commonly `1` for one ingress), or
+prefer a list of the ingress proxy's trusted IPs/subnets when those are known.
+Avoid `true`: it trusts forwarding headers regardless of their source.
 
 ## Escrow / Soroban integration
 
@@ -377,6 +386,7 @@ docker build --target runner -t mergefi-backend:latest .
 #### Production Guardrails (Important):
 - **Least Privilege**: The container runs under the non-root `node` user (`USER node`).
 - **Production Mode**: The final image forces `NODE_ENV=production`.
+- **Graceful Shutdown**: Nest shutdown hooks handle `SIGTERM` and `SIGINT`, allowing providers to clean up and the HTTP server to drain active requests. Set the orchestrator's termination grace period longer than the Soroban poll ceiling (about 62 seconds, plus request/setup overhead) so in-flight escrow operations have time to finish.
 - **Required-secret Enforcer**: When `NODE_ENV=production`, `assertRequiredConfig` (`src/config/validate-required-config.ts`, called from `src/main.ts`) crashes the container at boot — listing every problem at once — unless all of `JWT_SECRET` (not the `insecure-dev-secret` default), `DATABASE_URL` (not the local `postgres:postgres@localhost` default), `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET`, `GITHUB_WEBHOOK_SECRET`, `ESCROW_CONTRACT_ID` and `TREASURY_SECRET` are set to real values. This closes the silent-failure gap where, for example, an empty `GITHUB_WEBHOOK_SECRET` made the app boot "healthy" while rejecting 100% of webhook deliveries. You **must** provide these when running the production container, e.g.:
   ```bash
   docker run -p 3000:3000 \
@@ -435,6 +445,38 @@ npm run migration:run
 npm run migration:revert
 ```
 
+`1784000000000-InitialSchema` is the baseline: on an empty database it creates
+the schema as it stood before the first incremental migration, so
+`migration:run` works from scratch; on a database originally built by
+`synchronize` it detects the existing tables and does nothing. Every migration
+must have a unique timestamp prefix and a working `down()`.
+
+CI enforces both (#830): it runs `migration:run` against an empty Postgres,
+reverts every migration, checks that left no tables behind, runs them again and
+diffs the schema against the first pass. The e2e suite then runs on that
+migrated schema rather than one built by `synchronize`, so a migration that
+fails, can't be reverted, or diverges from what the code expects breaks the
+build instead of a deploy.
+
+### Dependency overrides
+
+`package.json` carries an `overrides` block for transitive dependencies whose
+fixed version a direct dependency doesn't yet allow. CI runs
+`npm audit --audit-level=high`, and Dependabot (`.github/dependabot.yml`) opens
+weekly npm and GitHub Actions update PRs. Remove an override once the
+dependency that pulls it in requires a patched version on its own; `npm ls
+<package>` shows where it comes from.
+
+- `multer` (via `@nestjs/platform-express`): pinned to `^2.5.0` for the
+  multipart Denial-of-Service and file-size-bypass advisories in `<=2.4.0`
+  (GHSA-wc9g-mqfw-jrwm, GHSA-qfvm-cv95-jqjf, GHSA-qvfw-j98x-7q72 and related),
+  and originally to `^2.2.0` for GHSA-72gw-mp4g-v24j / GHSA-3p4h-7m6x-2hcm.
+  Removable once `@nestjs/platform-express` depends on `multer >=2.5.0`.
+- `brace-expansion@1` (via `minimatch@3`, from ESLint's and Jest's tooling —
+  dev only): pinned to `^1.1.22` for the expansion Denial-of-Service advisories
+  in `<=1.1.20` (GHSA-3jxr-9vmj-r5cp and related). Removable once those tools
+  stop depending on `minimatch@3`.
+
 ## Roadmap
 
 - [x] ~~Wire up TypeORM migrations (currently relies on `synchronize` for local dev only).~~ See `src/database/migrations/` and the Migrations section above.
@@ -446,3 +488,9 @@ npm run migration:revert
 - [ ] Add role-based authorization guards (currently JWT-authenticated but not role-scoped) to maintainer/sponsor-only endpoints.
 - [ ] Add pagination/filtering to list endpoints (bounties, milestones, pools) as data volume grows.
 - [ ] Weighted (not just even) per-issue milestone budget distribution.
+
+## License
+
+Licensed under the [Apache License, Version 2.0](LICENSE), the same terms as
+`mergefi-contracts`. Contributions submitted to this repository are accepted
+under that license.
