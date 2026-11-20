@@ -5,6 +5,7 @@ import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
 import helmet from 'helmet';
 import { AppModule } from './app.module';
 import { AppConfig } from './config/configuration';
+import { buildCorsOriginHandler } from './config/cors-origins';
 import { GlobalExceptionFilter } from './common/filters/global-exception.filter';
 
 const INSECURE_DEFAULT_JWT_SECRET = 'insecure-dev-secret';
@@ -25,8 +26,13 @@ async function bootstrap() {
   }
 
   app.use(helmet());
+  // CORS_ALLOWED_ORIGINS (comma-separated) supports multiple origins and
+  // *.suffix patterns for preview deployments. FRONTEND_URL is kept as a
+  // separate single-value setting used only for the OAuth redirect (#768).
   app.enableCors({
-    origin: configService.get('frontendUrl', { infer: true }),
+    origin: buildCorsOriginHandler(
+      configService.get('corsAllowedOrigins', { infer: true }),
+    ),
     credentials: true,
   });
   app.setGlobalPrefix('api', { exclude: ['/'] });
