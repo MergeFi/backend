@@ -37,6 +37,7 @@ RPC and mirrors on-chain state into Postgres for fast reads.
   - [Node.js version](#nodejs-version)
   - [Dependency overrides](#dependency-overrides)
 - [Roadmap](#roadmap)
+- [License](#license)
 
 ---
 
@@ -487,3 +488,8 @@ dependency that pulls it in requires a patched version on its own; `npm ls
 - [ ] Add pagination/filtering to list endpoints (bounties, milestones, pools) as data volume grows.
 - [ ] Weighted (not just even) per-issue milestone budget distribution.
 
+## License
+
+Licensed under the [Apache License, Version 2.0](LICENSE), the same terms as
+`mergefi-contracts`. Contributions submitted to this repository are accepted
+under that license.
