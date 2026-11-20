@@ -16,6 +16,7 @@ describe('BountiesService', () => {
     create: jest.Mock;
     find: jest.Mock;
     createQueryBuilder: jest.Mock;
+    manager: { transaction: jest.Mock };
   };
   let userRepo: { findOne: jest.Mock; find: jest.Mock };
   let teamRepo: { findOne: jest.Mock };
@@ -37,6 +38,7 @@ describe('BountiesService', () => {
       })),
       find: jest.fn(),
       createQueryBuilder: jest.fn(),
+      manager: { transaction: jest.fn() },
     };
     userRepo = { findOne: jest.fn(), find: jest.fn() };
     teamRepo = { findOne: jest.fn() };
@@ -259,24 +261,97 @@ describe('BountiesService', () => {
     expect(bounty.status).toBe(BountyStatus.REFUNDED);
   });
 
-  it('expireOverdue flips overdue bounties to EXPIRED and returns count', async () => {
-    const overdueBounties = [
-      { id: 'b1', status: BountyStatus.OPEN },
-      { id: 'b2', status: BountyStatus.FUNDED },
-    ];
-    const mockQueryBuilder = {
-      where: jest.fn().mockReturnThis(),
-      andWhere: jest.fn().mockReturnThis(),
-      getMany: jest.fn().mockResolvedValue(overdueBounties),
+  describe('expireOverdue (#797)', () => {
+    let updateQb: {
+      update: jest.Mock;
+      set: jest.Mock;
+      where: jest.Mock;
+      andWhere: jest.Mock;
+      execute: jest.Mock;
     };
-    bountyRepo.createQueryBuilder.mockReturnValue(mockQueryBuilder);
+    let manager: { createQueryBuilder: jest.Mock };
 
-    const count = await service.expireOverdue();
+    /** Makes the overdue SELECT return `rows`. */
+    const overdueRows = (rows: Partial<Bounty>[]) => {
+      bountyRepo.createQueryBuilder.mockReturnValue({
+        where: jest.fn().mockReturnThis(),
+        andWhere: jest.fn().mockReturnThis(),
+        getMany: jest.fn().mockResolvedValue(rows),
+      });
+    };
 
-    expect(count).toBe(2);
-    expect(bountyRepo.save).toHaveBeenCalledTimes(2);
-    expect(overdueBounties[0].status).toBe(BountyStatus.EXPIRED);
-    expect(overdueBounties[1].status).toBe(BountyStatus.EXPIRED);
+    beforeEach(() => {
+      updateQb = {
+        update: jest.fn().mockReturnThis(),
+        set: jest.fn().mockReturnThis(),
+        where: jest.fn().mockReturnThis(),
+        andWhere: jest.fn().mockReturnThis(),
+        execute: jest.fn().mockResolvedValue({ affected: 0 }),
+      };
+      manager = { createQueryBuilder: jest.fn(() => updateQb) };
+      bountyRepo.manager.transaction.mockImplementation(
+        (fn: (m: typeof manager) => Promise<unknown>) => fn(manager),
+      );
+    });
+
+    it('does not update a row whose transition to EXPIRED is illegal, and counts only the committed rows', async () => {
+      overdueRows([
+        { id: 'b1', status: BountyStatus.PAID },
+        { id: 'b2', status: BountyStatus.OPEN },
+      ]);
+      updateQb.execute.mockResolvedValue({ affected: 1 });
+
+      const count = await service.expireOverdue();
+
+      expect(updateQb.where).toHaveBeenCalledWith('id IN (:...ids)', {
+        ids: ['b2'],
+      });
+      expect(bountyRepo.save).not.toHaveBeenCalled();
+      expect(count).toBe(1);
+    });
+
+    it('returns the number of rows the UPDATE changed, not the number read', async () => {
+      overdueRows([
+        { id: 'b1', status: BountyStatus.OPEN },
+        { id: 'b2', status: BountyStatus.FUNDED },
+      ]);
+      // A concurrent writer moved b2 out of the expirable set before commit.
+      updateQb.execute.mockResolvedValue({ affected: 1 });
+
+      await expect(service.expireOverdue()).resolves.toBe(1);
+    });
+
+    it('expires all expirable rows with one UPDATE inside one transaction', async () => {
+      overdueRows([
+        { id: 'b1', status: BountyStatus.OPEN },
+        { id: 'b2', status: BountyStatus.CLAIMED },
+      ]);
+      updateQb.execute.mockResolvedValue({ affected: 2 });
+
+      const count = await service.expireOverdue();
+
+      expect(bountyRepo.manager.transaction).toHaveBeenCalledTimes(1);
+      expect(updateQb.set).toHaveBeenCalledWith({
+        status: BountyStatus.EXPIRED,
+      });
+      expect(updateQb.where).toHaveBeenCalledWith('id IN (:...ids)', {
+        ids: ['b1', 'b2'],
+      });
+      expect(updateQb.andWhere).toHaveBeenCalledWith(
+        'status IN (:...statuses)',
+        { statuses: [BountyStatus.OPEN, BountyStatus.FUNDED, BountyStatus.CLAIMED] },
+      );
+      expect(updateQb.execute).toHaveBeenCalledTimes(1);
+      expect(bountyRepo.save).not.toHaveBeenCalled();
+      expect(count).toBe(2);
+    });
+
+    it('skips the transaction entirely when no row may be expired', async () => {
+      overdueRows([{ id: 'b1', status: BountyStatus.PAID }]);
+
+      await expect(service.expireOverdue()).resolves.toBe(0);
+      expect(bountyRepo.manager.transaction).not.toHaveBeenCalled();
+    });
   });
 
   it('markPrClosedWithoutMerge transitions IN_REVIEW back to CLAIMED', async () => {
