@@ -76,6 +76,12 @@ jobs:
       - name: Install Dependencies
         run: npm ci
 
+      # Fail on any high/critical advisory in the installed tree, matching
+      # MergeFi/frontend (#829). Dependabot (.github/dependabot.yml) opens the
+      # upgrade PRs; this is what makes an unpatched one visible on every PR.
+      - name: Audit Dependencies
+        run: npm audit --audit-level=high
+
       # Fail immediately when two migration files share the same timestamp
       # prefix: TypeORM uses the prefix as a primary key in the migrations
       # table, so duplicates cause one of the colliding files to be silently
@@ -144,7 +150,7 @@ jobs:
 
       - name: Upload Coverage Report
         if: ${{ !cancelled() }}
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: coverage-report
           path: coverage/

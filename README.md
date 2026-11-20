@@ -35,6 +35,7 @@ RPC and mirrors on-chain state into Postgres for fast reads.
 - [API overview](#api-overview)
 - [Setup, run, test](#setup-run-test)
   - [Node.js version](#nodejs-version)
+  - [Dependency overrides](#dependency-overrides)
 - [Roadmap](#roadmap)
 
 ---
@@ -454,6 +455,25 @@ diffs the schema against the first pass. The e2e suite then runs on that
 migrated schema rather than one built by `synchronize`, so a migration that
 fails, can't be reverted, or diverges from what the code expects breaks the
 build instead of a deploy.
+
+### Dependency overrides
+
+`package.json` carries an `overrides` block for transitive dependencies whose
+fixed version a direct dependency doesn't yet allow. CI runs
+`npm audit --audit-level=high`, and Dependabot (`.github/dependabot.yml`) opens
+weekly npm and GitHub Actions update PRs. Remove an override once the
+dependency that pulls it in requires a patched version on its own; `npm ls
+<package>` shows where it comes from.
+
+- `multer` (via `@nestjs/platform-express`): pinned to `^2.5.0` for the
+  multipart Denial-of-Service and file-size-bypass advisories in `<=2.4.0`
+  (GHSA-wc9g-mqfw-jrwm, GHSA-qfvm-cv95-jqjf, GHSA-qvfw-j98x-7q72 and related),
+  and originally to `^2.2.0` for GHSA-72gw-mp4g-v24j / GHSA-3p4h-7m6x-2hcm.
+  Removable once `@nestjs/platform-express` depends on `multer >=2.5.0`.
+- `brace-expansion@1` (via `minimatch@3`, from ESLint's and Jest's tooling —
+  dev only): pinned to `^1.1.22` for the expansion Denial-of-Service advisories
+  in `<=1.1.20` (GHSA-3jxr-9vmj-r5cp and related). Removable once those tools
+  stop depending on `minimatch@3`.
 
 ## Roadmap
 
