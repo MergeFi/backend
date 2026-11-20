@@ -44,17 +44,18 @@ export class BountiesService {
       throw new NotFoundException(`Issue ${dto.issueId} not found`);
     }
 
-    // Verify sponsorId exists
+    // The sponsor is always the authenticated caller (#777). The request body
+    // cannot name another user as the sponsor.
     const sponsorExists = await this.userRepo.findOne({
-      where: { id: dto.sponsorId },
+      where: { id: callerUserId },
     });
     if (!sponsorExists) {
-      throw new NotFoundException(`Sponsor ${dto.sponsorId} not found`);
+      throw new NotFoundException(`Sponsor ${callerUserId} not found`);
     }
 
     const bounty = this.bountyRepo.create({
       issueId: dto.issueId,
-      sponsorId: dto.sponsorId,
+      sponsorId: callerUserId,
       amount: dto.amount,
       asset: dto.asset,
       difficulty: dto.difficulty,

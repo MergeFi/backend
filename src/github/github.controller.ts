@@ -5,9 +5,11 @@ import {
   ParseIntPipe,
   Post,
   Query,
+  Req,
   UseGuards,
 } from '@nestjs/common';
 import { ApiTags, ApiQuery, ApiBearerAuth } from '@nestjs/swagger';
+import type { Request } from 'express';
 import { Throttle } from '@nestjs/throttler'; // Added Throttle decorator import
 import { GithubSyncService } from './github-sync.service';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
@@ -39,11 +41,19 @@ export class GithubController {
   // to introduce it, so the shared Octokit token can't be spent syncing
   // unrelated public repositories.
   @RepoScopedSync()
-  sync(
+  async sync(
     @Param('owner') owner: string,
     @Param('repo') repo: string,
     @Query('page', new DefaultValuePipe(1), ParseIntPipe) page: number,
+    @Req() req: Request,
   ) {
-    return this.syncService.syncRepository(owner, repo, page);
+    const result = await this.syncService.syncRepository(owner, repo, page);
+    // First claim of an unclaimed repository, recorded only after the sync
+    // succeeded (#776).
+    const claim = (req as Request & { repoClaim?: { repositoryId: string; userId: string } }).repoClaim;
+    if (claim) {
+      await this.syncService.claimRepository(claim.repositoryId, claim.userId);
+    }
+    return result;
   }
 }

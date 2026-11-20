@@ -10,8 +10,10 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { ConfigService } from '@nestjs/config';
 import { Request } from 'express';
 import { Repository } from 'typeorm';
+import { Octokit } from '@octokit/rest';
 import { Repository as RepositoryEntity } from '../../common/entities';
 import { User } from '../../common/entities';
+import { GithubAccount } from '../../common/entities/github-account.entity';
 import { UserRole } from '../../common/enums';
 import { REPO_SCOPED_SYNC_KEY } from '../decorators/repo-scoped-sync.decorator';
 import { AppConfig } from '../../config/configuration';
@@ -21,6 +23,8 @@ interface AuthenticatedRequest extends Request<{
   repo?: string;
 }> {
   user?: { userId: string };
+  /** Set when the guard allows a first claim; the sync handler records it (#776). */
+  repoClaim?: { repositoryId: string; userId: string };
 }
 
 /**
@@ -104,13 +108,43 @@ export class RepoScopeGuard implements CanActivate {
       );
     }
 
-    // Tracked with no maintainer yet: allow, and claim it for this user so the
-    // scope is explicit from here on.
-    await this.repositoryRepo.update(
-      { id: tracked.id },
-      { maintainerId: user.id },
-    );
+    // Tracked with no maintainer yet: the caller may claim it only if GitHub
+    // confirms push or admin rights on the repository (#775). The guard only
+    // decides. The claim is recorded by the sync handler after a successful
+    // sync (#776), never from inside canActivate.
+    const canWrite = await this.githubCanWrite(user.id, owner, repo);
+    if (!canWrite) {
+      throw new ForbiddenException(
+        `You need push access to ${fullName} on GitHub to claim it`,
+      );
+    }
+    request.repoClaim = { repositoryId: tracked.id, userId: user.id };
     return true;
+  }
+
+  /**
+   * Asks GitHub, with the caller's own OAuth token, whether they can push to
+   * the repository. Any failure, including a missing GitHub link, is a denial.
+   */
+  private async githubCanWrite(
+    userId: string,
+    owner: string,
+    repo: string,
+  ): Promise<boolean> {
+    const account = await this.userRepo.manager
+      .getRepository(GithubAccount)
+      .createQueryBuilder('account')
+      .addSelect('account.accessToken')
+      .where('account.userId = :userId', { userId })
+      .getOne();
+    if (!account?.accessToken) return false;
+    try {
+      const octokit = new Octokit({ auth: account.accessToken });
+      const { data } = await octokit.repos.get({ owner, repo });
+      return Boolean(data.permissions?.push || data.permissions?.admin);
+    } catch {
+      return false;
+    }
   }
 
   /** Exact `owner/repo` entries from `GITHUB_SYNC_ALLOWED_REPOS`. */

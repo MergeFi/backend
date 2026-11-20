@@ -9,6 +9,8 @@ import { UsersService } from '../../users/users.service';
 export interface JwtPayload {
   sub: string;
   username: string;
+  /** The user's tokenVersion when the token was issued (#774). */
+  ver?: number;
 }
 
 export function cookieExtractor(req: Request): string | null {
@@ -65,6 +67,15 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
         throw new UnauthorizedException('User no longer exists');
       }
       this.rememberConfirmed(payload.sub);
+    let user: { tokenVersion?: number };
+    try {
+      user = await this.usersService.findOneRaw(payload.sub);
+    } catch {
+      throw new UnauthorizedException('User no longer exists');
+    }
+    // A bumped tokenVersion (logout, sign out everywhere) revokes this token (#774).
+    if ((payload.ver ?? 0) !== (user.tokenVersion ?? 0)) {
+      throw new UnauthorizedException('Token has been revoked');
     }
     return { userId: payload.sub, username: payload.username };
   }

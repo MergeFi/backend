@@ -29,6 +29,10 @@ export class User {
   @Column({ type: 'simple-array', default: UserRole.CONTRIBUTOR })
   roles: UserRole[];
 
+  /** Incremented to revoke every JWT issued to this user (#774). */
+  @Column({ type: 'int', default: 0 })
+  tokenVersion: number;
+
   /**
    * Stellar public key the user has linked to receive payouts / fund escrow.
    * Custody of the corresponding secret key always remains with the user

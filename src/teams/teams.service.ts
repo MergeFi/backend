@@ -110,8 +110,11 @@ export class TeamsService {
     bountyId: string,
     callerId: string,
   ): Promise<Bounty> {
-    await this.findOne(teamId); // ensures team exists
-    const bounty = await this.bountyRepo.findOne({ where: { id: bountyId } });
+    const team = await this.findOne(teamId);
+    const bounty = await this.bountyRepo.findOne({
+      where: { id: bountyId },
+      relations: { issue: { repository: true } },
+    });
     if (!bounty) throw new NotFoundException(`Bounty ${bountyId} not found`);
 
     const assignableStatuses: BountyStatus[] = [
@@ -129,12 +132,26 @@ export class TeamsService {
       where: { id: callerId },
       select: { roles: true },
     });
-    if (
-      !caller?.roles.includes(UserRole.MAINTAINER) &&
-      bounty.sponsorId !== callerId
-    ) {
+    // A maintainer may only attach teams to bounties on repositories they
+    // maintain (#778). The sponsor may attach a team to their own bounty.
+    const isRepoMaintainer =
+      !!caller?.roles.includes(UserRole.MAINTAINER) &&
+      !!bounty.issue?.repository?.maintainerId &&
+      bounty.issue.repository.maintainerId === callerId;
+    if (!isRepoMaintainer && bounty.sponsorId !== callerId) {
       throw new ForbiddenException(
-        'Only the bounty sponsor or a maintainer can assign a team',
+        'Only the bounty sponsor or the repository maintainer can assign a team',
+      );
+    }
+
+    // Once a contributor has claimed the bounty, the team must include them,
+    // so reassigning the payout cannot move it away from the claimant (#778).
+    if (
+      bounty.claimedById &&
+      !team.splits.some((split) => split.userId === bounty.claimedById)
+    ) {
+      throw new BadRequestException(
+        'The claimant of this bounty must be a member of the team',
       );
     }
 
