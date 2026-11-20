@@ -15,10 +15,6 @@ export class CreateBountyDto {
   issueId: string;
 
   @ApiProperty()
-  @IsUUID()
-  sponsorId: string;
-
-  @ApiProperty()
   @IsMoneyAmount()
   amount: string;
 
