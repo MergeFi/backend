@@ -6,6 +6,15 @@ import { UserRole } from '../common/enums';
 import { PublicUserDto } from './dto/public-user.dto';
 import { toPublicUser } from './users.mapper';
 
+export const USERS_LIST_DEFAULT_LIMIT = 20;
+export const USERS_LIST_MAX_LIMIT = 100;
+
+export interface ListUsersOptions {
+  limit?: number;
+  offset?: number;
+  username?: string;
+}
+
 export interface UpsertFromGithubInput {
   githubId: string;
   login: string;
@@ -186,8 +195,23 @@ export class UsersService {
     return toPublicUser(await this.userRepo.save(user));
   }
 
-  async list(): Promise<PublicUserDto[]> {
-    const users = await this.userRepo.find();
+  /**
+   * Pages through users (#792). Limit is capped, and `username` turns the frontend's client-side fallback into a
+   * single lookup instead of a full scan.
+   */
+  async list(options: ListUsersOptions = {}): Promise<PublicUserDto[]> {
+    const limit = Math.min(
+      Math.max(options.limit ?? USERS_LIST_DEFAULT_LIMIT, 1),
+      USERS_LIST_MAX_LIMIT,
+    );
+    const offset = Math.max(options.offset ?? 0, 0);
+    const users = await this.userRepo.find({
+      where: options.username ? { username: options.username } : undefined,
+      // Stable order, so pages do not overlap or skip rows between requests.
+      order: { createdAt: 'ASC', id: 'ASC' },
+      take: limit,
+      skip: offset,
+    });
     return users.map(toPublicUser);
   }
 }
