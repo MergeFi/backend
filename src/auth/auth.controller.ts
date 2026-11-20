@@ -83,21 +83,19 @@ export class AuthController {
 
   // Single-use codes are only as strong as the attempts allowed against them
   // (#770). The exchange is capped per IP well below the global limit.
+  // One handler serves both paths, so the throttle and audit rules apply to the
+  // operation once rather than per alias (#807). `/auth/exchange` remains for
+  // clients that cannot be updated; remove it once nothing calls it.
   @Throttle({ medium: { limit: 10, ttl: 60_000 } })
-  @Post('handoff')
+  @Post(['handoff', 'exchange'])
   @HttpCode(200)
   @ApiExcludeEndpoint()
-  exchangeHandoff(@Body('code') code: string, @Ip() ip: string) {
-    return this.exchangeCode(code, ip, '/auth/handoff');
-  }
-
-  @Throttle({ medium: { limit: 10, ttl: 60_000 } })
-  @Post('exchange')
-  @HttpCode(200)
-  @ApiExcludeEndpoint()
-  exchangeHandoffAlias(@Body('code') code: string, @Ip() ip: string) {
-    // Alias for POST /auth/exchange — same single-use semantics as /handoff.
-    return this.exchangeCode(code, ip, '/auth/exchange');
+  exchangeHandoff(
+    @Body('code') code: string,
+    @Ip() ip: string,
+    @Req() req: Request,
+  ) {
+    return this.exchangeCode(code, ip, req.path);
   }
 
   /**

@@ -58,7 +58,12 @@ export class GlobalExceptionFilter implements ExceptionFilter {
     const error =
       exception instanceof Error ? exception : new Error(String(exception));
     const errorId = randomUUID();
-    const context = `${request.method} ${request.originalUrl ?? request.url}`;
+    // Log the route template, never the raw URL. originalUrl carries the query
+    // string, which on the OAuth callback and handoff routes holds single-use
+    // codes (#804). Fall back to the path without its query string.
+    const path =
+      request.route?.path ?? request.path ?? (request.url ?? '').split('?')[0];
+    const context = `${request.method} ${path}`;
 
     if (isSafeClientError) {
       // Still worth a log line (helps correlate client-reported issues to
@@ -67,9 +72,6 @@ export class GlobalExceptionFilter implements ExceptionFilter {
       this.logger.warn(
         `[${errorId}] ${context} -> ${status}: ${error.message}`,
       );
-      if (response.headersSent) {
-        return;
-      }
       if (status === tooManyRequestsStatus) {
         response
           .status(status)
@@ -84,13 +86,6 @@ export class GlobalExceptionFilter implements ExceptionFilter {
       `[${errorId}] ${context} -> ${status}: ${error.message}`,
       error.stack,
     );
-
-    if (response.headersSent) {
-      // A response has already begun (e.g. a @Res() handler redirected before
-      // a later error). Writing again would throw ERR_HTTP_HEADERS_SENT from
-      // inside the filter, so the error is logged above and nothing more.
-      return;
-    }
 
     response.status(status).json({
       statusCode: status,
