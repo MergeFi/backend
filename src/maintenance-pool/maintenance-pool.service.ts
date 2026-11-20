@@ -15,6 +15,7 @@ import {
   User,
 } from '../common/entities';
 import { MaintenancePoolStatus } from '../common/enums';
+import { amountToStroops } from '../common/validators/money.validator';
 import { EscrowService } from '../escrow/escrow.service';
 import { CreatePoolDto } from './dto/create-pool.dto';
 
@@ -133,7 +134,7 @@ export class MaintenancePoolService {
           maintenancePoolId: pool.id,
         });
         await this.recordDepositor(topUp, callerUserId);
-        await this.poolRepo.increment({ id }, 'balance', Number(amount));
+        await this.creditPoolBalance(id, amount);
         return this.findOne(id);
       }
     } else {
@@ -147,14 +148,28 @@ export class MaintenancePoolService {
       await this.recordDepositor(topUp, callerUserId);
     }
 
-    // Atomic DB-level increment instead of read-modify-write — concurrent
+    // Atomic DB-level update instead of read-modify-write — concurrent
     // deposits/rewards on the same pool no longer clobber each other's
     // balance update (#51). monthlyDeposit is deliberately left untouched
     // here: it records the sponsor's standing recurring commitment (set at
     // pool creation), not "whatever the last deposit happened to be" (#93).
-    await this.poolRepo.increment({ id: pool.id }, 'balance', Number(amount));
+    await this.creditPoolBalance(pool.id, amount);
 
     return this.findOne(id);
+  }
+
+  /**
+   * Adds `amount` to the pool balance with exact NUMERIC arithmetic (#780).
+   * The amount stays a decimal string end to end: converting it with Number()
+   * would round 7-decimal money to a double. amountToStroops validates it and
+   * throws on malformed input before anything is written.
+   */
+  private async creditPoolBalance(id: string, amount: string): Promise<void> {
+    amountToStroops(amount);
+    await this.poolRepo.query(
+      'UPDATE maintenance_pools SET balance = balance + CAST($1 AS numeric), "updatedAt" = now() WHERE id = $2',
+      [amount, id],
+    );
   }
 
   /**
@@ -236,13 +251,14 @@ export class MaintenancePoolService {
 
     // Atomic balance check and decrement — prevents TOCTOU race where concurrent
     // calls could overdraw the pool (#274). Uses a conditional UPDATE that only
-    // succeeds if balance >= amount, then checks affected rows.
+    // succeeds if balance >= amount, then checks affected rows. Compared and
+    // subtracted as NUMERIC in SQL, never as a JS float (#780).
     const updateResult = await this.poolRepo
       .createQueryBuilder()
       .update(MaintenancePool)
-      .set({ balance: () => `balance - :amount` })
-      .where('id = :id AND balance >= :amount', { id, amount: Number(amount) })
-      .setParameter('amount', Number(amount))
+      .set({ balance: () => 'balance - CAST(:amount AS numeric)' })
+      .where('id = :id AND balance >= CAST(:amount AS numeric)', { id, amount })
+      .setParameter('amount', amount)
       .execute();
 
     if (updateResult.affected === 0) {
