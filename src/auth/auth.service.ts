@@ -1,6 +1,8 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
+import { InjectRepository } from '@nestjs/typeorm';
 import { randomBytes } from 'crypto';
+import { Repository } from 'typeorm';
 import { User } from '../common/entities';
 import { UsersService, UpsertFromGithubInput } from '../users/users.service';
 
@@ -18,6 +20,7 @@ export class AuthService {
   constructor(
     private readonly usersService: UsersService,
     private readonly jwtService: JwtService,
+    @InjectRepository(User) private readonly userRepo: Repository<User>,
   ) {}
 
   async loginWithGithub(
@@ -35,9 +38,19 @@ export class AuthService {
     const token = this.jwtService.sign({
       sub: user.id,
       username: user.username,
+      ver: user.tokenVersion ?? 0,
     });
     this.logger.debug(`Issued JWT for user ${user.id}`);
     return token;
+  }
+
+  /**
+   * Invalidates every JWT issued to this user so far (#774). Used by logout
+   * and by "sign out everywhere".
+   */
+  async revokeTokens(userId: string): Promise<void> {
+    await this.userRepo.increment({ id: userId }, 'tokenVersion', 1);
+    this.logger.log(`Revoked outstanding tokens for user ${userId}`);
   }
 
   createHandoffCode(token: string): string {

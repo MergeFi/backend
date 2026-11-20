@@ -119,4 +119,17 @@ export class AuthController {
   me(@Req() req: Request) {
     return req.user;
   }
+
+  /**
+   * Revokes every token issued to the caller and clears the auth cookie (#774).
+   * Tokens already in other clients stop working on their next request.
+   */
+  @Post('logout')
+  @HttpCode(200)
+  @UseGuards(JwtAuthGuard)
+  async logout(@Req() req: Request, @Res({ passthrough: true }) res: Response) {
+    await this.authService.revokeTokens((req.user as { userId: string }).userId);
+    res.clearCookie('access_token');
+    return { loggedOut: true };
+  }
 }

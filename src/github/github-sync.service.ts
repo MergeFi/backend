@@ -104,6 +104,20 @@ export class GithubSyncService {
    * continuation page doubled GitHub API usage — precisely in the large-repo
    * case the pagination cap exists to keep affordable.
    */
+  /**
+   * Records `userId` as the maintainer of a repository that has none (#776).
+   * Conditional on maintainerId still being null, so a concurrent claim cannot
+   * overwrite an earlier one.
+   */
+  async claimRepository(repositoryId: string, userId: string): Promise<void> {
+    await this.repositoryRepo
+      .createQueryBuilder()
+      .update()
+      .set({ maintainerId: userId })
+      .where('id = :repositoryId AND "maintainerId" IS NULL', { repositoryId })
+      .execute();
+  }
+
   async syncRepository(
     owner: string,
     repo: string,
