@@ -6,6 +6,7 @@ import { DataSource, LessThan, Repository } from 'typeorm';
 import { AppConfig } from '../../config/configuration';
 import { IdempotencyKey } from '../entities/idempotency-key.entity';
 import { runWithAdvisoryLock } from '../advisory-lock';
+import { ADVISORY_LOCK_IDS } from '../advisory-lock-ids';
 
 /**
  * Sweeps expired idempotency_keys rows (#16). Retention itself is set per
@@ -31,7 +32,7 @@ export class IdempotencyCleanupService {
       return;
     }
 
-    const lockId = 847292;
+    const lockId = ADVISORY_LOCK_IDS.IDEMPOTENCY_CLEANUP;
     const work = async (): Promise<void> => {
       const result = await this.repo.delete({
         expiresAt: LessThan(new Date()),
@@ -43,16 +44,34 @@ export class IdempotencyCleanupService {
       }
     };
 
+    // Fail-open, documented exception: without an initialized DataSource there
+    // is no database to coordinate through. This only happens in unit tests,
+    // which run the cleanup directly.
     if (!this.dataSource?.isInitialized) {
       await work();
       return;
     }
 
     // Lock and unlock on one connection (#784), so the lock is always released.
-    const outcome = await runWithAdvisoryLock(this.dataSource, lockId, work);
-    if (!outcome.acquired) {
-      this.logger.debug(
-        'Skipping cleanup: another instance holds advisory lock',
+    // Fail closed (#785): if taking the lock fails (for example a transient DB
+    // error), the cleanup is skipped instead of running on every replica at
+    // once. runWithAdvisoryLock cannot tell a lock-query failure from a failure
+    // inside work(), so both land in this catch and are logged at error level.
+    // The next hourly run retries.
+    try {
+      const outcome = await runWithAdvisoryLock(
+        this.dataSource,
+        lockId,
+        work,
+      );
+      if (!outcome.acquired) {
+        this.logger.debug(
+          'Skipping cleanup: another instance holds advisory lock',
+        );
+      }
+    } catch (err) {
+      this.logger.error(
+        `Skipping cleanup: advisory lock or cleanup failed: ${String(err)}`,
       );
     }
   }
