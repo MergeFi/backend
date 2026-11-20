@@ -29,6 +29,7 @@ const validProduction = (): Config => ({
   stellar: {
     ...configuration().stellar,
     escrowContractId: 'CESCROW',
+    maintenancePoolContractId: 'CPOOL',
     treasurySecret: 'STREASURY',
   },
 });
@@ -55,6 +56,10 @@ describe('collectConfigIssues', () => {
     ['GITHUB_CLIENT_ID', (c: Config) => (c.github.clientId = '')],
     ['GITHUB_CLIENT_SECRET', (c: Config) => (c.github.clientSecret = '  ')],
     ['ESCROW_CONTRACT_ID', (c: Config) => (c.stellar.escrowContractId = '')],
+    [
+      'MAINTENANCE_POOL_CONTRACT_ID',
+      (c: Config) => (c.stellar.maintenancePoolContractId = ''),
+    ],
     ['TREASURY_SECRET', (c: Config) => (c.stellar.treasurySecret = '')],
     ['JWT_SECRET', (c: Config) => (c.jwt.secret = '')],
   ])('flags a missing %s', (key, mutate) => {
