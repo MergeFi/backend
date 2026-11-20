@@ -105,8 +105,15 @@ export class MaintenancePoolController {
   deposit(
     @Param('id', new ParseUUIDPipe()) id: string,
     @Body() dto: DepositDto,
+    @Req() req: Request,
   ) {
-    return this.poolService.deposit(id, dto.amount, dto.funderAddress);
+    const callerUserId = (req.user as any).userId as string;
+    return this.poolService.deposit(
+      id,
+      dto.amount,
+      dto.funderAddress,
+      callerUserId,
+    );
   }
 
   @ApiOperation({

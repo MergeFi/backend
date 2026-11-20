@@ -1,6 +1,12 @@
 import { Module } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
-import { Issue, MaintenancePool, Payment, User } from '../common/entities';
+import {
+  Escrow,
+  Issue,
+  MaintenancePool,
+  Payment,
+  User,
+} from '../common/entities';
 import { IdempotencyKey } from '../common/entities/idempotency-key.entity';
 import { MaintenancePoolService } from './maintenance-pool.service';
 import { MaintenancePoolController } from './maintenance-pool.controller';

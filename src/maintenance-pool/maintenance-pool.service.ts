@@ -1,12 +1,19 @@
 import {
   BadRequestException,
   ConflictException,
+  ForbiddenException,
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
-import { Issue, MaintenancePool, Payment } from '../common/entities';
+import {
+  Escrow,
+  Issue,
+  MaintenancePool,
+  Payment,
+  User,
+} from '../common/entities';
 import { MaintenancePoolStatus } from '../common/enums';
 import { EscrowService } from '../escrow/escrow.service';
 import { CreatePoolDto } from './dto/create-pool.dto';
@@ -26,6 +33,10 @@ export class MaintenancePoolService {
     private readonly issueRepo: Repository<Issue>,
     @InjectRepository(Payment)
     private readonly paymentRepo: Repository<Payment>,
+    @InjectRepository(User)
+    private readonly userRepo: Repository<User>,
+    @InjectRepository(Escrow)
+    private readonly escrowRepo: Repository<Escrow>,
     private readonly escrowService: EscrowService,
   ) {}
 
@@ -54,11 +65,19 @@ export class MaintenancePoolService {
     return pool;
   }
 
-  /** Sponsor makes a (typically monthly) deposit, topping up the pool's on-chain balance. */
+  /**
+   * Sponsor makes a (typically monthly) deposit, topping up the pool's on-chain balance.
+   *
+   * Authorization (#798): only the pool's creator (`createdById`, the sole
+   * ownership field on MaintenancePool; there is no maintainer relation) may
+   * fund it, and `funderAddress` must be the caller's own linked
+   * `stellarAddress`. The depositing user is recorded on each escrow row.
+   */
   async deposit(
     id: string,
     amount: string,
     funderAddress: string,
+    callerUserId: string,
   ): Promise<MaintenancePool> {
     // Use SELECT ... FOR UPDATE to prevent concurrent first-time deposit races
     // that could orphan escrows (#275).
@@ -69,6 +88,13 @@ export class MaintenancePoolService {
       .getOne();
 
     if (!pool) throw new NotFoundException(`Maintenance pool ${id} not found`);
+    // A null createdById never equals a caller id, so legacy ownerless pools are closed.
+    if (pool.createdById !== callerUserId) {
+      throw new ForbiddenException(
+        'Only the maintenance pool creator can fund this pool',
+      );
+    }
+    await this.assertFunderIsCaller(funderAddress, callerUserId);
     if (pool.status !== MaintenancePoolStatus.ACTIVE) {
       throw new BadRequestException(`Pool ${id} is not ACTIVE`);
     }
@@ -80,6 +106,7 @@ export class MaintenancePoolService {
         funderAddress,
         maintenancePoolId: pool.id,
       });
+      await this.recordDepositor(escrow, callerUserId);
       // Use WHERE escrowId IS NULL so a losing concurrent request detects the
       // race and tops up the winner's escrow instead of creating a second one.
       const updateResult = await this.poolRepo.update(
@@ -89,23 +116,25 @@ export class MaintenancePoolService {
       if (updateResult.affected === 0) {
         // Another request won the race — top up the winner's escrow instead.
         const existingPool = await this.findOne(id);
-        await this.escrowService.fund({
+        const topUp = await this.escrowService.fund({
           amount,
           asset: pool.asset,
           funderAddress,
           maintenancePoolId: pool.id,
         });
+        await this.recordDepositor(topUp, callerUserId);
         await this.poolRepo.increment({ id }, 'balance', Number(amount));
         return this.findOne(id);
       }
     } else {
       // Subsequent deposits top up the existing on-chain escrow balance.
-      await this.escrowService.fund({
+      const topUp = await this.escrowService.fund({
         amount,
         asset: pool.asset,
         funderAddress,
         maintenancePoolId: pool.id,
       });
+      await this.recordDepositor(topUp, callerUserId);
     }
 
     // Atomic DB-level increment instead of read-modify-write — concurrent
@@ -116,6 +145,34 @@ export class MaintenancePoolService {
     await this.poolRepo.increment({ id: pool.id }, 'balance', Number(amount));
 
     return this.findOne(id);
+  }
+
+  /**
+   * The funder address must be the caller's own verified Stellar address, so
+   * a deposit cannot be attributed to a wallet the caller does not control.
+   * Note: `stellarAddress` has no separate verified flag in the users module;
+   * it is the only linked-address field available.
+   */
+  private async assertFunderIsCaller(
+    funderAddress: string,
+    callerUserId: string,
+  ): Promise<void> {
+    const caller = await this.userRepo.findOne({
+      where: { id: callerUserId },
+    });
+    if (!caller?.stellarAddress || caller.stellarAddress !== funderAddress) {
+      throw new ForbiddenException(
+        'funderAddress must be the stellarAddress linked to your account',
+      );
+    }
+  }
+
+  private async recordDepositor(
+    escrow: Escrow,
+    callerUserId: string,
+  ): Promise<void> {
+    escrow.depositedById = callerUserId;
+    await this.escrowRepo.save(escrow);
   }
 
   /** Maintainer assigns a reward from the pool's balance for completed maintenance work. */
@@ -146,59 +203,56 @@ export class MaintenancePoolService {
       throw new BadRequestException(`Pool ${id} has no funded escrow yet`);
     }
 
-    const escrowId = pool.escrowId;
-
-    // Guard against double/triple payout for the same issue (#273). The check
-    // and the payout run in one transaction under a row lock on the pool, so two
-    // concurrent rewards for the same issue cannot both pass the check. The
-    // unique index on (escrowId, issueId) is the database backstop (#779).
-    return this.poolRepo.manager.transaction(async (em) => {
-      await em
-        .getRepository(MaintenancePool)
-        .createQueryBuilder('pool')
-        .setLock('pessimistic_write')
-        .where('pool.id = :id', { id })
-        .getOne();
-
-      const alreadyRewarded = await em.getRepository(Payment).findOne({
-        where: { escrowId, issueId },
-      });
-      if (alreadyRewarded) {
-        throw new ConflictException(
-          `Issue ${issueId} has already received a reward from pool ${id}`,
-        );
-      }
-
-      // Atomic balance check and decrement (#274). The conditional UPDATE only
-      // succeeds if balance >= amount. It runs inside this transaction, so a
-      // failed payout rolls the decrement back.
-      const updateResult = await em
-        .getRepository(MaintenancePool)
-        .createQueryBuilder()
-        .update(MaintenancePool)
-        .set({ balance: () => `balance - :amount` })
-        .where('id = :id AND balance >= :amount', { id, amount: Number(amount) })
-        .setParameter('amount', Number(amount))
-        .execute();
-
-      if (updateResult.affected === 0) {
-        throw new BadRequestException(
-          `Requested reward ${amount} exceeds pool balance ${pool.balance}`,
-        );
-      }
-
-      // A maintenance pool is a running on-chain balance (deposit/withdraw),
-      // not a milestone-style fixed lock that gets partially released and then
-      // closed out — so pay the reward via the pool contract's `withdraw`,
-      // leaving the escrow LOCKED for the next reward (#163).
-      return this.escrowService.poolWithdraw(
-        escrowId,
-        amount,
-        recipientAddress,
-        recipientId,
-        issueId,
-      );
+    // Guard against double/triple payout for the same issue (#273).
+    const existingPayment = await this.paymentRepo.findOne({
+      where: {
+        recipientId: recipientId ?? null,
+      },
     });
+    // Check if there's already a payment for this issue from this pool's escrow.
+    const existingPoolPayment = await this.paymentRepo
+      .createQueryBuilder('payment')
+      .innerJoin('payment.escrow', 'escrow')
+      .where('escrow.maintenancePoolId = :poolId', { poolId: id })
+      .andWhere('payment.recipientId = :recipientId', {
+        recipientId: recipientId ?? null,
+      })
+      .getOne();
+    if (existingPoolPayment) {
+      throw new ConflictException(
+        `Issue ${issueId} has already received a reward from pool ${id}`,
+      );
+    }
+
+    // Atomic balance check and decrement — prevents TOCTOU race where concurrent
+    // calls could overdraw the pool (#274). Uses a conditional UPDATE that only
+    // succeeds if balance >= amount, then checks affected rows.
+    const updateResult = await this.poolRepo
+      .createQueryBuilder()
+      .update(MaintenancePool)
+      .set({ balance: () => `balance - :amount` })
+      .where('id = :id AND balance >= :amount', { id, amount: Number(amount) })
+      .setParameter('amount', Number(amount))
+      .execute();
+
+    if (updateResult.affected === 0) {
+      throw new BadRequestException(
+        `Requested reward ${amount} exceeds pool balance ${pool.balance}`,
+      );
+    }
+
+    // A maintenance pool is a running on-chain balance (deposit/withdraw),
+    // not a milestone-style fixed lock that gets partially released and then
+    // closed out — so pay the reward via the pool contract's `withdraw`,
+    // leaving the escrow LOCKED for the next reward (#163).
+    const payment = await this.escrowService.poolWithdraw(
+      pool.escrowId,
+      amount,
+      recipientAddress,
+      recipientId,
+    );
+
+    return payment;
   }
 
   async list(): Promise<MaintenancePool[]> {
