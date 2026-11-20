@@ -45,6 +45,15 @@ export interface UpsertFromGithubInput {
   refreshToken?: string | null;
 }
 
+/** Attempts to insert a new user before giving up on username collisions (#790). */
+const MAX_USERNAME_ATTEMPTS = 5;
+
+/** True when a Postgres unique violation names the username column. */
+function isUsernameViolation(err: unknown): boolean {
+  const e = err as { code?: string; detail?: string };
+  return e.code === '23505' && String(e.detail ?? '').includes('(username)');
+}
+
 @Injectable()
 export class UsersService {
   constructor(
@@ -136,14 +145,6 @@ export class UsersService {
     // reusing a User row by username would allow account takeover). Always
     // create a fresh User, handling username collisions by generating a
     // unique variant.
-    let username = input.login;
-    const existingUsername = await this.userRepo.findOne({
-      where: { username },
-    });
-    if (existingUsername) {
-      username = await this.generateUniqueUsername(input.login);
-    }
-
     let email: string | null = input.email;
     if (email !== null) {
       const existingEmail = await this.userRepo.findOne({
@@ -154,14 +155,12 @@ export class UsersService {
       }
     }
 
-    let user = this.userRepo.create({
-      username,
+    const user = await this.saveNewUser({
+      login: input.login,
       email,
       displayName: input.displayName,
       avatarUrl: input.avatarUrl,
-      roles: [UserRole.CONTRIBUTOR],
     });
-    user = await this.userRepo.save(user);
 
     account = this.githubAccountRepo.create({
       githubId: input.githubId,
@@ -177,18 +176,38 @@ export class UsersService {
     return this.findOneRaw(user.id);
   }
 
-  private async generateUniqueUsername(base: string): Promise<string> {
-    let candidate = base;
-    let counter = 0;
-    while (await this.userRepo.findOne({ where: { username: candidate } })) {
-      counter += 1;
-      candidate = `${base}-${counter}`;
-      if (counter > 100) {
-        candidate = `${base}-${Date.now()}-${counter}`;
-        break;
+  /**
+   * Inserts a new User. The database decides username uniqueness (#790): the
+   * preferred login is tried first, with no lookup. On a unique violation for
+   * `username`, a short random suffix is added and the insert is retried. This
+   * takes one query in the common case and is race-safe, because two concurrent
+   * sign-ins cannot both insert the same name.
+   */
+  private async saveNewUser(input: {
+    login: string;
+    email: string | null;
+    displayName: string | null;
+    avatarUrl: string | null;
+  }): Promise<User> {
+    let username = input.login;
+    for (let attempt = 1; ; attempt++) {
+      try {
+        return await this.userRepo.save(
+          this.userRepo.create({
+            username,
+            email: input.email,
+            displayName: input.displayName,
+            avatarUrl: input.avatarUrl,
+            roles: [UserRole.CONTRIBUTOR],
+          }),
+        );
+      } catch (err) {
+        if (!isUsernameViolation(err) || attempt >= MAX_USERNAME_ATTEMPTS) {
+          throw err;
+        }
+        username = `${input.login}-${randomBytes(3).toString('hex')}`;
       }
     }
-    return candidate;
   }
 
   // Role assignment is intentionally out of scope for this version: a User's
