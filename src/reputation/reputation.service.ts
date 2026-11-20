@@ -5,6 +5,20 @@ import { Repository } from 'typeorm';
 import { Bounty, Payment, ReputationSnapshot } from '../common/entities';
 import { queryContributorCoreStats } from '../common/stats/contributor-stats.sql';
 
+/**
+ * Key order and row order come from the database, so the no-change check compares canonical forms. Otherwise a
+ * reordered but identical result writes a new snapshot on every recompute (#793).
+ */
+function canonicalLanguages(languages: Record<string, number> | null | undefined): Record<string, number> {
+  return Object.fromEntries(
+    Object.entries(languages ?? {}).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)),
+  );
+}
+
+function canonicalOrgs(orgs: string[] | null | undefined): string[] {
+  return [...(orgs ?? [])].sort();
+}
+
 export const REPUTATION_HISTORY_DEFAULT_LIMIT = 50;
 export const REPUTATION_HISTORY_MAX_LIMIT = 100;
 
@@ -43,8 +57,10 @@ export class ReputationService {
       latest.completionRate === stats.completionRate.toFixed(2) &&
       latest.avgReviewTimeHours === stats.avgReviewTimeHours.toFixed(2) &&
       latest.onTimeDeliveryPercentage === stats.onTimeDeliveryPercentage.toFixed(2) &&
-      JSON.stringify(latest.languages) === JSON.stringify(stats.languages) &&
-      JSON.stringify(latest.orgsContributedTo) === JSON.stringify(stats.orgs)
+      JSON.stringify(canonicalLanguages(latest.languages)) ===
+        JSON.stringify(canonicalLanguages(stats.languages)) &&
+      JSON.stringify(canonicalOrgs(latest.orgsContributedTo)) ===
+        JSON.stringify(canonicalOrgs(stats.orgs))
     ) {
       return latest;
     }
