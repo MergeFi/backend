@@ -5,6 +5,8 @@ export interface AppConfig {
   port: number;
   appUrl: string;
   frontendUrl: string;
+  /** Exact origins (and/or `*.suffix` patterns) the CORS middleware allows. */
+  corsAllowedOrigins: string[];
   logLevel: string;
   database: {
     url: string;
@@ -90,6 +92,16 @@ export function parseSchedulersEnabled(raw: string | undefined): boolean {
 
 export default (): AppConfig => ({
   env: process.env.NODE_ENV ?? 'development',
+  port: parseInt(process.env.PORT ?? '3000', 10),
+  appUrl: process.env.APP_URL ?? 'http://localhost:3000',
+  frontendUrl: process.env.FRONTEND_URL ?? 'http://localhost:3001',
+  // CORS_ALLOWED_ORIGINS is a comma-separated list of exact origins (e.g.
+  // "https://app.mergefi.dev,https://staging.mergefi.dev") or *.suffix
+  // patterns (e.g. "*.vercel.app") for preview deployments. Falls back to
+  // [frontendUrl] so existing single-origin setups need no env change.
+  corsAllowedOrigins: process.env.CORS_ALLOWED_ORIGINS
+    ? process.env.CORS_ALLOWED_ORIGINS.split(',').map((o) => o.trim()).filter(Boolean)
+    : [process.env.FRONTEND_URL ?? 'http://localhost:3001'],
   port: parseInt(process.env.PORT ?? '4000', 10),
   appUrl: process.env.APP_URL ?? 'http://localhost:4000',
   frontendUrl: process.env.FRONTEND_URL ?? 'http://localhost:3000',
