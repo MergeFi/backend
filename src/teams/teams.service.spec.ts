@@ -137,6 +137,52 @@ describe('TeamsService', () => {
         NotFoundException,
       );
     });
+
+    it('allows the team creator to view the team (#740)', async () => {
+      const team = { id: 't1', createdById: 'owner-1', splits: [] };
+      teamRepo.findOne.mockResolvedValue(team);
+
+      await expect(service.findOne('t1', 'owner-1')).resolves.toBe(team);
+    });
+
+    it('allows a member listed in team.splits to view the team (#740)', async () => {
+      const team = {
+        id: 't1',
+        createdById: 'owner-1',
+        splits: [{ userId: 'member-1', percentage: '100.00' }],
+      };
+      teamRepo.findOne.mockResolvedValue(team);
+
+      await expect(service.findOne('t1', 'member-1')).resolves.toBe(team);
+    });
+
+    it('allows a MAINTAINER to view the team (#740)', async () => {
+      const team = { id: 't1', createdById: 'owner-1', splits: [] };
+      teamRepo.findOne.mockResolvedValue(team);
+      userRepo.findOne.mockResolvedValue({
+        id: 'maint-1',
+        roles: [UserRole.MAINTAINER],
+      });
+
+      await expect(service.findOne('t1', 'maint-1')).resolves.toBe(team);
+    });
+
+    it('throws ForbiddenException when caller is neither owner, member, nor maintainer (#740)', async () => {
+      const team = {
+        id: 't1',
+        createdById: 'owner-1',
+        splits: [{ userId: 'member-1', percentage: '100.00' }],
+      };
+      teamRepo.findOne.mockResolvedValue(team);
+      userRepo.findOne.mockResolvedValue({
+        id: 'outsider-1',
+        roles: [UserRole.CONTRIBUTOR],
+      });
+
+      await expect(service.findOne('t1', 'outsider-1')).rejects.toThrow(
+        ForbiddenException,
+      );
+    });
   });
 
   describe('updateSplits', () => {

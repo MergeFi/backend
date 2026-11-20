@@ -58,12 +58,32 @@ export class TeamsService {
     return team;
   }
 
-  async findOne(id: string): Promise<Team> {
+  async findOne(id: string, callerId?: string): Promise<Team> {
     const team = await this.teamRepo.findOne({
       where: { id },
       relations: { splits: true },
     });
     if (!team) throw new NotFoundException(`Team ${id} not found`);
+
+    if (callerId !== undefined) {
+      const isOwner = team.createdById === callerId;
+      const isMember = (team.splits ?? []).some(
+        (split) => split.userId === callerId,
+      );
+      if (!isOwner && !isMember) {
+        const caller = await this.userRepo.findOne({
+          where: { id: callerId },
+          select: { roles: true },
+        });
+        const isMaintainer = !!caller?.roles?.includes(UserRole.MAINTAINER);
+        if (!isMaintainer) {
+          throw new ForbiddenException(
+            'Only the team creator, a team member, or a maintainer can view this team',
+          );
+        }
+      }
+    }
+
     return team;
   }
 

@@ -129,4 +129,12 @@ describe('GithubWebhooksController — header extraction and response shape (#31
     );
     expect(httpCode).toBe(202);
   });
+
+  it('opts out of the default per-IP ThrottlerGuard bucket via @SkipThrottle() (#769)', () => {
+    const skipThrottle = Reflect.getMetadata(
+      'THROTTLER:SKIPdefault',
+      GithubWebhooksController.prototype.handle,
+    );
+    expect(skipThrottle).toBe(true);
+  });
 });

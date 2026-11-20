@@ -8,6 +8,7 @@ import {
   UnauthorizedException,
 } from '@nestjs/common';
 import { ApiExcludeController } from '@nestjs/swagger';
+import { SkipThrottle } from '@nestjs/throttler';
 import type { Request } from 'express';
 import { GithubWebhooksService } from './github-webhooks.service';
 
@@ -22,6 +23,7 @@ export class GithubWebhooksController {
 
   constructor(private readonly webhooksService: GithubWebhooksService) {}
 
+  @SkipThrottle()
   @Post()
   @HttpCode(202)
   async handle(

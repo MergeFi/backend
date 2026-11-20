@@ -1,6 +1,8 @@
+import { ForbiddenException, INestApplication } from '@nestjs/common';
 import { Test, TestingModule } from '@nestjs/testing';
 import { plainToInstance } from 'class-transformer';
 import { validate } from 'class-validator';
+import request from 'supertest';
 import { TeamsController } from './teams.controller';
 import { TeamsService } from './teams.service';
 import { CreateTeamDto } from './dto/create-team.dto';
@@ -21,9 +23,23 @@ describe('TeamsController', () => {
       create: jest
         .fn()
         .mockResolvedValue({ id: 't1', name: 'Team A', splits: [] }),
-      findOne: jest
-        .fn()
-        .mockResolvedValue({ id: 't1', name: 'Team A', splits: [] }),
+      findOne: jest.fn().mockResolvedValue({
+        id: 't1',
+        name: 'Team A',
+        createdById: 'u1',
+        createdAt: new Date('2026-01-01T00:00:00.000Z'),
+        updatedAt: new Date('2026-01-02T00:00:00.000Z'),
+        splits: [
+          {
+            id: 's1',
+            teamId: 't1',
+            userId: 'u1',
+            role: 'frontend',
+            percentage: '100.00',
+            createdAt: new Date('2026-01-01T00:00:00.000Z'),
+          },
+        ],
+      }),
       updateSplits: jest.fn().mockResolvedValue([]),
       assignToBounty: jest.fn().mockResolvedValue({ id: 'b1', teamId: 't1' }),
     };
@@ -42,32 +58,72 @@ describe('TeamsController', () => {
   });
 
   describe('create', () => {
-    it('calls teamsService.create with the provided DTO', async () => {
+    it('calls teamsService.create with the provided DTO and caller id', async () => {
       const dto = {
         name: 'Team A',
         members: [{ userId: 'u1', percentage: 100 }],
       };
 
-      await controller.create(dto);
+      await controller.create(dto, { userId: 'u1', username: 'alice' });
 
-      expect(teamsService.create).toHaveBeenCalledWith(dto);
+      expect(teamsService.create).toHaveBeenCalledWith(dto, 'u1');
     });
   });
 
-  describe('findOne', () => {
-    it('calls teamsService.findOne with the route param', async () => {
-      await controller.findOne('t1');
+  describe('findOne (#740)', () => {
+    it('passes the route param and caller userId and maps to TeamResponseDto shape', async () => {
+      const result = await controller.findOne('t1', {
+        userId: 'u1',
+        username: 'alice',
+      });
 
-      expect(teamsService.findOne).toHaveBeenCalledWith('t1');
+      expect(teamsService.findOne).toHaveBeenCalledWith('t1', 'u1');
+      expect(result).toEqual({
+        id: 't1',
+        name: 'Team A',
+        createdAt: new Date('2026-01-01T00:00:00.000Z'),
+        splits: [{ userId: 'u1', role: 'frontend', percentage: '100.00' }],
+      });
+      expect(result).not.toHaveProperty('createdById');
+      expect(result).not.toHaveProperty('updatedAt');
+    });
+
+    it('propagates 403 ForbiddenException when caller is neither owner, member, nor maintainer', async () => {
+      teamsService.findOne.mockRejectedValueOnce(
+        new ForbiddenException('Forbidden'),
+      );
+
+      await expect(
+        controller.findOne('t1', { userId: 'outsider', username: 'mallory' }),
+      ).rejects.toBeInstanceOf(ForbiddenException);
+    });
+
+    it('rejects an anonymous request when JwtAuthGuard denies access', async () => {
+      const mod: TestingModule = await Test.createTestingModule({
+        controllers: [TeamsController],
+        providers: [{ provide: TeamsService, useValue: teamsService }],
+      })
+        .overrideGuard(JwtAuthGuard)
+        .useValue({ canActivate: () => false })
+        .compile();
+
+      const app: INestApplication = mod.createNestApplication();
+      await app.init();
+
+      await request(app.getHttpServer())
+        .get('/teams/00000000-0000-0000-0000-000000000001')
+        .expect(403);
+
+      await app.close();
     });
   });
 
   describe('updateSplits', () => {
     it('calls teamsService.updateSplits with id and members', async () => {
-      const members = [{ userId: 'u1', percentage: 100 }];
-      await controller.updateSplits('t1', members);
+      const dto = { splits: [{ userId: 'u1', percentage: 100 }] };
+      await controller.updateSplits('t1', dto);
 
-      expect(teamsService.updateSplits).toHaveBeenCalledWith('t1', members);
+      expect(teamsService.updateSplits).toHaveBeenCalledWith('t1', dto.splits);
     });
   });
 
@@ -120,8 +176,6 @@ describe('TeamsController', () => {
         { enableImplicitConversion: true },
       );
       const errors = await validate(dto, { skipMissingProperties: true });
-      // Filter out nested validation errors since plainToInstance doesn't
-      // fully transform nested @ValidateNested objects in test context
       const topLevelErrors = errors.filter((e) => e.property === 'name');
       expect(topLevelErrors.length).toBe(0);
     });
