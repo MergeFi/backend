@@ -37,8 +37,7 @@ export class TeamsService {
     const team = await this.teamRepo.save(
       this.teamRepo.create({
         name: dto.name?.trim() ?? dto.name,
-        // Fall back to the authenticated caller's id when the client omits createdById.
-        createdById: dto.createdById ?? callerUserId,
+        createdById: callerUserId,
       }),
     );
 
@@ -111,6 +110,11 @@ export class TeamsService {
     callerId: string,
   ): Promise<Bounty> {
     const team = await this.findOne(teamId);
+    if (team.splits.length === 0) {
+      throw new BadRequestException(
+        `Team ${teamId} must have at least one member split`,
+      );
+    }
     const bounty = await this.bountyRepo.findOne({
       where: { id: bountyId },
       relations: { issue: { repository: true } },

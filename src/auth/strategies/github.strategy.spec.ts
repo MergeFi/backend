@@ -11,7 +11,7 @@ describe('GithubStrategy', () => {
       get: jest.fn().mockReturnValue({
         clientId: 'test_client_id',
         clientSecret: 'test_client_secret',
-        oauthCallbackUrl: 'http://localhost:3000/api/auth/github/callback',
+        oauthCallbackUrl: 'http://localhost:4000/api/auth/github/callback',
       }),
     } as unknown as jest.Mocked<ConfigService>;
 

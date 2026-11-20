@@ -18,9 +18,7 @@ export class GithubStrategy extends PassportStrategy(Strategy, 'github') {
     super({
       clientID: githubConfig?.clientId || 'mock_client_id_12345',
       clientSecret: githubConfig?.clientSecret || 'mock_secret_key_67890',
-      callbackURL:
-        githubConfig?.oauthCallbackUrl ||
-        'http://localhost:3000/api/auth/github/callback',
+      callbackURL: githubConfig?.oauthCallbackUrl,
       scope: ['user:email', 'read:org'],
       // CSRF protection for the callback (#771). passport-oauth2 only does
       // this when `state` is on, and the state is checked against a cookie

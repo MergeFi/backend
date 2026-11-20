@@ -52,6 +52,10 @@ describe('TeamsService', () => {
   });
 
   describe('create', () => {
+    beforeEach(() => {
+      userRepo.findOne.mockResolvedValue({ id: 'existing-user' });
+    });
+
     it('rejects via validateSplitPercentages when splits do not sum to 100', async () => {
       await expect(
         service.create(
@@ -66,20 +70,18 @@ describe('TeamsService', () => {
     });
 
     it('saves the team and one split per member when percentages sum to 100', async () => {
-      const team = await service.create(
-        {
-          name: 'Team A',
-          createdById: 'creator-1',
-          members: [
-            { userId: 'u1', role: 'frontend', percentage: 60 },
-            { userId: 'u2', percentage: 40 },
-          ],
-        },
-        'caller-99',
-      );
+      const dto = {
+        name: 'Team A',
+        createdById: 'creator-1',
+        members: [
+          { userId: 'u1', role: 'frontend', percentage: 60 },
+          { userId: 'u2', percentage: 40 },
+        ],
+      };
+      const team = await service.create(dto, 'caller-99');
 
       expect(teamRepo.save).toHaveBeenCalledWith(
-        expect.objectContaining({ name: 'Team A', createdById: 'creator-1' }),
+        expect.objectContaining({ name: 'Team A', createdById: 'caller-99' }),
       );
       // One batched save with the whole array, not one call per member (#150).
       expect(splitRepo.save).toHaveBeenCalledTimes(1);
@@ -102,11 +104,13 @@ describe('TeamsService', () => {
       expect(team.splits).toHaveLength(2);
     });
 
-    it('falls back to callerUserId for createdById when client omits it', async () => {
-      await service.create(
-        { name: 'Team B', members: [{ userId: 'u1', percentage: 100 }] },
-        'caller-99',
-      );
+    it('always assigns ownership to callerUserId, even if an extra client field is present', async () => {
+      const dto = {
+        name: 'Team B',
+        createdById: 'another-user',
+        members: [{ userId: 'u1', percentage: 100 }],
+      };
+      await service.create(dto, 'caller-99');
 
       expect(teamRepo.save).toHaveBeenCalledWith(
         expect.objectContaining({ createdById: 'caller-99' }),
@@ -135,6 +139,20 @@ describe('TeamsService', () => {
     });
   });
 
+  describe('updateSplits', () => {
+    it('rejects an empty split set before deleting the current splits', async () => {
+      teamRepo.findOne.mockResolvedValue({
+        id: 't1',
+        splits: [{ userId: 'u1', percentage: '100.00' }],
+      });
+
+      await expect(service.updateSplits('t1', [])).rejects.toThrow(
+        BadRequestException,
+      );
+      expect(splitRepo.delete).not.toHaveBeenCalled();
+    });
+  });
+
   describe('assignToBounty', () => {
     it('throws NotFoundException when the team does not exist', async () => {
       teamRepo.findOne.mockResolvedValue(null);
@@ -146,7 +164,10 @@ describe('TeamsService', () => {
     });
 
     it('throws NotFoundException when the bounty does not exist', async () => {
-      teamRepo.findOne.mockResolvedValue({ id: 't1', splits: [] });
+      teamRepo.findOne.mockResolvedValue({
+        id: 't1',
+        splits: [{ userId: 'contributor-1' }],
+      });
       bountyRepo.findOne.mockResolvedValue(null);
 
       await expect(
@@ -154,8 +175,20 @@ describe('TeamsService', () => {
       ).rejects.toThrow(NotFoundException);
     });
 
-    it('sets the bounty.teamId and persists it when both exist and caller is sponsor', async () => {
+    it('rejects assigning a team with no splits', async () => {
       teamRepo.findOne.mockResolvedValue({ id: 't1', splits: [] });
+
+      await expect(
+        service.assignToBounty('t1', 'b1', 'sponsor-1'),
+      ).rejects.toThrow(BadRequestException);
+      expect(bountyRepo.findOne).not.toHaveBeenCalled();
+    });
+
+    it('sets the bounty.teamId and persists it when both exist and caller is sponsor', async () => {
+      teamRepo.findOne.mockResolvedValue({
+        id: 't1',
+        splits: [{ userId: 'contributor-1' }],
+      });
       bountyRepo.findOne.mockResolvedValue({
         id: 'b1',
         status: BountyStatus.OPEN,
@@ -176,7 +209,10 @@ describe('TeamsService', () => {
     });
 
     it('allows a MAINTAINER to assign even if not the sponsor', async () => {
-      teamRepo.findOne.mockResolvedValue({ id: 't1', splits: [] });
+      teamRepo.findOne.mockResolvedValue({
+        id: 't1',
+        splits: [{ userId: 'contributor-1' }],
+      });
       bountyRepo.findOne.mockResolvedValue({
         id: 'b1',
         status: BountyStatus.OPEN,
@@ -193,7 +229,10 @@ describe('TeamsService', () => {
     });
 
     it('throws BadRequestException when bounty status is MERGED', async () => {
-      teamRepo.findOne.mockResolvedValue({ id: 't1', splits: [] });
+      teamRepo.findOne.mockResolvedValue({
+        id: 't1',
+        splits: [{ userId: 'contributor-1' }],
+      });
       bountyRepo.findOne.mockResolvedValue({
         id: 'b1',
         status: BountyStatus.MERGED,
@@ -211,7 +250,10 @@ describe('TeamsService', () => {
     });
 
     it('throws ForbiddenException when caller is not the sponsor and not a maintainer', async () => {
-      teamRepo.findOne.mockResolvedValue({ id: 't1', splits: [] });
+      teamRepo.findOne.mockResolvedValue({
+        id: 't1',
+        splits: [{ userId: 'contributor-1' }],
+      });
       bountyRepo.findOne.mockResolvedValue({
         id: 'b1',
         status: BountyStatus.OPEN,
@@ -229,7 +271,10 @@ describe('TeamsService', () => {
     });
 
     it('allows reassignment to a different team when bounty is OPEN and caller is sponsor', async () => {
-      teamRepo.findOne.mockResolvedValue({ id: 't2', splits: [] });
+      teamRepo.findOne.mockResolvedValue({
+        id: 't2',
+        splits: [{ userId: 'contributor-1' }],
+      });
       bountyRepo.findOne.mockResolvedValue({
         id: 'b1',
         status: BountyStatus.OPEN,

@@ -133,7 +133,7 @@ See [`.env.example`](./.env.example) for the full annotated list. Highlights:
 |---|---|
 | `DATABASE_URL` | Postgres connection string (TypeORM). |
 | `JWT_SECRET`, `JWT_EXPIRES_IN` | Session token signing. |
-| `GITHUB_CLIENT_ID` / `_SECRET`, `GITHUB_OAUTH_CALLBACK_URL` | GitHub OAuth login app. |
+| `GITHUB_CLIENT_ID` / `_SECRET`, `GITHUB_OAUTH_CALLBACK_URL` | GitHub OAuth login app. The callback defaults to `${APP_URL}/api/auth/github/callback`; `APP_URL` defaults to `http://localhost:${PORT}`. |
 | `GITHUB_API_TOKEN` | Token used by Octokit for repo/issue sync (PAT for now; see roadmap). |
 | `GITHUB_WEBHOOK_SECRET` | HMAC-SHA256 secret configured on the GitHub webhook. |
 | `ANALYTICS_PLATFORM_SUMMARY_TTL_MS` | In-process TTL for `GET /analytics/platform` (default `60000`). Also invalidated on bounty create/pay and first repository sync. |
@@ -383,6 +383,7 @@ docker build --target runner -t mergefi-backend:latest .
 #### Production Guardrails (Important):
 - **Least Privilege**: The container runs under the non-root `node` user (`USER node`).
 - **Production Mode**: The final image forces `NODE_ENV=production`.
+- **Graceful Shutdown**: Nest shutdown hooks handle `SIGTERM` and `SIGINT`, allowing providers to clean up and the HTTP server to drain active requests. Set the orchestrator's termination grace period longer than the Soroban poll ceiling (about 62 seconds, plus request/setup overhead) so in-flight escrow operations have time to finish.
 - **Required-secret Enforcer**: When `NODE_ENV=production`, `assertRequiredConfig` (`src/config/validate-required-config.ts`, called from `src/main.ts`) crashes the container at boot — listing every problem at once — unless all of `JWT_SECRET` (not the `insecure-dev-secret` default), `DATABASE_URL` (not the local `postgres:postgres@localhost` default), `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET`, `GITHUB_WEBHOOK_SECRET`, `ESCROW_CONTRACT_ID` and `TREASURY_SECRET` are set to real values. This closes the silent-failure gap where, for example, an empty `GITHUB_WEBHOOK_SECRET` made the app boot "healthy" while rejecting 100% of webhook deliveries. You **must** provide these when running the production container, e.g.:
   ```bash
   docker run -p 3000:3000 \
