@@ -100,13 +100,18 @@ function stableStringify(value: unknown): string {
 }
 
 /**
- * Fingerprints "what request is this" — path params plus body — so it can
- * be bound to an idempotency key's identity alongside (key, scope,
- * callerId) (#54). Query params are deliberately excluded: none of the
- * routes this guards read identity-relevant data from the query string.
+ * Fingerprints "what request is this" — HTTP method, route path, path params
+ * plus body — so it can be bound to an idempotency key's identity alongside
+ * (key, scope, callerId) (#54, #805). Method and route make the fingerprint
+ * self-describing, so a scope string shared by two routes cannot replay one
+ * route's response for the other. Query params are deliberately excluded:
+ * none of the routes this guards read identity-relevant data from the query
+ * string.
  */
 function computeRequestFingerprint(request: Request): string {
   const payload = stableStringify({
+    method: request.method,
+    path: request.route?.path ?? request.path,
     params: request.params ?? {},
     body: (request.body as Record<string, unknown> | undefined) ?? {},
   });
@@ -416,11 +421,23 @@ export class IdempotencyInterceptor implements NestInterceptor {
     identity: KeyIdentity,
     outcome: CachedOutcome,
   ): Promise<void> {
-    await this.repo.update(identity, {
-      status: IdempotencyKeyStatus.COMPLETED,
-      responseStatus: outcome.responseStatus,
-      responseBody: outcome.responseBody,
-    } as QueryDeepPartialEntity<IdempotencyKey>);
+    // Compare-and-swap on PROCESSING: if another request has already
+    // completed this row (it reclaimed the row after this request went
+    // stale), leave that outcome alone rather than overwrite it (#806).
+    const result = await this.repo.update(
+      { ...identity, status: IdempotencyKeyStatus.PROCESSING },
+      {
+        status: IdempotencyKeyStatus.COMPLETED,
+        responseStatus: outcome.responseStatus,
+        responseBody: outcome.responseBody,
+      } as QueryDeepPartialEntity<IdempotencyKey>,
+    );
+    if ((result.affected ?? 0) === 0) {
+      this.logger.warn(
+        `Idempotency key was no longer PROCESSING when recording the outcome ` +
+          `(scope=${identity.scope}); keeping the outcome already recorded`,
+      );
+    }
   }
 
   private async settleFailure(
