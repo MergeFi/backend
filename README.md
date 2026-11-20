@@ -134,6 +134,7 @@ See [`.env.example`](./.env.example) for the full annotated list. Highlights:
 | Variable | Purpose |
 |---|---|
 | `DATABASE_URL` | Postgres connection string (TypeORM). |
+| `TRUST_PROXY` | Express proxy trust configuration: `false` by default, a fixed hop count (for example `1` behind one trusted ingress), or a comma-separated trusted address/subnet list. Do not use `true`, which can let clients spoof forwarded IPs. |
 | `JWT_SECRET`, `JWT_EXPIRES_IN` | Session token signing. |
 | `GITHUB_CLIENT_ID` / `_SECRET`, `GITHUB_OAUTH_CALLBACK_URL` | GitHub OAuth login app. The callback defaults to `${APP_URL}/api/auth/github/callback`; `APP_URL` defaults to `http://localhost:${PORT}`. |
 | `GITHUB_API_TOKEN` | Token used by Octokit for repo/issue sync (PAT for now; see roadmap). |
@@ -145,6 +146,12 @@ See [`.env.example`](./.env.example) for the full annotated list. Highlights:
 | `USDC_TOKEN_CONTRACT_ID`, `XLM_TOKEN_CONTRACT_ID` | Soroban token (SAC) contract addresses, passed as `escrow::fund`'s required `token` argument. |
 | `ESCROW_DEADLINE_SECONDS` | Fallback `escrow::fund` deadline (seconds from fund time) when the bounty/milestone has none. Default `7776000` (90 days), minimum `86400`. **Controls when anyone can refund the escrow on-chain** — see [below](#escrow_deadline_seconds-and-the-permissionless-refund-window). |
 | `TREASURY_SECRET` | Platform signer used to submit release/refund transactions. **Blank → [dry-run mode](#dry-run-mode).** |
+
+`docker-compose.yml` exposes the app directly and does not add a reverse proxy,
+so keep `TRUST_PROXY=false` for that setup. For an ingress deployment, set it
+to the number of fixed, trusted proxy hops (commonly `1` for one ingress), or
+prefer a list of the ingress proxy's trusted IPs/subnets when those are known.
+Avoid `true`: it trusts forwarding headers regardless of their source.
 
 ## Escrow / Soroban integration
 

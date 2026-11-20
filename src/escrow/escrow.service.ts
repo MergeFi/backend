@@ -59,7 +59,7 @@ export interface FundEscrowInput {
    * `now + stellar.escrowDeadlineSeconds` when the funding bounty/milestone
    * has none of its own.
    */
-  deadline?: Date | null;
+  deadline?: string | Date | null;
 }
 
 export interface SplitRecipient {
@@ -455,8 +455,8 @@ export class EscrowService {
    * The real `mergefi-maintenance-pool` contract has no
    * LOCKED-escrow-with-partial-release concept: it accrues an on-chain
    * `balance` through repeated `deposit()` calls and pays out via
-   * `withdraw(pool_id, recipient, amount)` against the live balance, with no
-   * pre-`lock` step and no "fully released" terminal state (#163).
+   * `withdraw(pool_id: u64, recipients: Vec<(Address, u32)>, amount)` against
+   * the live balance, with no pre-`lock` step and no "fully released" state.
    *
    * So unlike {@link releasePartial} — which is milestone-shaped: it checks
    * the cumulative payouts against a fixed locked `escrow.amount` and flips
@@ -491,7 +491,11 @@ export class EscrowService {
         () =>
           this.soroban.invoke(
             'withdraw',
-            [this.onChainKeyFor(escrow), recipientAddress, this.toStroops(amount)],
+            [
+              u64(this.onChainKeyFor(escrow)),
+              [[recipientAddress, TOTAL_BASIS_POINTS]],
+              this.toStroops(amount),
+            ],
             this.contractOpts(escrow),
           ),
         manager,
@@ -773,7 +777,11 @@ export class EscrowService {
 
   /** Resolves the funding deadline: the parent's own, or the configured default window. */
   private resolveDeadline(input: FundEscrowInput): Date {
-    if (input.deadline) return input.deadline;
+    if (input.deadline) {
+      return input.deadline instanceof Date
+        ? input.deadline
+        : new Date(input.deadline);
+    }
     return new Date(Date.now() + this.soroban.escrowDeadlineSeconds * 1000);
   }
 

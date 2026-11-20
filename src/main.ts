@@ -1,4 +1,5 @@
 import { NestFactory } from '@nestjs/core';
+import { NestExpressApplication } from '@nestjs/platform-express';
 import { ConfigService } from '@nestjs/config';
 import { Logger, ValidationPipe } from '@nestjs/common';
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
@@ -29,10 +30,17 @@ export async function bootstrap() {
 
   // rawBody: true preserves the raw request buffer on req.rawBody, which the
   // GitHub webhooks controller needs to verify the HMAC-SHA256 signature.
+  const app = await NestFactory.create<NestExpressApplication>(AppModule, {
+    rawBody: true,
+  });
   const app = await NestFactory.create(AppModule, { rawBody: true });
   app.enableShutdownHooks();
 
   const configService = app.get(ConfigService<AppConfig, true>);
+  app
+    .getHttpAdapter()
+    .getInstance()
+    .set('trust proxy', configService.get('trustProxy', { infer: true }));
 
   const env = configService.get('env', { infer: true });
   const logLevel = configService.get('logLevel', { infer: true });

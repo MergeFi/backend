@@ -1,4 +1,7 @@
-import configuration, { parseSchedulersEnabled } from './configuration';
+import configuration, {
+  parseSchedulersEnabled,
+  parseTrustProxy,
+} from './configuration';
 
 const ENV_KEYS = [
   'NODE_ENV',
@@ -21,6 +24,7 @@ const ENV_KEYS = [
   'XLM_TOKEN_CONTRACT_ID',
   'GITHUB_SYNC_ALLOWED_REPOS',
   'RUN_SCHEDULERS',
+  'TRUST_PROXY',
 ];
 
 describe('configuration', () => {
@@ -37,6 +41,8 @@ describe('configuration', () => {
   it('falls back to defaults when nothing is set', () => {
     const config = configuration();
     expect(config.env).toBe('development');
+    expect(config.port).toBe(3000);
+    expect(config.trustProxy).toBe(false);
     expect(config.port).toBe(4000);
     expect(config.database).toEqual({
       url: 'postgresql://postgres:postgres@localhost:5432/mergefi',
@@ -166,5 +172,29 @@ describe('configuration', () => {
         expect(parseSchedulersEnabled(raw)).toBe(true);
       },
     );
+  });
+
+  describe('parseTrustProxy', () => {
+    it.each([undefined, '', 'false', ' false '])(
+      'disables proxy trust for %p',
+      (raw) => {
+        expect(parseTrustProxy(raw)).toBe(false);
+      },
+    );
+
+    it('parses a proxy hop count', () => {
+      expect(parseTrustProxy('1')).toBe(1);
+    });
+
+    it('parses a comma-separated proxy address/subnet list', () => {
+      expect(parseTrustProxy('loopback, 10.0.0.0/8')).toEqual([
+        'loopback',
+        '10.0.0.0/8',
+      ]);
+    });
+
+    it('rejects the unsafe unrestricted true setting', () => {
+      expect(() => parseTrustProxy('true')).toThrow(/TRUST_PROXY=true/);
+    });
   });
 });

@@ -18,6 +18,12 @@ describe('GithubStrategy', () => {
     strategy = new GithubStrategy(mockConfigService);
   });
 
+  it('requests only the user:email OAuth scope', () => {
+    expect((strategy as unknown as { _scope: string[] })._scope).toEqual([
+      'user:email',
+    ]);
+  });
+
   it('validates and maps profile correctly when all fields are present', (done) => {
     const mockProfile: Profile = {
       id: '123456',
