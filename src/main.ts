@@ -8,6 +8,7 @@ import configuration, { AppConfig } from './config/configuration';
 import { assertRequiredConfig } from './config/validate-required-config';
 import { GlobalExceptionFilter } from './common/filters/global-exception.filter';
 import { resolveLogLevels, startupMessage } from './config/log-levels';
+import { swaggerBasicAuth } from './common/swagger/swagger-basic-auth';
 
 export async function bootstrap() {
   // Fail fast and loudly if *any* required-in-production secret is missing —
@@ -45,21 +46,39 @@ export async function bootstrap() {
       whitelist: true,
       transform: true,
       forbidNonWhitelisted: true,
+      // Explicit, not dependent on the class-validator version: without it a
+      // handler whose parameter has no validation metadata receives the raw
+      // body unchecked (#808).
+      forbidUnknownValues: true,
+      transformOptions: { enableImplicitConversion: false },
     }),
   );
   app.useGlobalFilters(new GlobalExceptionFilter());
 
-  // The generated OpenAPI document hands anyone a complete, browsable map of
-  // the API (routes, DTO shapes, validation constraints), so it is never
-  // exposed in production — same spirit as the JWT-secret guard above.
-  if (env !== 'production') {
+  // The OpenAPI document is a complete, browsable map of the API. In production
+  // it is served only when SWAGGER_BASIC_AUTH ("user:password") is set, and then
+  // only behind HTTP Basic auth, so the production API still has a contract for
+  // consumers and contract tests (#809). Without the variable it stays hidden.
+  // The credentials are never logged.
+  const docsCredentials = process.env.SWAGGER_BASIC_AUTH?.trim();
+  if (env !== 'production' || docsCredentials) {
+    if (env === 'production' && docsCredentials) {
+      app.use(
+        ['/api/docs', '/api/docs-json', '/api/docs-yaml'],
+        swaggerBasicAuth(docsCredentials),
+      );
+    }
     const swaggerConfig = new DocumentBuilder()
       .setTitle('MergeFi API')
       .setDescription(
         'Where Open Source Meets Finance — GitHub bounty escrow orchestration on Stellar/Soroban.',
       )
       .setVersion('0.1.0')
+      // The JWT strategy accepts a bearer header or the access_token cookie
+      // set by the GitHub callback (#809). Both are advertised so a generated
+      // client can express either.
       .addBearerAuth()
+      .addCookieAuth('access_token')
       .build();
     const document = SwaggerModule.createDocument(app, swaggerConfig);
     SwaggerModule.setup('api/docs', app, document);
