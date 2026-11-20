@@ -34,8 +34,16 @@ export function cookieExtractor(req: Request): string | null {
   return null;
 }
 
+// How long a confirmed user is trusted without another lookup (#773). A deleted
+// user therefore keeps access for at most this long.
+const USER_CONFIRM_TTL_MS = 60_000;
+const USER_CONFIRM_MAX_ENTRIES = 10_000;
+
 @Injectable()
 export class JwtStrategy extends PassportStrategy(Strategy) {
+  // userId -> the time until which the user is known to exist.
+  private readonly confirmedUntil = new Map<string, number>();
+
   constructor(
     configService: ConfigService<AppConfig, true>,
     private readonly usersService: UsersService,
@@ -52,6 +60,13 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
 
   async validate(payload: JwtPayload) {
     if (!payload?.sub) throw new UnauthorizedException('Invalid token payload');
+    if (!this.isConfirmed(payload.sub)) {
+      try {
+        await this.usersService.findOneRaw(payload.sub);
+      } catch {
+        throw new UnauthorizedException('User no longer exists');
+      }
+      this.rememberConfirmed(payload.sub);
     let user: { tokenVersion?: number };
     try {
       user = await this.usersService.findOneRaw(payload.sub);
@@ -63,5 +78,22 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
       throw new UnauthorizedException('Token has been revoked');
     }
     return { userId: payload.sub, username: payload.username };
+  }
+
+  private isConfirmed(userId: string): boolean {
+    const until = this.confirmedUntil.get(userId);
+    if (until === undefined) return false;
+    if (until > Date.now()) return true;
+    this.confirmedUntil.delete(userId);
+    return false;
+  }
+
+  private rememberConfirmed(userId: string): void {
+    if (this.confirmedUntil.size >= USER_CONFIRM_MAX_ENTRIES) {
+      // Maps keep insertion order, so the first key is the oldest entry.
+      const oldest = this.confirmedUntil.keys().next().value;
+      if (oldest !== undefined) this.confirmedUntil.delete(oldest);
+    }
+    this.confirmedUntil.set(userId, Date.now() + USER_CONFIRM_TTL_MS);
   }
 }

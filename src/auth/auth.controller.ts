@@ -58,10 +58,14 @@ export class AuthController {
       // the URL at all. The handoff code remains the primary exchange mechanism.
       const isProd =
         this.configService.get('env', { infer: true }) === 'production';
+      // The frontend is a different origin, so its fetches only send this
+      // cookie when it is SameSite=None, which browsers accept only with
+      // Secure. Outside production (plain http) lax is used, since localhost
+      // origins count as same-site there (#772).
       res.cookie('access_token', accessToken, {
         httpOnly: true,
         secure: isProd,
-        sameSite: 'lax',
+        sameSite: isProd ? 'none' : 'lax',
         maxAge: 7 * 24 * 60 * 60 * 1000,
         path: '/',
       });
@@ -77,6 +81,9 @@ export class AuthController {
     }
   }
 
+  // Single-use codes are only as strong as the attempts allowed against them
+  // (#770). The exchange is capped per IP well below the global limit.
+  @Throttle({ medium: { limit: 10, ttl: 60_000 } })
   @Post('handoff')
   @HttpCode(200)
   @ApiExcludeEndpoint()
@@ -84,6 +91,7 @@ export class AuthController {
     return this.exchangeCode(code, ip, '/auth/handoff');
   }
 
+  @Throttle({ medium: { limit: 10, ttl: 60_000 } })
   @Post('exchange')
   @HttpCode(200)
   @ApiExcludeEndpoint()
