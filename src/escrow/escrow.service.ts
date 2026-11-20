@@ -180,6 +180,37 @@ export class EscrowService {
     }
   }
 
+  /**
+   * Adds a sponsor deposit to a maintenance pool's existing escrow (#781). It calls the pool contract's
+   * `deposit` on the escrow row the pool already points at, so repeated deposits share one escrow and
+   * no new row is created. The call runs under the row lock, like the other escrow operations.
+   */
+  async depositToPool(
+    escrowId: string,
+    input: { amount: string; asset: AssetType; funderAddress: string },
+  ): Promise<Escrow> {
+    this.assertValidAmount(input.amount);
+    return this.withLockedEscrow(escrowId, async (escrow, manager) => {
+      await this.invokeOnLockedEscrow(
+        escrow,
+        'poolDeposit',
+        () =>
+          this.soroban.invoke(
+            'deposit',
+            [
+              input.funderAddress,
+              this.onChainKeyFor(escrow),
+              this.toStroops(input.amount),
+              this.resolveTokenAddress(input.asset),
+            ],
+            this.contractOpts(escrow),
+          ),
+        manager,
+      );
+      return escrow;
+    });
+  }
+
   /** Releases the full escrowed amount to a single recipient (standard bounty payout). */
   async release(
     escrowId: string,

@@ -2,6 +2,7 @@ import {
   Controller,
   ForbiddenException,
   Get,
+  Header,
   Param,
   ParseUUIDPipe,
   Query,
@@ -46,9 +47,11 @@ export class AnalyticsController {
   }
 
   @Get('platform')
+  // Shared caches (CDN) hold one copy for 60s, so every visitor sees the same figure (#788).
+  @Header('Cache-Control', 'public, s-maxage=60, stale-while-revalidate=30')
   @ApiOperation({
     summary: 'Platform-wide homepage summary',
-    description: `Cached in-process for ANALYTICS_PLATFORM_SUMMARY_TTL_MS (default 60s). Invalidated when a bounty is created or paid, or a repository is first synced. Heatmap/day cap is ${HEATMAP_MAX_DAYS}. Multi-instance deployments may serve up to one TTL of stale data per process.`,
+    description: `Served with a 60s shared-cache lifetime so all visitors see the same figure. Heatmap/day cap is ${HEATMAP_MAX_DAYS}.`,
   })
   platformSummary() {
     return this.analyticsService.platformSummary();

@@ -85,7 +85,7 @@ export class UsersService {
 
   /** Finds or creates a User + GithubAccount from a completed OAuth handshake. */
   async upsertFromGithub(input: UpsertFromGithubInput): Promise<User> {
-    let account = await this.githubAccountRepo.findOne({
+    const account = await this.githubAccountRepo.findOne({
       where: { githubId: input.githubId },
       relations: { user: true },
     });
@@ -155,52 +155,49 @@ export class UsersService {
       }
     }
 
-    const user = await this.saveNewUser({
-      login: input.login,
-      email,
-      displayName: input.displayName,
-      avatarUrl: input.avatarUrl,
-    });
-
-    account = this.githubAccountRepo.create({
-      githubId: input.githubId,
-      login: input.login,
-      avatarUrl: input.avatarUrl,
-      profileUrl: input.profileUrl,
-      accessToken: input.accessToken,
-      refreshToken: input.refreshToken ?? null,
-      userId: user.id,
-    });
-    await this.githubAccountRepo.save(account);
+    // User and GithubAccount commit together. Separate saves could leave a User with no GithubAccount
+    // if the second failed, and the next sign-in would then create a duplicate user (#789).
+    const user = await this.saveNewIdentity(input, email);
 
     return this.findOneRaw(user.id);
   }
 
   /**
-   * Inserts a new User. The database decides username uniqueness (#790): the
-   * preferred login is tried first, with no lookup. On a unique violation for
-   * `username`, a short random suffix is added and the insert is retried. This
-   * takes one query in the common case and is race-safe, because two concurrent
-   * sign-ins cannot both insert the same name.
+   * Inserts a new User and its GithubAccount in one transaction. The database decides username
+   * uniqueness (#790): the preferred login is tried first. On a unique violation for `username`, the
+   * whole transaction is rolled back and retried with a short random suffix. Rolling back is required,
+   * because a Postgres transaction cannot continue after a failed statement.
    */
-  private async saveNewUser(input: {
-    login: string;
-    email: string | null;
-    displayName: string | null;
-    avatarUrl: string | null;
-  }): Promise<User> {
+  private async saveNewIdentity(
+    input: UpsertFromGithubInput,
+    email: string | null,
+  ): Promise<User> {
     let username = input.login;
     for (let attempt = 1; ; attempt++) {
       try {
-        return await this.userRepo.save(
-          this.userRepo.create({
-            username,
-            email: input.email,
-            displayName: input.displayName,
-            avatarUrl: input.avatarUrl,
-            roles: [UserRole.CONTRIBUTOR],
-          }),
-        );
+        return await this.userRepo.manager.transaction(async (manager) => {
+          const user = await manager.save(
+            manager.create(User, {
+              username,
+              email,
+              displayName: input.displayName,
+              avatarUrl: input.avatarUrl,
+              roles: [UserRole.CONTRIBUTOR],
+            }),
+          );
+          await manager.save(
+            manager.create(GithubAccount, {
+              githubId: input.githubId,
+              login: input.login,
+              avatarUrl: input.avatarUrl,
+              profileUrl: input.profileUrl,
+              accessToken: input.accessToken,
+              refreshToken: input.refreshToken ?? null,
+              userId: user.id,
+            }),
+          );
+          return user;
+        });
       } catch (err) {
         if (!isUsernameViolation(err) || attempt >= MAX_USERNAME_ATTEMPTS) {
           throw err;
