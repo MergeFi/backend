@@ -79,6 +79,16 @@ export class MaintenancePoolService {
     funderAddress: string,
     callerUserId: string,
   ): Promise<MaintenancePool> {
+    // Refuse before touching the DB when no pool contract is configured (#754).
+    // The fallback to ESCROW_CONTRACT_ID was removed: the two contracts have
+    // disjoint interfaces and routing a deposit to the bounty escrow would lock
+    // funds under a key nothing else will ever look up.
+    if (!this.escrowService.isPoolConfigured()) {
+      throw new BadRequestException(
+        'MAINTENANCE_POOL_CONTRACT_ID is not configured — pool deposits are disabled until the contract is deployed and the variable is set',
+      );
+    }
+
     // Use SELECT ... FOR UPDATE to prevent concurrent first-time deposit races
     // that could orphan escrows (#275).
     const pool = await this.poolRepo

@@ -48,6 +48,8 @@ describe('MaintenancePoolService', () => {
     escrowService = {
       fund: jest.fn(),
       poolWithdraw: jest.fn(),
+      // Default: pool contract is configured (#754).
+      isPoolConfigured: jest.fn().mockReturnValue(true),
     };
     issueRepo = {
       findOne: jest.fn().mockResolvedValue({
@@ -143,6 +145,18 @@ describe('MaintenancePoolService', () => {
       poolRepo.createQueryBuilder.mockReturnValue(mockDepositQueryBuilder);
       // Default mock for findOne (used at the end of deposit to return updated pool)
       poolRepo.findOne.mockResolvedValue(null);
+    });
+
+    // #754: before this fix, deposit fell back to ESCROW_CONTRACT_ID when
+    // MAINTENANCE_POOL_CONTRACT_ID was unset, routing funds to a contract with
+    // a disjoint interface and locking money under an unreachable key.
+    it('rejects immediately when MAINTENANCE_POOL_CONTRACT_ID is not configured (#754)', async () => {
+      (escrowService.isPoolConfigured as jest.Mock).mockReturnValue(false);
+
+      await expect(
+        service.deposit('pool-1', '100', 'GFUNDER', 'creator-1'),
+      ).rejects.toThrow(BadRequestException);
+      expect(escrowService.fund).not.toHaveBeenCalled();
     });
 
     it('rejects when the pool is not ACTIVE', async () => {

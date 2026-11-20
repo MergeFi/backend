@@ -81,6 +81,14 @@ export class EscrowService {
     private readonly soroban: SorobanClientService,
   ) {}
 
+  /**
+   * Whether a real maintenance-pool contract has been configured.
+   * Delegates to `SorobanClientService.isPoolConfigured` (#754).
+   */
+  isPoolConfigured(): boolean {
+    return this.soroban.isPoolConfigured();
+  }
+
   /** Locks funds for a bounty/milestone/pool by calling the escrow contract's `fund`. */
   async fund(input: FundEscrowInput): Promise<Escrow> {
     this.assertValidFundInput(input);

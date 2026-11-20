@@ -148,6 +148,11 @@ export function collectConfigIssues(config: RequiredConfig): ConfigIssue[] {
     'escrow calls run in dry-run mode and never settle on-chain',
   );
   requireNonEmpty(
+    'MAINTENANCE_POOL_CONTRACT_ID',
+    config.stellar.maintenancePoolContractId,
+    'maintenance-pool deposits are refused at runtime — without a configured contract the service cannot safely route pool funds (#754)',
+  );
+  requireNonEmpty(
     'TREASURY_SECRET',
     config.stellar.treasurySecret,
     'escrow release/refund transactions cannot be signed',
