@@ -12,6 +12,7 @@ describe('UsersController', () => {
     list: jest.Mock;
     findById: jest.Mock;
     setStellarAddress: jest.Mock;
+    issueStellarAddressChallenge: jest.Mock;
     clearStellarAddress: jest.Mock;
   };
 
@@ -32,6 +33,11 @@ describe('UsersController', () => {
       setStellarAddress: jest.fn().mockResolvedValue({
         ...mockPublicUser,
         stellarAddress: 'GBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBWHF',
+      }),
+      issueStellarAddressChallenge: jest.fn().mockResolvedValue({
+        message: 'app.mergefi.test wants you to prove...',
+        nonce: 'NONCE1',
+        expiresAt: new Date(),
       }),
       clearStellarAddress: jest
         .fn()
@@ -58,26 +64,31 @@ describe('UsersController', () => {
     expect(usersService.findById).toHaveBeenCalledWith('user-1');
   });
 
-  it('allows a user to update their own stellar address', async () => {
+  const proofBody = {
+    stellarAddress: 'GBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBWHF',
+    nonce: 'NONCE1',
+    message: 'app.mergefi.test wants you to prove...',
+    signature: 'c2ln',
+  };
+
+  it('allows a user to update their own stellar address with a signed proof', async () => {
     const caller: AuthenticatedUser = {
       userId: 'user-1',
       username: 'alice',
       roles: [UserRole.CONTRIBUTOR],
     };
 
-    const result = await controller.setStellarAddress(
-      'user-1',
-      { stellarAddress: 'GBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBWHF' },
-      caller,
-    );
+    const result = await controller.setStellarAddress('user-1', proofBody, caller);
 
     expect(result.stellarAddress).toBe(
       'GBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBWHF',
     );
-    expect(usersService.setStellarAddress).toHaveBeenCalledWith(
-      'user-1',
-      'GBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBWHF',
-    );
+    expect(usersService.setStellarAddress).toHaveBeenCalledWith('user-1', {
+      stellarAddress: proofBody.stellarAddress,
+      nonce: 'NONCE1',
+      message: proofBody.message,
+      signature: 'c2ln',
+    });
   });
 
   it('throws 403 ForbiddenException when trying to patch another user address', async () => {
@@ -88,14 +99,49 @@ describe('UsersController', () => {
     };
 
     expect(() =>
-      controller.setStellarAddress(
-        'user-1',
-        { stellarAddress: 'GBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBWHF' },
-        caller,
-      ),
+      controller.setStellarAddress('user-1', proofBody, caller),
     ).toThrow(ForbiddenException);
 
     expect(usersService.setStellarAddress).not.toHaveBeenCalled();
+  });
+
+  describe('issueStellarAddressChallenge (POST :id/stellar-address/challenge) (#791)', () => {
+    it('issues a challenge for the authenticated user', async () => {
+      const caller: AuthenticatedUser = {
+        userId: 'user-1',
+        username: 'alice',
+        roles: [UserRole.CONTRIBUTOR],
+      };
+
+      const result = await controller.issueStellarAddressChallenge(
+        'user-1',
+        { stellarAddress: proofBody.stellarAddress },
+        caller,
+      );
+
+      expect(result.nonce).toBe('NONCE1');
+      expect(usersService.issueStellarAddressChallenge).toHaveBeenCalledWith(
+        'user-1',
+        proofBody.stellarAddress,
+      );
+    });
+
+    it('throws 403 ForbiddenException when requesting a challenge for another user', async () => {
+      const caller: AuthenticatedUser = {
+        userId: 'user-2',
+        username: 'bob',
+        roles: [UserRole.CONTRIBUTOR],
+      };
+
+      expect(() =>
+        controller.issueStellarAddressChallenge(
+          'user-1',
+          { stellarAddress: proofBody.stellarAddress },
+          caller,
+        ),
+      ).toThrow(ForbiddenException);
+      expect(usersService.issueStellarAddressChallenge).not.toHaveBeenCalled();
+    });
   });
 
   describe('clearStellarAddress (DELETE :id/stellar-address) (#714)', () => {

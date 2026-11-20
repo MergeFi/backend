@@ -1,11 +1,17 @@
 import { Module } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
-import { GithubAccount, User } from '../common/entities';
+import {
+  GithubAccount,
+  StellarAddressChallenge,
+  User,
+} from '../common/entities';
 import { UsersService } from './users.service';
 import { UsersController } from './users.controller';
 
 @Module({
-  imports: [TypeOrmModule.forFeature([User, GithubAccount])],
+  imports: [
+    TypeOrmModule.forFeature([User, GithubAccount, StellarAddressChallenge]),
+  ],
   controllers: [UsersController],
   providers: [UsersService],
   exports: [UsersService],

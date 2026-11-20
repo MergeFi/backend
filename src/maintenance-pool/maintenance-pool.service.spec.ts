@@ -1,9 +1,14 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { getRepositoryToken } from '@nestjs/typeorm';
-import { BadRequestException, ConflictException, NotFoundException } from '@nestjs/common';
+import {
+  BadRequestException,
+  ConflictException,
+  ForbiddenException,
+  NotFoundException,
+} from '@nestjs/common';
 import { MaintenancePoolService } from './maintenance-pool.service';
 import { EscrowService } from '../escrow/escrow.service';
-import { Issue, MaintenancePool, Payment } from '../common/entities';
+import { Escrow, Issue, MaintenancePool, Payment, User } from '../common/entities';
 import { AssetType, MaintenancePoolStatus } from '../common/enums';
 
 describe('MaintenancePoolService', () => {
@@ -24,6 +29,8 @@ describe('MaintenancePoolService', () => {
     findOne: jest.Mock;
     createQueryBuilder: jest.Mock;
   };
+  let userRepo: { findOne: jest.Mock };
+  let escrowRepo: { save: jest.Mock };
 
   beforeEach(async () => {
     poolRepo = {
@@ -53,6 +60,19 @@ describe('MaintenancePoolService', () => {
       findOne: jest.fn().mockResolvedValue(null),
       createQueryBuilder: jest.fn(),
     };
+    // Each user's verified stellarAddress, as the users module stores it.
+    const users: Record<string, { id: string; stellarAddress: string | null }> = {
+      'creator-1': { id: 'creator-1', stellarAddress: 'GFUNDER' },
+      'other-2': { id: 'other-2', stellarAddress: 'GOTHER' },
+    };
+    userRepo = {
+      findOne: jest.fn(({ where }: { where: { id: string } }) =>
+        Promise.resolve(users[where.id] ?? null),
+      ),
+    };
+    escrowRepo = {
+      save: jest.fn((e: unknown) => Promise.resolve(e)),
+    };
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
@@ -60,6 +80,8 @@ describe('MaintenancePoolService', () => {
         { provide: getRepositoryToken(MaintenancePool), useValue: poolRepo },
         { provide: getRepositoryToken(Issue), useValue: issueRepo },
         { provide: getRepositoryToken(Payment), useValue: paymentRepo },
+        { provide: getRepositoryToken(User), useValue: userRepo },
+        { provide: getRepositoryToken(Escrow), useValue: escrowRepo },
         { provide: EscrowService, useValue: escrowService },
       ],
     }).compile();
@@ -126,14 +148,100 @@ describe('MaintenancePoolService', () => {
     it('rejects when the pool is not ACTIVE', async () => {
       poolRepo.createQueryBuilder().getOne.mockResolvedValue({
         id: 'pool-1',
+        createdById: 'creator-1',
         status: MaintenancePoolStatus.PAUSED,
         balance: '0',
       });
 
-      await expect(service.deposit('pool-1', '100', 'GFUNDER')).rejects.toThrow(
-        BadRequestException,
-      );
+      await expect(
+        service.deposit('pool-1', '100', 'GFUNDER', 'creator-1'),
+      ).rejects.toThrow(BadRequestException);
       expect(escrowService.fund).not.toHaveBeenCalled();
+    });
+
+    // #798: deposit() used to accept any caller. Only the pool's creator may
+    // fund it, so a non-creator's deposit must be rejected before any escrow
+    // is funded and before the balance is incremented.
+    it('rejects a deposit from a caller who is not the pool creator (#798)', async () => {
+      const row = {
+        id: 'pool-1',
+        createdById: 'creator-1',
+        status: MaintenancePoolStatus.ACTIVE,
+        balance: '100',
+        asset: AssetType.USDC,
+        escrowId: 'escrow-1',
+      };
+      poolRepo.createQueryBuilder().getOne.mockResolvedValue(row);
+      poolRepo.findOne.mockResolvedValue(row);
+      escrowService.fund.mockResolvedValue({ id: 'escrow-9', status: 'locked' });
+
+      await expect(
+        service.deposit('pool-1', '50', 'GFUNDER', 'intruder-9'),
+      ).rejects.toThrow(ForbiddenException);
+      expect(escrowService.fund).not.toHaveBeenCalled();
+      expect(poolRepo.increment).not.toHaveBeenCalled();
+      expect(row.balance).toBe('100');
+    });
+
+    // #798: the funder address must be the caller's own linked address. Here
+    // the creator tries to attribute the deposit to a wallet owned by
+    // another user.
+    it('rejects a deposit whose funderAddress belongs to another user (#798)', async () => {
+      const row = {
+        id: 'pool-1',
+        createdById: 'creator-1',
+        status: MaintenancePoolStatus.ACTIVE,
+        balance: '100',
+        asset: AssetType.USDC,
+        escrowId: 'escrow-1',
+      };
+      poolRepo.createQueryBuilder().getOne.mockResolvedValue(row);
+      poolRepo.findOne.mockResolvedValue(row);
+      escrowService.fund.mockResolvedValue({ id: 'escrow-9', status: 'locked' });
+
+      await expect(
+        service.deposit('pool-1', '50', 'GOTHER', 'creator-1'),
+      ).rejects.toThrow(ForbiddenException);
+      expect(escrowService.fund).not.toHaveBeenCalled();
+      expect(poolRepo.increment).not.toHaveBeenCalled();
+    });
+
+    // #798: the entitled caller depositing from their own verified address
+    // succeeds, and the escrow row records who made the deposit.
+    it('lets the pool creator deposit from their own address and records the depositor (#798)', async () => {
+      const row = {
+        id: 'pool-1',
+        createdById: 'creator-1',
+        status: MaintenancePoolStatus.ACTIVE,
+        balance: '0',
+        monthlyDeposit: '500',
+        asset: AssetType.USDC,
+        escrowId: null as string | null,
+      };
+      poolRepo.createQueryBuilder().getOne.mockResolvedValue(row);
+      poolRepo.update.mockImplementation(
+        (_id: unknown, partial: Partial<typeof row>) => {
+          Object.assign(row, partial);
+          return Promise.resolve({ affected: 1 });
+        },
+      );
+      poolRepo.increment.mockImplementation(
+        (_where: { id: string }, column: 'balance', value: number) => {
+          row[column] = (Number(row[column]) + value).toFixed(7);
+          return Promise.resolve({ affected: 1 });
+        },
+      );
+      poolRepo.findOne.mockResolvedValue(row);
+      const escrow = { id: 'escrow-1', status: 'locked' } as Escrow;
+      escrowService.fund.mockResolvedValue(escrow);
+
+      const pool = await service.deposit('pool-1', '100', 'GFUNDER', 'creator-1');
+
+      expect(escrowRepo.save).toHaveBeenCalledWith(
+        expect.objectContaining({ id: 'escrow-1', depositedById: 'creator-1' }),
+      );
+      expect(pool.escrowId).toBe('escrow-1');
+      expect(pool.balance).toBe('100.0000000');
     });
 
     it('funds a new escrow and sets escrowId on the first deposit', async () => {
@@ -142,6 +250,7 @@ describe('MaintenancePoolService', () => {
       // on the final re-fetched state returned by deposit().
       const row = {
         id: 'pool-1',
+        createdById: 'creator-1',
         status: MaintenancePoolStatus.ACTIVE,
         balance: '0',
         monthlyDeposit: '500',
@@ -168,7 +277,7 @@ describe('MaintenancePoolService', () => {
       // Mock findOne to return the updated row
       poolRepo.findOne.mockResolvedValue(row);
 
-      const pool = await service.deposit('pool-1', '100', 'GFUNDER');
+      const pool = await service.deposit('pool-1', '100', 'GFUNDER', 'creator-1');
 
       expect(escrowService.fund).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -188,6 +297,7 @@ describe('MaintenancePoolService', () => {
     it('leaves monthlyDeposit untouched by ad-hoc deposits (#93)', async () => {
       poolRepo.createQueryBuilder().getOne.mockResolvedValue({
         id: 'pool-1',
+        createdById: 'creator-1',
         status: MaintenancePoolStatus.ACTIVE,
         balance: '100',
         monthlyDeposit: '500',
@@ -208,7 +318,7 @@ describe('MaintenancePoolService', () => {
         escrowId: 'escrow-1',
       });
 
-      const pool = await service.deposit('pool-1', '50', 'GFUNDER');
+      const pool = await service.deposit('pool-1', '50', 'GFUNDER', 'creator-1');
 
       expect(pool.monthlyDeposit).toBe('500');
     });
@@ -216,6 +326,7 @@ describe('MaintenancePoolService', () => {
     it('accumulates balance across deposits', async () => {
       const row = {
         id: 'pool-1',
+        createdById: 'creator-1',
         status: MaintenancePoolStatus.ACTIVE,
         balance: '100',
         asset: AssetType.USDC,
@@ -235,7 +346,7 @@ describe('MaintenancePoolService', () => {
       // Mock findOne to return the updated row
       poolRepo.findOne.mockResolvedValue(row);
 
-      const pool = await service.deposit('pool-1', '50', 'GFUNDER');
+      const pool = await service.deposit('pool-1', '50', 'GFUNDER', 'creator-1');
 
       expect(pool.balance).toBe('150.0000000');
     });
@@ -254,6 +365,7 @@ describe('MaintenancePoolService', () => {
     it('[current behavior, see #48] a repeat deposit funds a second escrow but leaves escrowId pinned to the first', async () => {
       poolRepo.createQueryBuilder().getOne.mockResolvedValue({
         id: 'pool-1',
+        createdById: 'creator-1',
         status: MaintenancePoolStatus.ACTIVE,
         balance: '100',
         asset: AssetType.USDC,
@@ -272,7 +384,7 @@ describe('MaintenancePoolService', () => {
         escrowId: 'escrow-1',
       });
 
-      const pool = await service.deposit('pool-1', '50', 'GFUNDER');
+      const pool = await service.deposit('pool-1', '50', 'GFUNDER', 'creator-1');
 
       // The second escrow was funded (real money locked on-chain / a real
       // row created)...

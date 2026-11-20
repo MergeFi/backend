@@ -51,13 +51,20 @@ describe('MaintenancePoolController', () => {
     expect(poolService.findOne).toHaveBeenCalledWith('pool-1');
   });
 
-  it('delegates deposit to poolService', async () => {
-    const res = await controller.deposit('pool-1', {
-      amount: '50.00',
-      funderAddress: 'GFUNDER',
-    });
+  it('delegates deposit to poolService with the caller userId (#798)', async () => {
+    const req = { user: { userId: 'user-1' } } as unknown as Request;
+    const res = await controller.deposit(
+      'pool-1',
+      { amount: '50.00', funderAddress: 'GFUNDER' },
+      req,
+    );
     expect(res).toEqual({ id: 'pool-1' });
-    expect(poolService.deposit).toHaveBeenCalledWith('pool-1', '50.00', 'GFUNDER');
+    expect(poolService.deposit).toHaveBeenCalledWith(
+      'pool-1',
+      '50.00',
+      'GFUNDER',
+      'user-1',
+    );
   });
 
   it('delegates assignReward to poolService', async () => {

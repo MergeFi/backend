@@ -94,6 +94,14 @@ export class Escrow {
   @Column({ type: 'varchar', nullable: true })
   sponsorId: string | null;
 
+  /**
+   * The authenticated user who initiated a maintenance-pool deposit (#798).
+   * Null for escrows created before this column existed and for bounty /
+   * milestone escrows, which record their sponsor in `sponsorId` instead.
+   */
+  @Column({ type: 'varchar', nullable: true })
+  depositedById: string | null;
+
   /** Deployed Soroban contract ID this escrow instance is held by. */
   @Column({ type: 'varchar', nullable: true })
   contractId: string | null;

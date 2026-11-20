@@ -2,6 +2,7 @@ import {
   BadRequestException,
   ForbiddenException,
   Injectable,
+  Logger,
   NotFoundException,
   NotImplementedException,
   Optional,
@@ -24,8 +25,17 @@ export interface ListBountiesOptions {
   primaryLanguage?: string;
 }
 
+/** Statuses from which the deadline sweep may expire a bounty. */
+const EXPIRABLE_STATUSES = [
+  BountyStatus.OPEN,
+  BountyStatus.FUNDED,
+  BountyStatus.CLAIMED,
+];
+
 @Injectable()
 export class BountiesService {
+  private readonly logger = new Logger(BountiesService.name);
+
   constructor(
     @InjectRepository(Bounty) private readonly bountyRepo: Repository<Bounty>,
     @InjectRepository(User) private readonly userRepo: Repository<User>,
@@ -44,18 +54,17 @@ export class BountiesService {
       throw new NotFoundException(`Issue ${dto.issueId} not found`);
     }
 
-    // The sponsor is always the authenticated caller (#777). The request body
-    // cannot name another user as the sponsor.
+    // Verify sponsorId exists
     const sponsorExists = await this.userRepo.findOne({
-      where: { id: callerUserId },
+      where: { id: dto.sponsorId },
     });
     if (!sponsorExists) {
-      throw new NotFoundException(`Sponsor ${callerUserId} not found`);
+      throw new NotFoundException(`Sponsor ${dto.sponsorId} not found`);
     }
 
     const bounty = this.bountyRepo.create({
       issueId: dto.issueId,
-      sponsorId: callerUserId,
+      sponsorId: dto.sponsorId,
       amount: dto.amount,
       asset: dto.asset,
       difficulty: dto.difficulty,
@@ -275,7 +284,15 @@ export class BountiesService {
     return this.bountyRepo.save(bounty);
   }
 
-  /** Marks bounties whose deadline has passed and that were never merged as expired. */
+  /**
+   * Marks bounties whose deadline has passed and that were never merged as
+   * expired. Every candidate is checked with `assertTransition` (rows that
+   * may not move to EXPIRED are skipped and logged), and the survivors are
+   * expired by one `UPDATE ... WHERE id IN (...)` inside a transaction.
+   *
+   * Returns the number of rows the UPDATE actually changed, so the scheduler
+   * logs what was committed rather than what was read.
+   */
   async expireOverdue(): Promise<number> {
     const overdue = await this.bountyRepo
       .createQueryBuilder('bounty')
@@ -283,19 +300,36 @@ export class BountiesService {
         now: new Date(),
       })
       .andWhere('bounty.status IN (:...statuses)', {
-        statuses: [
-          BountyStatus.OPEN,
-          BountyStatus.FUNDED,
-          BountyStatus.CLAIMED,
-        ],
+        statuses: EXPIRABLE_STATUSES,
       })
       .getMany();
 
+    const expirableIds: string[] = [];
     for (const bounty of overdue) {
-      bounty.status = BountyStatus.EXPIRED;
-      await this.bountyRepo.save(bounty);
+      try {
+        assertTransition(bounty.status, BountyStatus.EXPIRED);
+      } catch (err) {
+        this.logger.warn(
+          `Skipping expiry of bounty ${bounty.id}: ${(err as Error).message}`,
+        );
+        continue;
+      }
+      expirableIds.push(bounty.id);
     }
-    return overdue.length;
+    if (expirableIds.length === 0) return 0;
+
+    return this.bountyRepo.manager.transaction(async (manager) => {
+      const result = await manager
+        .createQueryBuilder()
+        .update(Bounty)
+        .set({ status: BountyStatus.EXPIRED })
+        .where('id IN (:...ids)', { ids: expirableIds })
+        .andWhere('status IN (:...statuses)', {
+          statuses: EXPIRABLE_STATUSES,
+        })
+        .execute();
+      return result.affected ?? 0;
+    });
   }
 
   async list(options: ListBountiesOptions = {}): Promise<Bounty[]> {

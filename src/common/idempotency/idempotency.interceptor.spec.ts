@@ -7,7 +7,7 @@ import {
   InternalServerErrorException,
   UnprocessableEntityException,
 } from '@nestjs/common';
-import { firstValueFrom, lastValueFrom, of, throwError } from 'rxjs';
+import { firstValueFrom, lastValueFrom, NEVER, of, throwError } from 'rxjs';
 import { IdempotencyKey } from '../entities/idempotency-key.entity';
 import { IdempotencyKeyStatus } from '../enums';
 import { IDEMPOTENCY_SCOPE_KEY } from './idempotent.decorator';
@@ -118,6 +118,7 @@ function createContext(
     headers?: Record<string, string>;
     method?: string;
     user?: { userId: string };
+    ip?: string;
     params?: Record<string, string>;
     body?: unknown;
   } = {},
@@ -126,6 +127,7 @@ function createContext(
     headers: overrides.headers ?? {},
     method: overrides.method ?? 'POST',
     user: overrides.user,
+    ip: overrides.ip ?? DEFAULT_IP,
     params: overrides.params ?? {},
     body: overrides.body ?? {},
   };
@@ -151,6 +153,10 @@ function createReflector(scope: string | undefined): { get: jest.Mock } {
     ),
   };
 }
+
+const DEFAULT_IP = '203.0.113.10';
+const OTHER_IP = '198.51.100.7';
+const DEFAULT_BUCKET = `ip:${DEFAULT_IP}`;
 
 const KEY_A = '11111111-1111-4111-8111-111111111111';
 const KEY_B = '22222222-2222-4222-8222-222222222222';
@@ -377,7 +383,7 @@ describe('IdempotencyInterceptor', () => {
     await repo.insert({
       key: KEY_A,
       scope: 'test.scope',
-      callerId: 'anonymous',
+      callerId: DEFAULT_BUCKET,
       expiresAt: new Date(Date.now() + 60_000),
     });
     // Simulate the original request having crashed mid-handler: back-date
@@ -400,7 +406,7 @@ describe('IdempotencyInterceptor', () => {
     await repo.insert({
       key: KEY_A,
       scope: 'test.scope',
-      callerId: 'anonymous',
+      callerId: DEFAULT_BUCKET,
       expiresAt: new Date(Date.now() + 60_000),
     });
 
@@ -431,6 +437,88 @@ describe('IdempotencyInterceptor', () => {
       'user-1',
       'user-2',
     ]);
+  });
+
+  describe('caller scoping for anonymous requests (#799)', () => {
+    it('does not replay another anonymous caller\'s cached response for the same key', async () => {
+      const callerA = createContext({
+        headers: { 'idempotency-key': KEY_A },
+        ip: DEFAULT_IP,
+      });
+      const callerB = createContext({
+        headers: { 'idempotency-key': KEY_A },
+        ip: OTHER_IP,
+      });
+      const next = createNext(() => of({ owner: 'A' }));
+      await lastValueFrom(await interceptor.intercept(callerA, next));
+
+      const nextB = createNext(() => of({ owner: 'B' }));
+      const result = await lastValueFrom(
+        await interceptor.intercept(callerB, nextB),
+      );
+
+      expect(result).toEqual({ owner: 'B' });
+      expect(nextB.handle).toHaveBeenCalledTimes(1);
+      expect(repo.rows.map((r) => r.callerId).sort()).toEqual(
+        [DEFAULT_BUCKET, `ip:${OTHER_IP}`].sort(),
+      );
+    });
+
+    it('does not let another anonymous caller\'s PROCESSING lock block a request with the same key', async () => {
+      const callerA = createContext({
+        headers: { 'idempotency-key': KEY_A },
+        ip: DEFAULT_IP,
+      });
+      const callerB = createContext({
+        headers: { 'idempotency-key': KEY_A },
+        ip: OTHER_IP,
+      });
+      // Caller A has claimed the key and its handler never completes, so its
+      // PROCESSING row stays fresh. Claiming happens inside intercept(), so
+      // the row exists once the promise resolves.
+      await interceptor.intercept(callerA, createNext(() => NEVER));
+
+      const nextB = createNext(() => of({ owner: 'B' }));
+      const result = await lastValueFrom(
+        await interceptor.intercept(callerB, nextB),
+      );
+
+      expect(result).toEqual({ owner: 'B' });
+      expect(nextB.handle).toHaveBeenCalledTimes(1);
+    });
+
+    it('still replays the cached response for the same anonymous caller (same IP)', async () => {
+      const context = createContext({
+        headers: { 'idempotency-key': KEY_A },
+        ip: DEFAULT_IP,
+      });
+      const first = createNext(() => of({ owner: 'A' }));
+      await lastValueFrom(await interceptor.intercept(context, first));
+
+      const retry = createNext(() => of({ owner: 'SHOULD-NOT-RUN' }));
+      const result = await lastValueFrom(
+        await interceptor.intercept(context, retry),
+      );
+
+      expect(result).toEqual({ owner: 'A' });
+      expect(retry.handle).not.toHaveBeenCalled();
+    });
+
+    it('rejects a request with neither a user nor a client IP instead of using a shared bucket', async () => {
+      const context = createContext({
+        headers: { 'idempotency-key': KEY_A },
+        ip: undefined,
+      });
+      // createContext defaults an undefined ip to DEFAULT_IP; strip it here.
+      (context.switchToHttp().getRequest() as { ip?: string }).ip = undefined;
+      const next = createNext(() => of({ ok: true }));
+
+      await expect(interceptor.intercept(context, next)).rejects.toBeInstanceOf(
+        BadRequestException,
+      );
+      expect(next.handle).not.toHaveBeenCalled();
+      expect(repo.rows).toHaveLength(0);
+    });
   });
 
   describe('request fingerprint (#54)', () => {
@@ -507,7 +595,7 @@ describe('IdempotencyInterceptor', () => {
       await repo.insert({
         key: KEY_A,
         scope: 'test.scope',
-        callerId: 'anonymous',
+        callerId: DEFAULT_BUCKET,
         expiresAt: new Date(Date.now() + 60_000),
       });
       repo.rows[0].status = IdempotencyKeyStatus.COMPLETED;

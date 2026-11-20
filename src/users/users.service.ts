@@ -1,18 +1,37 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import {
+  ForbiddenException,
+  Injectable,
+  NotFoundException,
+} from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
-import { GithubAccount, User } from '../common/entities';
+import { IsNull, Repository } from 'typeorm';
+import { randomBytes } from 'crypto';
+import {
+  GithubAccount,
+  StellarAddressChallenge,
+  User,
+} from '../common/entities';
 import { UserRole } from '../common/enums';
 import { PublicUserDto } from './dto/public-user.dto';
 import { toPublicUser } from './users.mapper';
+import {
+  buildStellarOwnershipMessage,
+  STELLAR_OWNERSHIP_CHALLENGE_TTL_MS,
+  verifyStellarOwnershipSignature,
+} from './stellar-ownership';
 
-export const USERS_LIST_DEFAULT_LIMIT = 20;
-export const USERS_LIST_MAX_LIMIT = 100;
+export interface StellarAddressChallengeResult {
+  message: string;
+  nonce: string;
+  expiresAt: Date;
+}
 
-export interface ListUsersOptions {
-  limit?: number;
-  offset?: number;
-  username?: string;
+export interface SetStellarAddressInput {
+  stellarAddress: string;
+  nonce: string;
+  message: string;
+  signature: string;
 }
 
 export interface UpsertFromGithubInput {
@@ -32,6 +51,9 @@ export class UsersService {
     @InjectRepository(User) private readonly userRepo: Repository<User>,
     @InjectRepository(GithubAccount)
     private readonly githubAccountRepo: Repository<GithubAccount>,
+    @InjectRepository(StellarAddressChallenge)
+    private readonly challengeRepo: Repository<StellarAddressChallenge>,
+    private readonly config: ConfigService,
   ) {}
 
   async findOneRaw(id: string): Promise<User> {
@@ -177,11 +199,86 @@ export class UsersService {
   // Keeping role mutation out of the public service surface prevents a reader
   // from mistaking an unused method for a working feature.
 
-  async setStellarAddress(
+  /**
+   * Issues a single-use ownership challenge for `stellarAddress` (#791). The
+   * returned `message` is what the wallet must sign; the PATCH echoes back
+   * `nonce`, `message` and the signature.
+   */
+  async issueStellarAddressChallenge(
     userId: string,
     stellarAddress: string,
+  ): Promise<StellarAddressChallengeResult> {
+    await this.findOneRaw(userId);
+
+    const issuedAt = new Date();
+    const expiresAt = new Date(
+      issuedAt.getTime() + STELLAR_OWNERSHIP_CHALLENGE_TTL_MS,
+    );
+    const nonce = randomBytes(32).toString('base64url');
+    const domain = new URL(this.config.getOrThrow<string>('frontendUrl')).host;
+    const message = buildStellarOwnershipMessage({
+      domain,
+      userId,
+      stellarAddress,
+      nonce,
+      issuedAt,
+      expiresAt,
+    });
+
+    await this.challengeRepo.save(
+      this.challengeRepo.create({
+        userId,
+        stellarAddress,
+        nonce,
+        message,
+        expiresAt,
+      }),
+    );
+    return { message, nonce, expiresAt };
+  }
+
+  /**
+   * Links `stellarAddress` to the user only when the request carries a valid
+   * signature over a live challenge issued to this user for this address
+   * (#791). Every proof failure maps to the same 403 so the response does not
+   * reveal which check failed.
+   */
+  async setStellarAddress(
+    userId: string,
+    input: SetStellarAddressInput,
   ): Promise<PublicUserDto> {
     const user = await this.findOneRaw(userId);
+    const { stellarAddress, nonce, message, signature } = input;
+    const rejected = () =>
+      new ForbiddenException('Ownership proof is invalid or has expired');
+
+    const challenge = await this.challengeRepo.findOne({
+      where: { nonce, userId },
+    });
+    if (
+      !challenge ||
+      challenge.consumedAt !== null ||
+      challenge.expiresAt.getTime() <= Date.now() ||
+      challenge.stellarAddress !== stellarAddress ||
+      challenge.message !== message
+    ) {
+      throw rejected();
+    }
+
+    if (!verifyStellarOwnershipSignature(stellarAddress, message, signature)) {
+      throw rejected();
+    }
+
+    // Claim the nonce atomically. Two concurrent PATCHes that both passed the
+    // checks above race here, and only one UPDATE matches consumedAt IS NULL.
+    const claimed = await this.challengeRepo.update(
+      { id: challenge.id, consumedAt: IsNull() },
+      { consumedAt: new Date() },
+    );
+    if (claimed.affected !== 1) {
+      throw rejected();
+    }
+
     user.stellarAddress = stellarAddress;
     // #359: return the same public shape as every other user-facing
     // method — the raw entity leaks email and the full nested
@@ -195,23 +292,8 @@ export class UsersService {
     return toPublicUser(await this.userRepo.save(user));
   }
 
-  /**
-   * Pages through users (#792). Limit is capped, and `username` turns the frontend's client-side fallback into a
-   * single lookup instead of a full scan.
-   */
-  async list(options: ListUsersOptions = {}): Promise<PublicUserDto[]> {
-    const limit = Math.min(
-      Math.max(options.limit ?? USERS_LIST_DEFAULT_LIMIT, 1),
-      USERS_LIST_MAX_LIMIT,
-    );
-    const offset = Math.max(options.offset ?? 0, 0);
-    const users = await this.userRepo.find({
-      where: options.username ? { username: options.username } : undefined,
-      // Stable order, so pages do not overlap or skip rows between requests.
-      order: { createdAt: 'ASC', id: 'ASC' },
-      take: limit,
-      skip: offset,
-    });
+  async list(): Promise<PublicUserDto[]> {
+    const users = await this.userRepo.find();
     return users.map(toPublicUser);
   }
 }
