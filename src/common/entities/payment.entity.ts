@@ -25,6 +25,11 @@ import { AssetType, PaymentStatus } from '../enums';
  */
 @Entity('payments')
 @Index('IDX_payment_escrow', ['escrowId'])
+// One reward per issue per escrow (#779). Partial, so ordinary payouts with no issue are unaffected.
+@Index('UQ_payment_escrow_issue', ['escrowId', 'issueId'], {
+  unique: true,
+  where: '"issueId" IS NOT NULL',
+})
 export class Payment {
   @PrimaryGeneratedColumn('uuid')
   id: string;
@@ -50,6 +55,10 @@ export class Payment {
 
   @Column({ type: 'varchar', nullable: true })
   recipientAddress: string | null;
+
+  /** The issue a maintenance-pool reward pays for. Null for every other payout. */
+  @Column({ type: 'varchar', nullable: true })
+  issueId: string | null;
 
   @Column({ type: 'decimal', precision: 20, scale: 7 })
   amount: string;

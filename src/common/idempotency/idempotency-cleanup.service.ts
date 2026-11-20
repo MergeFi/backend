@@ -5,6 +5,7 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { DataSource, LessThan, Repository } from 'typeorm';
 import { AppConfig } from '../../config/configuration';
 import { IdempotencyKey } from '../entities/idempotency-key.entity';
+import { runWithAdvisoryLock } from '../advisory-lock';
 
 /**
  * Sweeps expired idempotency_keys rows (#16). Retention itself is set per
@@ -31,27 +32,7 @@ export class IdempotencyCleanupService {
     }
 
     const lockId = 847292;
-    let lockAcquired = true;
-    if (this.dataSource?.isInitialized) {
-      try {
-        const res = await this.dataSource.query(
-          'SELECT pg_try_advisory_lock($1) as acquired',
-          [lockId],
-        );
-        lockAcquired = res?.[0]?.acquired ?? true;
-      } catch {
-        lockAcquired = true;
-      }
-    }
-
-    if (!lockAcquired) {
-      this.logger.debug(
-        'Skipping cleanup: another instance holds advisory lock',
-      );
-      return;
-    }
-
-    try {
+    const work = async (): Promise<void> => {
       const result = await this.repo.delete({
         expiresAt: LessThan(new Date()),
       });
@@ -60,12 +41,19 @@ export class IdempotencyCleanupService {
           `Removed ${result.affected} expired idempotency key(s)`,
         );
       }
-    } finally {
-      if (this.dataSource?.isInitialized && lockAcquired) {
-        await this.dataSource
-          .query('SELECT pg_advisory_unlock($1)', [lockId])
-          .catch(() => {});
-      }
+    };
+
+    if (!this.dataSource?.isInitialized) {
+      await work();
+      return;
+    }
+
+    // Lock and unlock on one connection (#784), so the lock is always released.
+    const outcome = await runWithAdvisoryLock(this.dataSource, lockId, work);
+    if (!outcome.acquired) {
+      this.logger.debug(
+        'Skipping cleanup: another instance holds advisory lock',
+      );
     }
   }
 }
