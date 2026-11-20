@@ -4,6 +4,7 @@ import { Strategy, Profile } from 'passport-github2';
 import { VerifyCallback } from 'passport-oauth2';
 import { ConfigService } from '@nestjs/config';
 import { AppConfig } from '../../config/configuration';
+import { GithubOAuthStateStore } from './github-oauth-state.store';
 
 @Injectable()
 export class GithubStrategy extends PassportStrategy(Strategy, 'github') {
@@ -12,6 +13,7 @@ export class GithubStrategy extends PassportStrategy(Strategy, 'github') {
     // If the config system returns an empty string or undefined,
     // it automatically uses static string fallbacks so Passport NEVER crashes.
     const githubConfig = configService.get('github', { infer: true });
+    const isProd = configService.get('env', { infer: true }) === 'production';
 
     super({
       clientID: githubConfig?.clientId || 'mock_client_id_12345',
@@ -20,7 +22,12 @@ export class GithubStrategy extends PassportStrategy(Strategy, 'github') {
         githubConfig?.oauthCallbackUrl ||
         'http://localhost:3000/api/auth/github/callback',
       scope: ['user:email', 'read:org'],
-    });
+      // CSRF protection for the callback (#771). passport-oauth2 only does
+      // this when `state` is on, and the state is checked against a cookie
+      // bound to this browser by GithubOAuthStateStore.
+      state: true,
+      store: new GithubOAuthStateStore(isProd),
+    } as unknown as ConstructorParameters<typeof Strategy>[0]);
   }
 
   validate(
