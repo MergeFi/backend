@@ -130,9 +130,7 @@ export default (): AppConfig => ({
       'Test SDF Network ; September 2015',
     escrowContractId: process.env.ESCROW_CONTRACT_ID ?? '',
     maintenancePoolContractId:
-      process.env.MAINTENANCE_POOL_CONTRACT_ID ??
-      process.env.ESCROW_CONTRACT_ID ??
-      '',
+      process.env.MAINTENANCE_POOL_CONTRACT_ID ?? '',
     treasurySecret: process.env.TREASURY_SECRET ?? '',
     assetContractIds: {
       USDC: process.env.USDC_TOKEN_CONTRACT_ID ?? '',

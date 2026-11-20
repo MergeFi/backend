@@ -147,14 +147,24 @@ export class SorobanClientService {
   }
 
   /**
-   * Deployed contract ID for maintenance-pool escrows, falling back to the
-   * bounty escrow contract when no separate pool deployment is configured
-   * (#157).
+   * Deployed contract ID for maintenance-pool escrows.
+   *
+   * Returns an empty string when `MAINTENANCE_POOL_CONTRACT_ID` is unset.
+   * Callers must check `isPoolConfigured()` before invoking on-chain pool
+   * operations — the escrow contract has a disjoint interface and cannot
+   * service pool calls (#754).
    */
   get maintenancePoolContractId(): string {
-    return (
-      this.stellar.maintenancePoolContractId || this.stellar.escrowContractId
-    );
+    return this.stellar.maintenancePoolContractId;
+  }
+
+  /**
+   * Whether a real maintenance-pool contract has been configured.
+   * Use this guard before any `deposit`/`withdraw`/`poolWithdraw` call to
+   * prevent money from being routed to the bounty escrow contract (#754).
+   */
+  isPoolConfigured(): boolean {
+    return Boolean(this.stellar.maintenancePoolContractId);
   }
 
   /** Soroban token (SAC) contract address for a supported escrow asset (#158). */
