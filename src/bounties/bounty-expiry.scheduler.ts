@@ -5,6 +5,7 @@ import { DataSource } from 'typeorm';
 import { AppConfig } from '../config/configuration';
 import { BountiesService } from './bounties.service';
 import { runWithAdvisoryLock } from '../common/advisory-lock';
+import { ADVISORY_LOCK_IDS } from '../common/advisory-lock-ids';
 
 /**
  * Runs `BountiesService.expireOverdue()` on a schedule.
@@ -33,7 +34,7 @@ export class BountyExpiryScheduler {
       return;
     }
 
-    const lockId = 847291;
+    const lockId = ADVISORY_LOCK_IDS.BOUNTY_EXPIRY;
     const work = async (): Promise<void> => {
       const expired = await this.bountiesService.expireOverdue();
       if (expired > 0) {

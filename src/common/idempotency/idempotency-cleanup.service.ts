@@ -6,6 +6,7 @@ import { DataSource, LessThan, Repository } from 'typeorm';
 import { AppConfig } from '../../config/configuration';
 import { IdempotencyKey } from '../entities/idempotency-key.entity';
 import { runWithAdvisoryLock } from '../advisory-lock';
+import { ADVISORY_LOCK_IDS } from '../advisory-lock-ids';
 
 /**
  * Sweeps expired idempotency_keys rows (#16). Retention itself is set per
@@ -31,7 +32,7 @@ export class IdempotencyCleanupService {
       return;
     }
 
-    const lockId = 847292;
+    const lockId = ADVISORY_LOCK_IDS.IDEMPOTENCY_CLEANUP;
     const work = async (): Promise<void> => {
       const result = await this.repo.delete({
         expiresAt: LessThan(new Date()),
