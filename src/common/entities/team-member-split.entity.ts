@@ -34,7 +34,10 @@ export class TeamMemberSplit {
   @Column({ type: 'varchar', length: 50, nullable: true })
   role: string | null;
 
-  /** Percentage of the bounty payout, 0-100. Sum across a team must equal 100. */
+  /**
+   * Percentage of the bounty payout, 0-100. Sum across a team must equal 100;
+   * enforced at commit by TRG_team_member_splits_percentage_sum (#836).
+   */
   @Column({ type: 'decimal', precision: 5, scale: 2 })
   percentage: string;
 
