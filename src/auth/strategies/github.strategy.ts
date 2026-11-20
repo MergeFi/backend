@@ -21,7 +21,7 @@ export class GithubStrategy extends PassportStrategy(Strategy, 'github') {
       callbackURL:
         githubConfig?.oauthCallbackUrl ||
         'http://localhost:3000/api/auth/github/callback',
-      scope: ['user:email', 'read:org'],
+      scope: ['user:email'],
       // CSRF protection for the callback (#771). passport-oauth2 only does
       // this when `state` is on, and the state is checked against a cookie
       // bound to this browser by GithubOAuthStateStore.

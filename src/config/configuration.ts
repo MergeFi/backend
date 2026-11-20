@@ -3,6 +3,7 @@ import { AssetType } from '../common/enums';
 export interface AppConfig {
   env: string;
   port: number;
+  trustProxy: false | number | string[];
   appUrl: string;
   frontendUrl: string;
   logLevel: string;
@@ -88,9 +89,37 @@ export function parseSchedulersEnabled(raw: string | undefined): boolean {
   return !['false', '0', 'no', 'off'].includes(raw.trim().toLowerCase());
 }
 
+export function parseTrustProxy(
+  raw: string | undefined,
+): false | number | string[] {
+  const value = raw?.trim();
+  if (!value || value.toLowerCase() === 'false') return false;
+  if (value.toLowerCase() === 'true') {
+    throw new Error(
+      'TRUST_PROXY=true is not supported; configure trusted proxy hops or addresses',
+    );
+  }
+  if (/^\d+$/.test(value)) {
+    const hopCount = Number(value);
+    if (Number.isSafeInteger(hopCount)) return hopCount;
+    throw new Error('TRUST_PROXY hop count must be a safe integer');
+  }
+  const addresses = value
+    .split(',')
+    .map((entry) => entry.trim())
+    .filter(Boolean);
+  if (addresses.length === 0) {
+    throw new Error(
+      'TRUST_PROXY must be false, a hop count, or proxy addresses',
+    );
+  }
+  return addresses;
+}
+
 export default (): AppConfig => ({
   env: process.env.NODE_ENV ?? 'development',
   port: parseInt(process.env.PORT ?? '4000', 10),
+  trustProxy: parseTrustProxy(process.env.TRUST_PROXY),
   appUrl: process.env.APP_URL ?? 'http://localhost:4000',
   frontendUrl: process.env.FRONTEND_URL ?? 'http://localhost:3000',
   logLevel: process.env.LOG_LEVEL ?? 'debug',

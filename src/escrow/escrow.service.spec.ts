@@ -980,7 +980,7 @@ describe('EscrowService', () => {
       expect(soroban.invoke).not.toHaveBeenCalled();
     });
 
-    it('invokes the pool contract withdraw with the escrow key, recipient and stroops', async () => {
+    it('invokes pool withdraw with a u64 key, full-share recipient vector and stroops', async () => {
       escrowRepo.findOne.mockResolvedValue(lockedPoolEscrow());
       userRepo.find.mockResolvedValue([
         { id: 'user-1', stellarAddress: 'GRECIPIENT' },
@@ -993,12 +993,11 @@ describe('EscrowService', () => {
         'user-1',
       );
 
-      // The maintenance pool has no lock/partial-release model: it is a
-      // `withdraw(pool_id, recipient, amount)` call against the live pool
-      // balance, and the escrow row stays LOCKED (#163).
+      // The pool ABI accepts the recipient as a basis-point vector and keeps
+      // the escrow row LOCKED against its live balance.
       expect(soroban.invoke).toHaveBeenCalledWith(
         'withdraw',
-        [3303n, 'GRECIPIENT', 100_000_000n],
+        [u64(3303n), [['GRECIPIENT', TOTAL_BASIS_POINTS]], 100_000_000n],
         {},
       );
       expect(paymentRepo.save).toHaveBeenCalledWith(
