@@ -241,6 +241,7 @@ export async function queryContributorCoreStats(
       .where('bounty.claimedById = :userId', { userId })
       .andWhere('repository.primaryLanguage IS NOT NULL')
       .groupBy('repository.primaryLanguage')
+      .orderBy('repository.primaryLanguage', 'ASC')
       .getRawMany<{ lang: string; count: string }>(),
     bountyRepo
       .createQueryBuilder('bounty')
@@ -249,6 +250,7 @@ export async function queryContributorCoreStats(
       .select('DISTINCT repository.owner', 'owner')
       .where('bounty.claimedById = :userId', { userId })
       .andWhere('repository.owner IS NOT NULL')
+      .orderBy('repository.owner', 'ASC')
       .getRawMany<{ owner: string }>(),
     // Also aggregate Payment rows from milestone/maintenance-pool payouts (#272).
     // This is now the sole source of truth for lifetimeEarnings — summing from
