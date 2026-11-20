@@ -1,8 +1,15 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { getRepositoryToken } from '@nestjs/typeorm';
-import { NotFoundException } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
+import { ForbiddenException, NotFoundException } from '@nestjs/common';
+import { createHash, generateKeyPairSync, sign } from 'crypto';
+import { StrKey } from '@stellar/stellar-sdk';
 import { UsersService } from './users.service';
-import { GithubAccount, User } from '../common/entities';
+import {
+  GithubAccount,
+  StellarAddressChallenge,
+  User,
+} from '../common/entities';
 import { UserRole } from '../common/enums';
 
 describe('UsersService', () => {
@@ -13,6 +20,13 @@ describe('UsersService', () => {
     save: jest.Mock;
     create: jest.Mock;
   };
+  let challengeRepo: {
+    findOne: jest.Mock;
+    save: jest.Mock;
+    create: jest.Mock;
+    update: jest.Mock;
+  };
+  let config: { getOrThrow: jest.Mock };
 
   beforeEach(async () => {
     userRepo = {
@@ -28,6 +42,18 @@ describe('UsersService', () => {
       create: jest.fn((a: Partial<GithubAccount>) => a),
     };
 
+    challengeRepo = {
+      findOne: jest.fn(),
+      save: jest.fn((c: Partial<StellarAddressChallenge>) =>
+        Promise.resolve({ id: 'c1', consumedAt: null, ...c }),
+      ),
+      create: jest.fn((c: Partial<StellarAddressChallenge>) => c),
+      update: jest.fn(),
+    };
+    config = {
+      getOrThrow: jest.fn().mockReturnValue('https://app.mergefi.test'),
+    };
+
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         UsersService,
@@ -36,6 +62,11 @@ describe('UsersService', () => {
           provide: getRepositoryToken(GithubAccount),
           useValue: githubAccountRepo,
         },
+        {
+          provide: getRepositoryToken(StellarAddressChallenge),
+          useValue: challengeRepo,
+        },
+        { provide: ConfigService, useValue: config },
       ],
     }).compile();
 
@@ -270,53 +301,280 @@ describe('UsersService', () => {
     });
   });
 
-  describe('setStellarAddress', () => {
+  describe('setStellarAddress (#791 proof of ownership)', () => {
+    // A real Ed25519 keypair. The address is the StrKey encoding of its public
+    // key, and the signature follows SEP-53 (sha256 of the prefixed message),
+    // the same scheme Freighter's signMessage uses.
+    function makeWallet() {
+      const { publicKey, privateKey } = generateKeyPairSync('ed25519');
+      const raw = Buffer.from(
+        (publicKey.export({ format: 'jwk' }) as { x: string }).x,
+        'base64url',
+      );
+      return {
+        address: StrKey.encodeEd25519PublicKey(raw),
+        sign: (message: string) =>
+          sign(
+            null,
+            createHash('sha256')
+              .update('Stellar Signed Message:\n' + message, 'utf8')
+              .digest(),
+            privateKey,
+          ).toString('base64'),
+      };
+    }
+
+    // Stored challenge row, kept in step with challengeRepo so the claim
+    // UPDATE and later lookups see the same state the database would.
+    let stored: StellarAddressChallenge | null;
+
+    function wireChallengeRepo(): void {
+      challengeRepo.findOne.mockImplementation(
+        async ({ where }: { where: { nonce: string; userId: string } }) =>
+          stored &&
+          where.nonce === stored.nonce &&
+          where.userId === stored.userId
+            ? stored
+            : null,
+      );
+      challengeRepo.update.mockImplementation(
+        async (
+          criteria: { id: string; consumedAt: unknown },
+          partial: { consumedAt: Date },
+        ) => {
+          if (stored && criteria.id === stored.id && stored.consumedAt === null) {
+            stored.consumedAt = partial.consumedAt;
+            return { affected: 1 };
+          }
+          return { affected: 0 };
+        },
+      );
+    }
+
+    async function issueChallenge(userId: string, address: string) {
+      const result = await service.issueStellarAddressChallenge(userId, address);
+      const row = challengeRepo.save.mock.calls.at(-1)![0];
+      stored = { id: 'c1', consumedAt: null, ...row } as StellarAddressChallenge;
+      return result;
+    }
+
+    beforeEach(() => {
+      stored = null;
+      wireChallengeRepo();
+      userRepo.findOne.mockResolvedValue({ id: 'u1', stellarAddress: null });
+    });
+
     it('throws NotFoundException when the user does not exist', async () => {
       userRepo.findOne.mockResolvedValue(null);
       await expect(
-        service.setStellarAddress('missing', 'GADDRESS'),
+        service.setStellarAddress('missing', {
+          stellarAddress: 'GADDRESS',
+          nonce: 'n',
+          message: 'm',
+          signature: 's',
+        }),
       ).rejects.toThrow(NotFoundException);
     });
 
-    it('sets stellarAddress on the given user and persists it', async () => {
-      userRepo.findOne.mockResolvedValue({ id: 'u1', stellarAddress: null });
+    it('sets the address when the signature is valid for a live challenge', async () => {
+      const wallet = makeWallet();
+      const { nonce, message } = await issueChallenge('u1', wallet.address);
 
-      const user = await service.setStellarAddress('u1', 'GNEWADDRESS');
+      const user = await service.setStellarAddress('u1', {
+        stellarAddress: wallet.address,
+        nonce,
+        message,
+        signature: wallet.sign(message),
+      });
 
-      expect(user.stellarAddress).toBe('GNEWADDRESS');
+      expect(user.stellarAddress).toBe(wallet.address);
       expect(userRepo.save).toHaveBeenCalledWith(
-        expect.objectContaining({ id: 'u1', stellarAddress: 'GNEWADDRESS' }),
+        expect.objectContaining({ id: 'u1', stellarAddress: wallet.address }),
+      );
+      expect(stored!.consumedAt).toBeInstanceOf(Date);
+    });
+
+    it('rejects a PATCH without a valid signature and does not write the address', async () => {
+      const wallet = makeWallet();
+      const { nonce, message } = await issueChallenge('u1', wallet.address);
+
+      await expect(
+        service.setStellarAddress('u1', {
+          stellarAddress: wallet.address,
+          nonce,
+          message,
+          signature: '',
+        }),
+      ).rejects.toThrow(ForbiddenException);
+      expect(userRepo.save).not.toHaveBeenCalled();
+    });
+
+    it('rejects a signature made by a different key than the claimed address', async () => {
+      const owner = makeWallet();
+      const attacker = makeWallet();
+      const { nonce, message } = await issueChallenge('u1', owner.address);
+
+      await expect(
+        service.setStellarAddress('u1', {
+          stellarAddress: owner.address,
+          nonce,
+          message,
+          signature: attacker.sign(message),
+        }),
+      ).rejects.toThrow(ForbiddenException);
+      expect(userRepo.save).not.toHaveBeenCalled();
+    });
+
+    it('rejects a replayed nonce', async () => {
+      const wallet = makeWallet();
+      const { nonce, message } = await issueChallenge('u1', wallet.address);
+      const body = {
+        stellarAddress: wallet.address,
+        nonce,
+        message,
+        signature: wallet.sign(message),
+      };
+
+      await service.setStellarAddress('u1', body);
+      userRepo.save.mockClear();
+
+      await expect(service.setStellarAddress('u1', body)).rejects.toThrow(
+        ForbiddenException,
+      );
+      expect(userRepo.save).not.toHaveBeenCalled();
+    });
+
+    it('rejects when two requests race and only one claims the nonce', async () => {
+      const wallet = makeWallet();
+      const { nonce, message } = await issueChallenge('u1', wallet.address);
+      const body = {
+        stellarAddress: wallet.address,
+        nonce,
+        message,
+        signature: wallet.sign(message),
+      };
+      // Both requests pass the read-side checks; the database claim then
+      // reports that the other request already consumed the row.
+      challengeRepo.update.mockResolvedValueOnce({ affected: 0 });
+
+      await expect(service.setStellarAddress('u1', body)).rejects.toThrow(
+        ForbiddenException,
+      );
+      expect(userRepo.save).not.toHaveBeenCalled();
+    });
+
+    it('rejects an expired challenge even with a valid signature', async () => {
+      const wallet = makeWallet();
+      const { nonce, message } = await issueChallenge('u1', wallet.address);
+      stored!.expiresAt = new Date(Date.now() - 1000);
+
+      await expect(
+        service.setStellarAddress('u1', {
+          stellarAddress: wallet.address,
+          nonce,
+          message,
+          signature: wallet.sign(message),
+        }),
+      ).rejects.toThrow(ForbiddenException);
+      expect(userRepo.save).not.toHaveBeenCalled();
+    });
+
+    it('rejects a message the server did not issue, even if it was signed', async () => {
+      const wallet = makeWallet();
+      const { nonce } = await issueChallenge('u1', wallet.address);
+      const forged = 'please link my address';
+
+      await expect(
+        service.setStellarAddress('u1', {
+          stellarAddress: wallet.address,
+          nonce,
+          message: forged,
+          signature: wallet.sign(forged),
+        }),
+      ).rejects.toThrow(ForbiddenException);
+      expect(userRepo.save).not.toHaveBeenCalled();
+    });
+
+    it('rejects a challenge issued for a different address than the one claimed', async () => {
+      const issuedFor = makeWallet();
+      const claimed = makeWallet();
+      const { nonce, message } = await issueChallenge('u1', issuedFor.address);
+
+      await expect(
+        service.setStellarAddress('u1', {
+          stellarAddress: claimed.address,
+          nonce,
+          message,
+          signature: claimed.sign(message),
+        }),
+      ).rejects.toThrow(ForbiddenException);
+      expect(userRepo.save).not.toHaveBeenCalled();
+    });
+
+    it('rejects a challenge that belongs to another user', async () => {
+      const wallet = makeWallet();
+      const { nonce, message } = await issueChallenge('u2', wallet.address);
+
+      await expect(
+        service.setStellarAddress('u1', {
+          stellarAddress: wallet.address,
+          nonce,
+          message,
+          signature: wallet.sign(message),
+        }),
+      ).rejects.toThrow(ForbiddenException);
+      expect(userRepo.save).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('issueStellarAddressChallenge (#791)', () => {
+    it('returns a message bound to the address, user, domain and a fresh nonce', async () => {
+      const address = StrKey.encodeEd25519PublicKey(Buffer.alloc(32, 7));
+
+      const { message, nonce, expiresAt } =
+        await service.issueStellarAddressChallenge('u1', address);
+
+      expect(nonce).toMatch(/^[A-Za-z0-9_-]{43}$/);
+      expect(message).toContain('app.mergefi.test');
+      expect(message).toContain(`Address: ${address}`);
+      expect(message).toContain('User ID: u1');
+      expect(message).toContain(`Nonce: ${nonce}`);
+      const ttl = expiresAt.getTime() - Date.now();
+      expect(ttl).toBeGreaterThan(4 * 60 * 1000);
+      expect(ttl).toBeLessThanOrEqual(5 * 60 * 1000);
+    });
+
+    it('persists the challenge row the PATCH will later verify against', async () => {
+      const address = StrKey.encodeEd25519PublicKey(Buffer.alloc(32, 7));
+
+      const { message, nonce } = await service.issueStellarAddressChallenge(
+        'u1',
+        address,
+      );
+
+      expect(challengeRepo.save).toHaveBeenCalledWith(
+        expect.objectContaining({
+          userId: 'u1',
+          stellarAddress: address,
+          nonce,
+          message,
+        }),
       );
     });
 
-    // Note on #39 (UsersController.setStellarAddress is authenticated but
-    // not authorized: any logged-in user can overwrite another user's
-    // payout address): UsersService.setStellarAddress(userId, address) has
-    // no notion of "who is asking" in its own signature — by design it sets
-    // whichever userId it's given. The IDOR itself lives one layer up, in
-    // UsersController#setStellarAddress binding :id straight from the URL
-    // param instead of the authenticated req.user.id (see
-    // src/users/users.controller.ts). That controller has no spec file
-    // today and is out of this issue's listed scope (only
-    // users.service.spec.ts is asked for here) — a
-    // users.controller.spec.ts with the cross-user rejection test belongs
-    // with #39's fix, since only the controller layer has enough
-    // information (the authenticated caller's identity) to write a
-    // meaningful assertion for it. Documented here so the boundary isn't
-    // silently lost.
-    it('[documents scope of #39] setStellarAddress itself has no caller/authorization concept — see users.controller.ts', async () => {
-      userRepo.findOne.mockResolvedValue({
-        id: 'victim',
-        stellarAddress: 'GOLD',
-      });
+    it('issues a different nonce on every call', async () => {
+      const address = StrKey.encodeEd25519PublicKey(Buffer.alloc(32, 7));
+      const a = await service.issueStellarAddressChallenge('u1', address);
+      const b = await service.issueStellarAddressChallenge('u1', address);
+      expect(a.nonce).not.toBe(b.nonce);
+    });
 
-      // Nothing about this call's parameters distinguishes "the account
-      // owner is changing their own address" from "some other authenticated
-      // user is overwriting someone else's" — both look identical to the
-      // service.
-      const user = await service.setStellarAddress('victim', 'GATTACKER');
-
-      expect(user.stellarAddress).toBe('GATTACKER');
+    it('throws NotFoundException when the user does not exist', async () => {
+      userRepo.findOne.mockResolvedValue(null);
+      await expect(
+        service.issueStellarAddressChallenge('missing', 'GADDRESS'),
+      ).rejects.toThrow(NotFoundException);
+      expect(challengeRepo.save).not.toHaveBeenCalled();
     });
   });
 
