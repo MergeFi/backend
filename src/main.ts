@@ -28,6 +28,7 @@ export async function bootstrap() {
   // rawBody: true preserves the raw request buffer on req.rawBody, which the
   // GitHub webhooks controller needs to verify the HMAC-SHA256 signature.
   const app = await NestFactory.create(AppModule, { rawBody: true });
+  app.enableShutdownHooks();
 
   const configService = app.get(ConfigService<AppConfig, true>);
 

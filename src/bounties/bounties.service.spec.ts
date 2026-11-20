@@ -17,7 +17,9 @@ describe('BountiesService', () => {
     find: jest.Mock;
     createQueryBuilder: jest.Mock;
     manager: { transaction: jest.Mock };
+    update: jest.Mock;
   };
+  let transactionManager: { findOne: jest.Mock; save: jest.Mock };
   let userRepo: { findOne: jest.Mock; find: jest.Mock };
   let teamRepo: { findOne: jest.Mock };
   let escrowService: {
@@ -39,12 +41,26 @@ describe('BountiesService', () => {
       find: jest.fn(),
       createQueryBuilder: jest.fn(),
       manager: { transaction: jest.fn() },
+      update: jest.fn().mockResolvedValue({ affected: 1 }),
     };
+    transactionManager = {
+      findOne: jest.fn().mockImplementation(async () => {
+        const results = bountyRepo.findOne.mock.results;
+        return results[results.length - 1]?.value;
+      }),
+      save: jest.fn((_entity: unknown, bounty: Bounty) =>
+        Promise.resolve(bounty),
+      ),
+    };
+    bountyRepo.manager.transaction.mockImplementation(
+      (callback: (manager: typeof transactionManager) => Promise<unknown>) =>
+        callback(transactionManager),
+    );
     userRepo = { findOne: jest.fn(), find: jest.fn() };
     teamRepo = { findOne: jest.fn() };
     escrowService = {
       fund: jest.fn().mockResolvedValue({ id: 'escrow-1', status: 'locked' }),
-      release: jest.fn().mockResolvedValue(undefined),
+      release: jest.fn().mockResolvedValue({ releaseTxHash: null }),
       splitRelease: jest.fn().mockResolvedValue([]),
       refund: jest.fn().mockResolvedValue(undefined),
     };
@@ -197,6 +213,7 @@ describe('BountiesService', () => {
       'escrow-1',
       'GCONTRIB',
       'contributor-1',
+      transactionManager,
     );
     expect(bounty.status).toBe(BountyStatus.PAID);
   });
@@ -228,11 +245,61 @@ describe('BountiesService', () => {
     expect(findCall.where.id._value).toEqual(
       expect.arrayContaining(['u1', 'u2']),
     );
-    expect(escrowService.splitRelease).toHaveBeenCalledWith('escrow-1', [
-      { recipientId: 'u1', recipientAddress: 'GADDR1', percentage: 60 },
-      { recipientId: 'u2', recipientAddress: 'GADDR2', percentage: 40 },
-    ]);
+    expect(escrowService.splitRelease).toHaveBeenCalledWith(
+      'escrow-1',
+      [
+        { recipientId: 'u1', recipientAddress: 'GADDR1', percentage: 60 },
+        { recipientId: 'u2', recipientAddress: 'GADDR2', percentage: 40 },
+      ],
+      transactionManager,
+    );
     expect(bounty.status).toBe(BountyStatus.PAID);
+  });
+
+  describe('markMergedAndRelease missing payout recipients', () => {
+    const mergingBounty = (overrides: Partial<Bounty> = {}) => ({
+      id: 'b1',
+      status: BountyStatus.IN_REVIEW,
+      escrowId: 'escrow-1',
+      claimedById: null,
+      teamId: 'team-1',
+      ...overrides,
+    });
+
+    const expectReleaseFailed = async () => {
+      await expect(service.markMergedAndRelease('b1')).rejects.toThrow(
+        BadRequestException,
+      );
+      expect(bountyRepo.update).toHaveBeenCalledWith(
+        { id: 'b1', status: BountyStatus.MERGED },
+        { status: BountyStatus.RELEASE_FAILED },
+      );
+      expect(transactionManager.save).not.toHaveBeenCalled();
+      expect(escrowService.splitRelease).not.toHaveBeenCalled();
+      expect(escrowService.release).not.toHaveBeenCalled();
+    };
+
+    it('marks a team bounty RELEASE_FAILED when its team has no splits', async () => {
+      bountyRepo.findOne.mockResolvedValue(mergingBounty());
+      teamRepo.findOne.mockResolvedValue({ id: 'team-1', splits: [] });
+
+      await expectReleaseFailed();
+    });
+
+    it('marks a team bounty RELEASE_FAILED when its team no longer exists', async () => {
+      bountyRepo.findOne.mockResolvedValue(mergingBounty());
+      teamRepo.findOne.mockResolvedValue(null);
+
+      await expectReleaseFailed();
+    });
+
+    it('marks a bounty RELEASE_FAILED when it has neither a team nor claimant', async () => {
+      bountyRepo.findOne.mockResolvedValue(
+        mergingBounty({ teamId: null, claimedById: null }),
+      );
+
+      await expectReleaseFailed();
+    });
   });
 
   it('refund calls escrowService.refund and moves bounty to REFUNDED', async () => {

@@ -231,27 +231,36 @@ export class BountiesService {
             where: { id: locked.teamId },
             relations: { splits: true },
           });
-          if (team && team.splits.length > 0) {
-            const userIds = team.splits.map((s) => s.userId);
-            const users = await this.userRepo.find({
-              where: { id: In(userIds) },
-            });
-            const userMap = new Map(users.map((u) => [u.id, u]));
-            const recipients = team.splits.map((split) => {
-              const user = userMap.get(split.userId);
-              return {
-                recipientId: split.userId,
-                recipientAddress: user?.stellarAddress ?? '',
-                percentage: Number(split.percentage),
-              };
-            });
-            const payments = await this.escrowService.splitRelease(
-              escrowId,
-              recipients,
-              manager,
+          if (!team) {
+            throw new BadRequestException(
+              `Bounty ${id} references team ${locked.teamId}, which no longer exists`,
             );
-            releasedTxHash = payments[0]?.txHash ?? null;
           }
+          if (team.splits.length === 0) {
+            throw new BadRequestException(
+              `Team ${team.id} has no configured splits — cannot release bounty ${id}`,
+            );
+          }
+
+          const userIds = team.splits.map((s) => s.userId);
+          const users = await this.userRepo.find({
+            where: { id: In(userIds) },
+          });
+          const userMap = new Map(users.map((u) => [u.id, u]));
+          const recipients = team.splits.map((split) => {
+            const user = userMap.get(split.userId);
+            return {
+              recipientId: split.userId,
+              recipientAddress: user?.stellarAddress ?? '',
+              percentage: Number(split.percentage),
+            };
+          });
+          const payments = await this.escrowService.splitRelease(
+            escrowId,
+            recipients,
+            manager,
+          );
+          releasedTxHash = payments[0]?.txHash ?? null;
         } else if (locked.claimedById) {
           const contributor = await this.userRepo.findOne({
             where: { id: locked.claimedById },
@@ -263,6 +272,10 @@ export class BountiesService {
             manager,
           );
           releasedTxHash = escrow.releaseTxHash ?? null;
+        } else {
+          throw new BadRequestException(
+            `Bounty ${id} has neither a team nor a claimant — no payout recipient`,
+          );
         }
 
         locked.status = BountyStatus.PAID;
