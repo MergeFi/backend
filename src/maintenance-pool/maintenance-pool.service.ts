@@ -146,56 +146,59 @@ export class MaintenancePoolService {
       throw new BadRequestException(`Pool ${id} has no funded escrow yet`);
     }
 
-    // Guard against double/triple payout for the same issue (#273).
-    const existingPayment = await this.paymentRepo.findOne({
-      where: {
-        recipientId: recipientId ?? null,
-      },
+    const escrowId = pool.escrowId;
+
+    // Guard against double/triple payout for the same issue (#273). The check
+    // and the payout run in one transaction under a row lock on the pool, so two
+    // concurrent rewards for the same issue cannot both pass the check. The
+    // unique index on (escrowId, issueId) is the database backstop (#779).
+    return this.poolRepo.manager.transaction(async (em) => {
+      await em
+        .getRepository(MaintenancePool)
+        .createQueryBuilder('pool')
+        .setLock('pessimistic_write')
+        .where('pool.id = :id', { id })
+        .getOne();
+
+      const alreadyRewarded = await em.getRepository(Payment).findOne({
+        where: { escrowId, issueId },
+      });
+      if (alreadyRewarded) {
+        throw new ConflictException(
+          `Issue ${issueId} has already received a reward from pool ${id}`,
+        );
+      }
+
+      // Atomic balance check and decrement (#274). The conditional UPDATE only
+      // succeeds if balance >= amount. It runs inside this transaction, so a
+      // failed payout rolls the decrement back.
+      const updateResult = await em
+        .getRepository(MaintenancePool)
+        .createQueryBuilder()
+        .update(MaintenancePool)
+        .set({ balance: () => `balance - :amount` })
+        .where('id = :id AND balance >= :amount', { id, amount: Number(amount) })
+        .setParameter('amount', Number(amount))
+        .execute();
+
+      if (updateResult.affected === 0) {
+        throw new BadRequestException(
+          `Requested reward ${amount} exceeds pool balance ${pool.balance}`,
+        );
+      }
+
+      // A maintenance pool is a running on-chain balance (deposit/withdraw),
+      // not a milestone-style fixed lock that gets partially released and then
+      // closed out — so pay the reward via the pool contract's `withdraw`,
+      // leaving the escrow LOCKED for the next reward (#163).
+      return this.escrowService.poolWithdraw(
+        escrowId,
+        amount,
+        recipientAddress,
+        recipientId,
+        issueId,
+      );
     });
-    // Check if there's already a payment for this issue from this pool's escrow.
-    const existingPoolPayment = await this.paymentRepo
-      .createQueryBuilder('payment')
-      .innerJoin('payment.escrow', 'escrow')
-      .where('escrow.maintenancePoolId = :poolId', { poolId: id })
-      .andWhere('payment.recipientId = :recipientId', {
-        recipientId: recipientId ?? null,
-      })
-      .getOne();
-    if (existingPoolPayment) {
-      throw new ConflictException(
-        `Issue ${issueId} has already received a reward from pool ${id}`,
-      );
-    }
-
-    // Atomic balance check and decrement — prevents TOCTOU race where concurrent
-    // calls could overdraw the pool (#274). Uses a conditional UPDATE that only
-    // succeeds if balance >= amount, then checks affected rows.
-    const updateResult = await this.poolRepo
-      .createQueryBuilder()
-      .update(MaintenancePool)
-      .set({ balance: () => `balance - :amount` })
-      .where('id = :id AND balance >= :amount', { id, amount: Number(amount) })
-      .setParameter('amount', Number(amount))
-      .execute();
-
-    if (updateResult.affected === 0) {
-      throw new BadRequestException(
-        `Requested reward ${amount} exceeds pool balance ${pool.balance}`,
-      );
-    }
-
-    // A maintenance pool is a running on-chain balance (deposit/withdraw),
-    // not a milestone-style fixed lock that gets partially released and then
-    // closed out — so pay the reward via the pool contract's `withdraw`,
-    // leaving the escrow LOCKED for the next reward (#163).
-    const payment = await this.escrowService.poolWithdraw(
-      pool.escrowId,
-      amount,
-      recipientAddress,
-      recipientId,
-    );
-
-    return payment;
   }
 
   async list(): Promise<MaintenancePool[]> {
