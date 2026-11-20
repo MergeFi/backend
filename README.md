@@ -442,6 +442,19 @@ npm run migration:run
 npm run migration:revert
 ```
 
+`1784000000000-InitialSchema` is the baseline: on an empty database it creates
+the schema as it stood before the first incremental migration, so
+`migration:run` works from scratch; on a database originally built by
+`synchronize` it detects the existing tables and does nothing. Every migration
+must have a unique timestamp prefix and a working `down()`.
+
+CI enforces both (#830): it runs `migration:run` against an empty Postgres,
+reverts every migration, checks that left no tables behind, runs them again and
+diffs the schema against the first pass. The e2e suite then runs on that
+migrated schema rather than one built by `synchronize`, so a migration that
+fails, can't be reverted, or diverges from what the code expects breaks the
+build instead of a deploy.
+
 ## Roadmap
 
 - [x] ~~Wire up TypeORM migrations (currently relies on `synchronize` for local dev only).~~ See `src/database/migrations/` and the Migrations section above.
@@ -453,3 +466,4 @@ npm run migration:revert
 - [ ] Add role-based authorization guards (currently JWT-authenticated but not role-scoped) to maintainer/sponsor-only endpoints.
 - [ ] Add pagination/filtering to list endpoints (bounties, milestones, pools) as data volume grows.
 - [ ] Weighted (not just even) per-issue milestone budget distribution.
+
