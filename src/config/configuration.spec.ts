@@ -6,12 +6,15 @@ import configuration, {
 const ENV_KEYS = [
   'NODE_ENV',
   'PORT',
+  'APP_URL',
+  'FRONTEND_URL',
   'DATABASE_URL',
   'DATABASE_SYNCHRONIZE',
   'DATABASE_LOGGING',
   'JWT_SECRET',
   'GITHUB_CLIENT_ID',
   'GITHUB_CLIENT_SECRET',
+  'GITHUB_OAUTH_CALLBACK_URL',
   'GITHUB_WEBHOOK_SECRET',
   'ANALYTICS_PLATFORM_SUMMARY_TTL_MS',
   'ESCROW_CONTRACT_ID',
@@ -40,6 +43,7 @@ describe('configuration', () => {
     expect(config.env).toBe('development');
     expect(config.port).toBe(3000);
     expect(config.trustProxy).toBe(false);
+    expect(config.port).toBe(4000);
     expect(config.database).toEqual({
       url: 'postgresql://postgres:postgres@localhost:5432/mergefi',
       synchronize: false,
@@ -50,6 +54,34 @@ describe('configuration', () => {
     expect(config.analytics.platformSummaryTtlMs).toBe(60000);
     expect(config.stellar.escrowDeadlineSeconds).toBe(7776000);
     expect(config.stellar.assetContractIds).toEqual({ USDC: '', XLM: '' });
+    expect(config.github.oauthCallbackUrl).toBe(
+      'http://localhost:4000/api/auth/github/callback',
+    );
+  });
+
+  it('derives the OAuth callback from APP_URL when no override is set', () => {
+    process.env.APP_URL = 'https://api.example.com/';
+
+    expect(configuration().github.oauthCallbackUrl).toBe(
+      'https://api.example.com/api/auth/github/callback',
+    );
+  });
+
+  it('derives the default backend URL from PORT when APP_URL is unset', () => {
+    process.env.PORT = '5000';
+
+    expect(configuration().github.oauthCallbackUrl).toBe(
+      'http://localhost:5000/api/auth/github/callback',
+    );
+  });
+
+  it('uses GITHUB_OAUTH_CALLBACK_URL when explicitly configured', () => {
+    process.env.GITHUB_OAUTH_CALLBACK_URL =
+      'https://auth.example.com/api/auth/github/callback';
+
+    expect(configuration().github.oauthCallbackUrl).toBe(
+      'https://auth.example.com/api/auth/github/callback',
+    );
   });
 
   it('parses integers and booleans from the environment', () => {

@@ -6,6 +6,8 @@ export interface AppConfig {
   trustProxy: false | number | string[];
   appUrl: string;
   frontendUrl: string;
+  /** Exact origins (and/or `*.suffix` patterns) the CORS middleware allows. */
+  corsAllowedOrigins: string[];
   logLevel: string;
   database: {
     url: string;
@@ -115,12 +117,25 @@ export function parseTrustProxy(
   }
   return addresses;
 }
+const defaultAppUrl = () =>
+  process.env.APP_URL ?? `http://localhost:${process.env.PORT ?? '4000'}`;
 
 export default (): AppConfig => ({
   env: process.env.NODE_ENV ?? 'development',
+  port: parseInt(process.env.PORT ?? '3000', 10),
+  appUrl: process.env.APP_URL ?? 'http://localhost:3000',
+  frontendUrl: process.env.FRONTEND_URL ?? 'http://localhost:3001',
+  // CORS_ALLOWED_ORIGINS is a comma-separated list of exact origins (e.g.
+  // "https://app.mergefi.dev,https://staging.mergefi.dev") or *.suffix
+  // patterns (e.g. "*.vercel.app") for preview deployments. Falls back to
+  // [frontendUrl] so existing single-origin setups need no env change.
+  corsAllowedOrigins: process.env.CORS_ALLOWED_ORIGINS
+    ? process.env.CORS_ALLOWED_ORIGINS.split(',').map((o) => o.trim()).filter(Boolean)
+    : [process.env.FRONTEND_URL ?? 'http://localhost:3001'],
   port: parseInt(process.env.PORT ?? '4000', 10),
   trustProxy: parseTrustProxy(process.env.TRUST_PROXY),
   appUrl: process.env.APP_URL ?? 'http://localhost:4000',
+  appUrl: defaultAppUrl(),
   frontendUrl: process.env.FRONTEND_URL ?? 'http://localhost:3000',
   logLevel: process.env.LOG_LEVEL ?? 'debug',
   database: {
@@ -139,7 +154,7 @@ export default (): AppConfig => ({
     clientSecret: process.env.GITHUB_CLIENT_SECRET || 'mock_secret_key_67890',
     oauthCallbackUrl:
       process.env.GITHUB_OAUTH_CALLBACK_URL ||
-      'http://localhost:3000/api/auth/github/callback',
+      `${defaultAppUrl().replace(/\/$/, '')}/api/auth/github/callback`,
     apiToken: process.env.GITHUB_API_TOKEN ?? '',
     webhookSecret: process.env.GITHUB_WEBHOOK_SECRET ?? '',
     syncAllowedRepos: process.env.GITHUB_SYNC_ALLOWED_REPOS ?? '',

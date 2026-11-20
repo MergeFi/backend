@@ -7,6 +7,9 @@ const mockApp = {
   getHttpAdapter: jest.fn().mockReturnValue({
     getInstance: () => ({ set: mockExpressSet }),
   }),
+const mockApp = {
+  enableShutdownHooks: jest.fn(),
+  get: jest.fn(),
   useLogger: jest.fn(),
   use: jest.fn(),
   enableCors: jest.fn(),
@@ -44,6 +47,7 @@ describe('bootstrap config validation (#551)', () => {
   });
 
   it('configures Express trust proxy from application config', async () => {
+  it('enables shutdown hooks before listening for requests', async () => {
     process.env.NODE_ENV = 'production';
     process.env.PORT = '4000';
     process.env.JWT_SECRET = 'a-real-production-secret';
@@ -57,6 +61,7 @@ describe('bootstrap config validation (#551)', () => {
     delete process.env.SWAGGER_BASIC_AUTH;
 
     const configValues: Record<string, string | number | string[]> = {
+    const configValues: Record<string, string | number> = {
       env: 'production',
       logLevel: 'error',
       frontendUrl: 'http://localhost:3000',
@@ -71,5 +76,9 @@ describe('bootstrap config validation (#551)', () => {
     await bootstrap();
 
     expect(mockExpressSet).toHaveBeenCalledWith('trust proxy', 1);
+    expect(mockApp.enableShutdownHooks).toHaveBeenCalledTimes(1);
+    expect(mockApp.enableShutdownHooks.mock.invocationCallOrder[0]).toBeLessThan(
+      mockApp.listen.mock.invocationCallOrder[0],
+    );
   });
 });
