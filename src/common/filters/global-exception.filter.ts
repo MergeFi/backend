@@ -67,6 +67,9 @@ export class GlobalExceptionFilter implements ExceptionFilter {
       this.logger.warn(
         `[${errorId}] ${context} -> ${status}: ${error.message}`,
       );
+      if (response.headersSent) {
+        return;
+      }
       if (status === tooManyRequestsStatus) {
         response
           .status(status)
@@ -81,6 +84,13 @@ export class GlobalExceptionFilter implements ExceptionFilter {
       `[${errorId}] ${context} -> ${status}: ${error.message}`,
       error.stack,
     );
+
+    if (response.headersSent) {
+      // A response has already begun (e.g. a @Res() handler redirected before
+      // a later error). Writing again would throw ERR_HTTP_HEADERS_SENT from
+      // inside the filter, so the error is logged above and nothing more.
+      return;
+    }
 
     response.status(status).json({
       statusCode: status,
