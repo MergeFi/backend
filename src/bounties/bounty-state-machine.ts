@@ -4,9 +4,11 @@ import { BountyStatus } from '../common/enums';
  * Valid forward transitions for a bounty's lifecycle:
  *
  *   open -> funded -> claimed -> in_review -> merged -> paid
- *                                                    \-> refunded
- *   (open|funded|claimed) -> expired
- *   (open|funded) -> refunded
+ *   (open|funded|claimed|in_review) -> refunded
+ *   (open|funded|claimed) -> expired -> refunded
+ *
+ * A merged bounty can never be refunded: the work was delivered and accepted (#795).
+ * A stuck merge goes through release_failed and is retried, never refunded.
  */
 export const BOUNTY_TRANSITIONS: Record<BountyStatus, BountyStatus[]> = {
   [BountyStatus.OPEN]: [
@@ -29,11 +31,7 @@ export const BOUNTY_TRANSITIONS: Record<BountyStatus, BountyStatus[]> = {
     BountyStatus.CLAIMED,
     BountyStatus.REFUNDED,
   ],
-  [BountyStatus.MERGED]: [
-    BountyStatus.PAID,
-    BountyStatus.RELEASE_FAILED,
-    BountyStatus.REFUNDED,
-  ],
+  [BountyStatus.MERGED]: [BountyStatus.PAID, BountyStatus.RELEASE_FAILED],
   [BountyStatus.RELEASE_FAILED]: [BountyStatus.MERGED, BountyStatus.REFUNDED],
   [BountyStatus.PAID]: [],
   [BountyStatus.REFUNDED]: [],

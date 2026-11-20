@@ -14,9 +14,8 @@ import { runWithAdvisoryLock } from '../common/advisory-lock';
  * OPEN/FUNDED/CLAIMED status forever (#152). Mirrors the hourly `@Cron`
  * sweep in `IdempotencyCleanupService`.
  *
- * This is deliberately independent of (and runs prior to) any on-chain
- * auto-refund follow-up for expired FUNDED bounties (#26): the local status
- * flip has to happen regardless.
+ * Expiry also refunds the escrow of expired bounties that were funded (#794),
+ * and retries refunds that failed on an earlier sweep.
  */
 @Injectable()
 export class BountyExpiryScheduler {

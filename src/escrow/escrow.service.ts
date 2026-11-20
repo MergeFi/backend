@@ -185,6 +185,7 @@ export class EscrowService {
     escrowId: string,
     recipientAddress: string,
     recipientId?: string,
+    manager?: EntityManager,
   ): Promise<Escrow> {
     // Validated before the row lock is taken so a bad recipient doesn't hold
     // the escrow locked while the lookup runs.
@@ -226,7 +227,7 @@ export class EscrowService {
       );
 
       return escrow;
-    });
+    }, manager);
   }
 
   /**
@@ -243,6 +244,7 @@ export class EscrowService {
   async splitRelease(
     escrowId: string,
     recipients: SplitRecipient[],
+    manager?: EntityManager,
   ): Promise<Payment[]> {
     this.assertValidSplits(recipients);
     await this.assertRecipientsMatchUsers(recipients);
@@ -319,7 +321,7 @@ export class EscrowService {
         payments.push(payment);
       }
       return payments;
-    });
+    }, manager);
   }
 
   /**
@@ -469,24 +471,36 @@ export class EscrowService {
     );
   }
 
-  /** Refunds the full escrowed amount back to the original funder. */
-  async refund(escrowId: string): Promise<Escrow> {
-    const escrow = await this.getOrThrow(escrowId);
-    this.assertLocked(escrow);
+  /**
+   * Refunds the full escrowed amount back to the original funder.
+   *
+   * Runs under the same row lock as release(). When an outer `manager` is given
+   * (#796), the refund and the caller's bounty status write share one transaction.
+   */
+  async refund(escrowId: string, manager?: EntityManager): Promise<Escrow> {
+    return this.withLockedEscrow(
+      escrowId,
+      async (escrow, mgr) => {
+        const result = await this.invokeOnLockedEscrow(
+          escrow,
+          'refund',
+          () =>
+            this.soroban.invoke(
+              'refund',
+              // `refund(issue_id: u64, ...)` — u64-typed on-chain, not i128 (#301).
+              [u64(this.onChainKeyFor(escrow))],
+              this.contractOpts(escrow),
+            ),
+          mgr,
+        );
 
-    const result = await this.invokeOnLockedEscrow(escrow, 'refund', () =>
-      this.soroban.invoke(
-        'refund',
-        // `refund(issue_id: u64, ...)` — u64-typed on-chain, not i128 (#301).
-        [u64(this.onChainKeyFor(escrow))],
-        this.contractOpts(escrow),
-      ),
+        escrow.status = EscrowStatus.REFUNDED;
+        escrow.refundTxHash = result.txHash;
+        escrow.refundedAt = new Date();
+        return mgr.save(Escrow, escrow);
+      },
+      manager,
     );
-
-    escrow.status = EscrowStatus.REFUNDED;
-    escrow.refundTxHash = result.txHash;
-    escrow.refundedAt = new Date();
-    return this.escrowRepo.save(escrow);
   }
 
   async findOne(id: string): Promise<Escrow> {

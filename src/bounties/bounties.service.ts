@@ -9,11 +9,19 @@ import {
 } from '@nestjs/common';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { InjectRepository } from '@nestjs/typeorm';
-import { In, Repository } from 'typeorm';
-import { Bounty, Issue, Team, User } from '../common/entities';
-import { AssetType, BountyDifficulty, BountyStatus } from '../common/enums';
+import { EntityManager, In, Repository } from 'typeorm';
+import { Bounty, Escrow, Issue, Team, User } from '../common/entities';
+import {
+  AssetType,
+  BountyDifficulty,
+  BountyStatus,
+  EscrowStatus,
+} from '../common/enums';
 import { ANALYTICS_PLATFORM_INVALIDATE_EVENT } from '../analytics/analytics.events';
-import { assertTransition } from './bounty-state-machine';
+import {
+  assertTransition,
+  InvalidBountyTransitionError,
+} from './bounty-state-machine';
 import { EscrowService } from '../escrow/escrow.service';
 import { CreateBountyDto } from './dto/create-bounty.dto';
 
@@ -180,15 +188,19 @@ export class BountiesService {
   }
 
   /**
-   * The linked PR was merged on GitHub. Transitions to MERGED and immediately
-   * triggers the escrow release (single recipient or team split), moving to
-   * PAID once the on-chain release call succeeds.
+   * The linked PR was merged on GitHub. Records MERGED, then releases the escrow
+   * (single recipient or team split) and moves the bounty to PAID.
+   *
+   * The release and the PAID write share one transaction (#796), and the escrow
+   * service writes its rows through that transaction. If the commit fails after
+   * the on-chain release succeeded, the transaction hash is kept on the escrow for
+   * reconciliation and the bounty stays MERGED. It is not marked RELEASE_FAILED,
+   * because a retry would try to pay out again.
    */
   async markMergedAndRelease(id: string): Promise<Bounty> {
     const bounty = await this.findOne(id);
     assertTransition(bounty.status, BountyStatus.MERGED);
 
-    const previousStatus = bounty.status;
     bounty.status = BountyStatus.MERGED;
     bounty.mergedAt = new Date();
     await this.bountyRepo.save(bounty);
@@ -198,54 +210,88 @@ export class BountiesService {
       return bounty;
     }
 
+    const escrowId = bounty.escrowId;
+    let releasedTxHash: string | null = null;
+
     try {
-      if (bounty.teamId) {
-        const team = await this.teamRepo.findOne({
-          where: { id: bounty.teamId },
-          relations: { splits: true },
+      const paid = await this.bountyRepo.manager.transaction(async (manager) => {
+        const locked = await manager.findOne(Bounty, {
+          where: { id },
+          lock: { mode: 'pessimistic_write' },
         });
-        if (team && team.splits.length > 0) {
-          const userIds = team.splits.map((s) => s.userId);
-          const users = await this.userRepo.find({
-            where: { id: In(userIds) },
-          });
-          const userMap = new Map(users.map((u) => [u.id, u]));
-          const recipients = team.splits.map((split) => {
-            const user = userMap.get(split.userId);
-            return {
-              recipientId: split.userId,
-              recipientAddress: user?.stellarAddress ?? '',
-              percentage: Number(split.percentage),
-            };
-          });
-          await this.escrowService.splitRelease(bounty.escrowId, recipients);
+        if (!locked || locked.status !== BountyStatus.MERGED) {
+          throw new InvalidBountyTransitionError(
+            locked?.status ?? BountyStatus.OPEN,
+            BountyStatus.PAID,
+          );
         }
-      } else if (bounty.claimedById) {
-        const contributor = await this.userRepo.findOne({
-          where: { id: bounty.claimedById },
-        });
-        await this.escrowService.release(
-          bounty.escrowId,
-          contributor?.stellarAddress ?? '',
-          bounty.claimedById,
-        );
-      }
+
+        if (locked.teamId) {
+          const team = await this.teamRepo.findOne({
+            where: { id: locked.teamId },
+            relations: { splits: true },
+          });
+          if (team && team.splits.length > 0) {
+            const userIds = team.splits.map((s) => s.userId);
+            const users = await this.userRepo.find({
+              where: { id: In(userIds) },
+            });
+            const userMap = new Map(users.map((u) => [u.id, u]));
+            const recipients = team.splits.map((split) => {
+              const user = userMap.get(split.userId);
+              return {
+                recipientId: split.userId,
+                recipientAddress: user?.stellarAddress ?? '',
+                percentage: Number(split.percentage),
+              };
+            });
+            const payments = await this.escrowService.splitRelease(
+              escrowId,
+              recipients,
+              manager,
+            );
+            releasedTxHash = payments[0]?.txHash ?? null;
+          }
+        } else if (locked.claimedById) {
+          const contributor = await this.userRepo.findOne({
+            where: { id: locked.claimedById },
+          });
+          const escrow = await this.escrowService.release(
+            escrowId,
+            contributor?.stellarAddress ?? '',
+            locked.claimedById,
+            manager,
+          );
+          releasedTxHash = escrow.releaseTxHash ?? null;
+        }
+
+        locked.status = BountyStatus.PAID;
+        locked.paidAt = new Date();
+        return manager.save(Bounty, locked);
+      });
+      this.eventEmitter?.emit(ANALYTICS_PLATFORM_INVALIDATE_EVENT);
+      return paid;
     } catch (err) {
-      // Escrow release failed — transition to RELEASE_FAILED so the bounty
-      // is not permanently stuck. A retry via markMergedAndRelease is
-      // possible because the state machine allows RELEASE_FAILED -> MERGED.
-      assertTransition(bounty.status, BountyStatus.RELEASE_FAILED);
-      bounty.status = BountyStatus.RELEASE_FAILED;
-      await this.bountyRepo.save(bounty);
+      if (releasedTxHash) {
+        // Funds already moved on-chain; only the local commit failed.
+        this.logger.error(
+          `Escrow ${escrowId} released on-chain (tx ${releasedTxHash}) but the local commit failed; reconcile manually`,
+        );
+        await this.bountyRepo.manager.update(
+          Escrow,
+          { id: escrowId },
+          { releaseTxHash: releasedTxHash },
+        );
+        throw err;
+      }
+      // Nothing moved on-chain: record RELEASE_FAILED so the release can be retried.
+      // The write is conditional on MERGED, so a concurrent change is not overwritten.
+      await this.bountyRepo.update(
+        { id, status: BountyStatus.MERGED },
+        { status: BountyStatus.RELEASE_FAILED },
+      );
       throw err;
     }
-
-    assertTransition(bounty.status, BountyStatus.PAID);
-    bounty.status = BountyStatus.PAID;
-    bounty.paidAt = new Date();
-    const paid = await this.bountyRepo.save(bounty);
-    this.eventEmitter?.emit(ANALYTICS_PLATFORM_INVALIDATE_EVENT);
-    return paid;
   }
 
   /** Sponsor (or admin/expiry job) reclaims escrowed funds. */
@@ -256,6 +302,9 @@ export class BountiesService {
    * MAINTAINER, but a maintainer of some *other* repository is still
    * rejected. Safe to open up: escrow refunds always pay the original funder,
    * never the caller.
+   *
+   * The on-chain refund and the REFUNDED write share one transaction (#796).
+   * A MERGED bounty cannot be refunded (#795).
    */
   async refund(id: string, callerUserId: string): Promise<Bounty> {
     const bounty = await this.bountyRepo.findOne({
@@ -276,22 +325,37 @@ export class BountiesService {
 
     assertTransition(bounty.status, BountyStatus.REFUNDED);
 
-    if (bounty.escrowId) {
-      await this.escrowService.refund(bounty.escrowId);
+    if (!bounty.escrowId) {
+      bounty.status = BountyStatus.REFUNDED;
+      return this.bountyRepo.save(bounty);
     }
 
-    bounty.status = BountyStatus.REFUNDED;
-    return this.bountyRepo.save(bounty);
+    const escrowId = bounty.escrowId;
+    return this.bountyRepo.manager.transaction(async (manager) => {
+      const locked = await manager.findOne(Bounty, {
+        where: { id },
+        lock: { mode: 'pessimistic_write' },
+      });
+      if (!locked) throw new NotFoundException(`Bounty ${id} not found`);
+      assertTransition(locked.status, BountyStatus.REFUNDED);
+
+      await this.escrowService.refund(escrowId, manager);
+      locked.status = BountyStatus.REFUNDED;
+      return manager.save(Bounty, locked);
+    });
   }
 
   /**
-   * Marks bounties whose deadline has passed and that were never merged as
-   * expired. Every candidate is checked with `assertTransition` (rows that
-   * may not move to EXPIRED are skipped and logged), and the survivors are
-   * expired by one `UPDATE ... WHERE id IN (...)` inside a transaction.
+   * Expires overdue bounties that were never merged, then returns escrowed funds.
    *
-   * Returns the number of rows the UPDATE actually changed, so the scheduler
-   * logs what was committed rather than what was read.
+   * 1. Every expirable candidate moves to EXPIRED in one UPDATE, guarded by its
+   *    status at query time (rows that may not move to EXPIRED are skipped and logged).
+   * 2. Every EXPIRED bounty whose escrow is still LOCKED is refunded to its funder
+   *    (#794). Each refund and its REFUNDED write share one transaction. If the
+   *    refund fails, the bounty stays EXPIRED and the next sweep retries it, so
+   *    funds cannot be stranded silently.
+   *
+   * Returns the number of rows step 1 changed.
    */
   async expireOverdue(): Promise<number> {
     const overdue = await this.bountyRepo
@@ -316,20 +380,73 @@ export class BountiesService {
       }
       expirableIds.push(bounty.id);
     }
-    if (expirableIds.length === 0) return 0;
 
-    return this.bountyRepo.manager.transaction(async (manager) => {
-      const result = await manager
-        .createQueryBuilder()
-        .update(Bounty)
-        .set({ status: BountyStatus.EXPIRED })
-        .where('id IN (:...ids)', { ids: expirableIds })
-        .andWhere('status IN (:...statuses)', {
-          statuses: EXPIRABLE_STATUSES,
-        })
-        .execute();
-      return result.affected ?? 0;
-    });
+    let expired = 0;
+    if (expirableIds.length > 0) {
+      expired = await this.bountyRepo.manager.transaction(async (manager) => {
+        const result = await manager
+          .createQueryBuilder()
+          .update(Bounty)
+          .set({ status: BountyStatus.EXPIRED })
+          .where('id IN (:...ids)', { ids: expirableIds })
+          .andWhere('status IN (:...statuses)', {
+            statuses: EXPIRABLE_STATUSES,
+          })
+          .execute();
+        return result.affected ?? 0;
+      });
+    }
+
+    const refunded = await this.refundStrandedEscrows();
+    if (refunded > 0) {
+      this.logger.log(`Refunded escrow for ${refunded} expired bounty(ies)`);
+    }
+    return expired;
+  }
+
+  /**
+   * Refunds the escrow of every EXPIRED bounty whose escrow is still LOCKED.
+   * Covers this sweep's expiries and retries earlier failures.
+   */
+  private async refundStrandedEscrows(): Promise<number> {
+    const stranded = await this.bountyRepo
+      .createQueryBuilder('bounty')
+      .innerJoin('bounty.escrow', 'escrow')
+      .select('bounty.id', 'id')
+      .where('bounty.status = :expired', { expired: BountyStatus.EXPIRED })
+      .andWhere('escrow.status = :locked', { locked: EscrowStatus.LOCKED })
+      .getRawMany<{ id: string }>();
+
+    let refunded = 0;
+    for (const row of stranded) {
+      if (await this.refundExpiredBounty(row.id)) refunded++;
+    }
+    return refunded;
+  }
+
+  /** Refunds one EXPIRED bounty's escrow and marks it REFUNDED. Returns false on failure. */
+  private async refundExpiredBounty(id: string): Promise<boolean> {
+    try {
+      return await this.bountyRepo.manager.transaction(async (manager) => {
+        const locked = await manager.findOne(Bounty, {
+          where: { id },
+          lock: { mode: 'pessimistic_write' },
+        });
+        if (!locked || locked.status !== BountyStatus.EXPIRED || !locked.escrowId) {
+          return false;
+        }
+        await this.escrowService.refund(locked.escrowId, manager);
+        assertTransition(locked.status, BountyStatus.REFUNDED);
+        locked.status = BountyStatus.REFUNDED;
+        await manager.save(Bounty, locked);
+        return true;
+      });
+    } catch (err) {
+      this.logger.error(
+        `Could not refund escrow for expired bounty ${id}; the next sweep will retry: ${(err as Error).message}`,
+      );
+      return false;
+    }
   }
 
   async list(options: ListBountiesOptions = {}): Promise<Bounty[]> {
