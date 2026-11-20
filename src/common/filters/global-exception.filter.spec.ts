@@ -1,6 +1,8 @@
 import {
   ArgumentsHost,
   BadRequestException,
+  HttpException,
+  HttpStatus,
   Logger,
   NotFoundException,
 } from '@nestjs/common';
@@ -163,6 +165,79 @@ describe('GlobalExceptionFilter', () => {
       expect(status).toHaveBeenCalledWith(500);
       const body = sanitizedBodyOf(json);
       expect(JSON.stringify(body)).not.toContain('internal detail');
+    });
+  });
+
+  describe('when a response has already been sent (#803)', () => {
+    function createSentHost() {
+      const json = jest.fn<void, [unknown]>();
+      const status = jest.fn(() => ({ json }));
+      const response = { status, headersSent: true };
+      const request = { method: 'GET', url: '/cb', originalUrl: '/cb' };
+      const host = {
+        switchToHttp: () => ({
+          getResponse: () => response,
+          getRequest: () => request,
+        }),
+      } as unknown as ArgumentsHost;
+      return { host, status, json };
+    }
+
+    it('does not throw or write again for a raw error after headers were sent', () => {
+      const { host, status, json } = createSentHost();
+
+      expect(() => filter.catch(new Error('late failure'), host)).not.toThrow();
+      expect(status).not.toHaveBeenCalled();
+      expect(json).not.toHaveBeenCalled();
+    });
+
+    it('does not write again for a safe client error after headers were sent', () => {
+      const { host, status, json } = createSentHost();
+
+      expect(() =>
+        filter.catch(new BadRequestException('bad'), host),
+      ).not.toThrow();
+      expect(status).not.toHaveBeenCalled();
+      expect(json).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('429 Retry-After (#802)', () => {
+    it('sets Retry-After from the longest suffixed throttler header and normalises the body', () => {
+      const headers = new Map<string, string>([
+        ['Retry-After-short', '1'],
+        ['Retry-After-long', '3600'],
+      ]);
+      const json = jest.fn<void, [unknown]>();
+      const status = jest.fn(() => ({ json }));
+      const response = {
+        status,
+        headersSent: false,
+        getHeader: (name: string) => headers.get(name),
+        getHeaderNames: () => [...headers.keys()],
+        setHeader: (name: string, value: string) => {
+          headers.set(name, value);
+        },
+      };
+      const host = {
+        switchToHttp: () => ({
+          getResponse: () => response,
+          getRequest: () => ({ method: 'POST', url: '/x', originalUrl: '/x' }),
+        }),
+      } as unknown as ArgumentsHost;
+
+      filter.catch(
+        new HttpException('Too Many Requests', HttpStatus.TOO_MANY_REQUESTS),
+        host,
+      );
+
+      expect(status).toHaveBeenCalledWith(HttpStatus.TOO_MANY_REQUESTS);
+      expect(headers.get('Retry-After')).toBe('3600');
+      expect(json).toHaveBeenCalledWith({
+        statusCode: HttpStatus.TOO_MANY_REQUESTS,
+        message: 'Too Many Requests',
+        error: 'Too Many Requests',
+      });
     });
   });
 });
