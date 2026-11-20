@@ -32,7 +32,6 @@ export const BOUNTY_TRANSITIONS: Record<BountyStatus, BountyStatus[]> = {
   [BountyStatus.MERGED]: [
     BountyStatus.PAID,
     BountyStatus.RELEASE_FAILED,
-    BountyStatus.REFUNDED,
   ],
   [BountyStatus.RELEASE_FAILED]: [BountyStatus.MERGED, BountyStatus.REFUNDED],
   [BountyStatus.PAID]: [],

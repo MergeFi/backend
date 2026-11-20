@@ -24,17 +24,25 @@ describe('bounty state machine', () => {
     );
   });
 
-  it('allows refund from open, funded, claimed, in_review, merged, and expired', () => {
+  it('allows refund from open, funded, claimed, in_review, and expired', () => {
     for (const status of [
       BountyStatus.OPEN,
       BountyStatus.FUNDED,
       BountyStatus.CLAIMED,
       BountyStatus.IN_REVIEW,
-      BountyStatus.MERGED,
       BountyStatus.EXPIRED,
     ]) {
       expect(canTransition(status, BountyStatus.REFUNDED)).toBe(true);
     }
+  });
+
+  it('disallows transition from MERGED to REFUNDED to prevent sponsor fund retraction (#795)', () => {
+    expect(canTransition(BountyStatus.MERGED, BountyStatus.REFUNDED)).toBe(
+      false,
+    );
+    expect(() =>
+      assertTransition(BountyStatus.MERGED, BountyStatus.REFUNDED),
+    ).toThrow(InvalidBountyTransitionError);
   });
 
   it('disallows skipping states, e.g. open -> merged directly', () => {
