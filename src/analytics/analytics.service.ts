@@ -1,6 +1,4 @@
 import { Injectable } from '@nestjs/common';
-import { ConfigService } from '@nestjs/config';
-import { OnEvent } from '@nestjs/event-emitter';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import {
@@ -8,6 +6,7 @@ import {
   Payment,
   Repository as RepositoryEntity,
 } from '../common/entities';
+import { BountyStatus } from '../common/enums';
 import { AssetType, PaymentStatus } from '../common/enums';
 import { AppConfig } from '../config/configuration';
 import {
@@ -16,8 +15,6 @@ import {
   queryPayoutHeatmap,
   queryTopClients,
 } from '../common/stats/contributor-stats.sql';
-import { ANALYTICS_PLATFORM_INVALIDATE_EVENT } from './analytics.events';
-import { TtlCache } from './ttl-cache';
 
 export interface ContributorAnalytics {
   lifetimeEarnings: number;
@@ -46,21 +43,13 @@ export interface PlatformSummary {
 
 @Injectable()
 export class AnalyticsService {
-  private readonly platformCache: TtlCache<PlatformSummary>;
-
   constructor(
     @InjectRepository(Bounty) private readonly bountyRepo: Repository<Bounty>,
     @InjectRepository(Payment)
     private readonly paymentRepo: Repository<Payment>,
     @InjectRepository(RepositoryEntity)
     private readonly repositoryRepo: Repository<RepositoryEntity>,
-    configService: ConfigService<AppConfig, true>,
-  ) {
-    const ttlMs = configService.get('analytics', {
-      infer: true,
-    }).platformSummaryTtlMs;
-    this.platformCache = new TtlCache<PlatformSummary>(ttlMs);
-  }
+  ) {}
 
   async forContributor(
     userId: string,
@@ -86,17 +75,13 @@ export class AnalyticsService {
   }
 
   /**
-   * Platform-wide stats for the homepage. Cached in-process with a TTL
-   * (ANALYTICS_PLATFORM_SUMMARY_TTL_MS, default 60s) and busted on bounty
-   * create/pay and new repository insert. Concurrent misses share one query.
+   * Platform-wide stats for the homepage. Not cached here: an in-process cache
+   * gives each replica different figures and invalidation reaches only one of
+   * them (#788). The controller sets a shared-cache header instead, so one copy
+   * is held at the CDN.
    */
   async platformSummary(): Promise<PlatformSummary> {
-    return this.platformCache.getOrLoad(() => this.loadPlatformSummary());
-  }
-
-  @OnEvent(ANALYTICS_PLATFORM_INVALIDATE_EVENT)
-  invalidatePlatformSummary(): void {
-    this.platformCache.invalidate();
+    return this.loadPlatformSummary();
   }
 
   private async loadPlatformSummary(): Promise<PlatformSummary> {

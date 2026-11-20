@@ -2,10 +2,6 @@ import { Logger } from '@nestjs/common';
 import { ValueTransformer } from 'typeorm';
 import { createCipheriv, createDecipheriv, randomBytes } from 'crypto';
 
-/** Used only outside production when ENCRYPTION_KEY is unset. */
-const DEV_FALLBACK_KEY =
-  '64a2f98b7e3c1d5e6f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2c3d4e5f6a7b8c9d0e';
-
 const logger = new Logger('EncryptionTransformer');
 
 let cachedKey: Buffer | null = null;
@@ -16,11 +12,12 @@ let cachedKey: Buffer | null = null;
  */
 function encryptionKey(): Buffer {
   if (cachedKey) return cachedKey;
-  const configured = process.env.ENCRYPTION_KEY;
-  if (!configured && process.env.NODE_ENV === 'production') {
-    throw new Error('ENCRYPTION_KEY must be set in production');
+  // There is no default key. A key committed to the repository is public, so an unset key must fail
+  // closed in every environment, not only in production (#782).
+  const hex = process.env.ENCRYPTION_KEY;
+  if (!hex) {
+    throw new Error('ENCRYPTION_KEY must be set; there is no default encryption key');
   }
-  const hex = configured || DEV_FALLBACK_KEY;
   if (!/^[0-9a-fA-F]{64}$/.test(hex)) {
     throw new Error('ENCRYPTION_KEY must be 64 hex characters (32 bytes)');
   }

@@ -125,25 +125,26 @@ export class MaintenancePoolService {
         { escrowId: escrow.id },
       );
       if (updateResult.affected === 0) {
-        // Another request won the race — top up the winner's escrow instead.
+        // Another request won the race — deposit into the winner's escrow instead of creating a second one (#781).
         const existingPool = await this.findOne(id);
-        const topUp = await this.escrowService.fund({
+        if (!existingPool.escrowId) {
+          throw new Error(`Pool ${id} lost the escrow race but has no escrowId`);
+        }
+        const topUp = await this.escrowService.depositToPool(existingPool.escrowId, {
           amount,
           asset: pool.asset,
           funderAddress,
-          maintenancePoolId: pool.id,
         });
         await this.recordDepositor(topUp, callerUserId);
         await this.creditPoolBalance(id, amount);
         return this.findOne(id);
       }
     } else {
-      // Subsequent deposits top up the existing on-chain escrow balance.
-      const topUp = await this.escrowService.fund({
+      // Subsequent deposits top up the existing pool escrow. No new escrow row is created (#781).
+      const topUp = await this.escrowService.depositToPool(pool.escrowId, {
         amount,
         asset: pool.asset,
         funderAddress,
-        maintenancePoolId: pool.id,
       });
       await this.recordDepositor(topUp, callerUserId);
     }
