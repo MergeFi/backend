@@ -1,10 +1,10 @@
 {
   "name": "mergefi-backend",
-  "version": "0.0.1",
-  "description": "",
-  "author": "",
+  "version": "0.1.0",
+  "description": "MergeFi API: GitHub-linked bounties, milestones and maintenance pools funded through Soroban escrow on Stellar.",
+  "author": "MergeFi",
   "private": true,
-  "license": "UNLICENSED",
+  "license": "Apache-2.0",
   "engines": {
     "node": ">=24.0.0 <25.0.0"
   },
@@ -87,7 +87,8 @@
     "typescript-eslint": "^8.20.0"
   },
   "overrides": {
-    "multer": "^2.2.0"
+    "multer": "^2.5.0",
+    "brace-expansion@1": "^1.1.22"
   },
   "jest": {
     "moduleFileExtensions": [

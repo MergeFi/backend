@@ -7,6 +7,8 @@ import {
   Repository as RepositoryEntity,
 } from '../common/entities';
 import { BountyStatus } from '../common/enums';
+import { AssetType, PaymentStatus } from '../common/enums';
+import { AppConfig } from '../config/configuration';
 import {
   heatmapRange,
   queryContributorCoreStats,
@@ -32,7 +34,10 @@ export interface ContributorAnalyticsQuery {
 
 export interface PlatformSummary {
   totalBounties: number;
+  /** USDC only. XLM is never summed into this headline figure; see paidOutByAsset. */
   totalPaidOut: number;
+  /** Confirmed payouts per asset, e.g. `{ USDC: 1200, XLM: 300 }`. */
+  paidOutByAsset: Record<string, number>;
   totalRepos: number;
 }
 
@@ -80,19 +85,32 @@ export class AnalyticsService {
   }
 
   private async loadPlatformSummary(): Promise<PlatformSummary> {
-    const [totalBounties, totalPaidRaw, totalRepos] = await Promise.all([
+    // Sum what was actually paid out (confirmed Payment rows), not the
+    // sponsor's pledge on Bounty.amount (#787). Grouped by asset so XLM is
+    // never added into the USDC headline.
+    const [totalBounties, paidRows, totalRepos] = await Promise.all([
       this.bountyRepo.count(),
-      this.bountyRepo
-        .createQueryBuilder('bounty')
-        .select('COALESCE(SUM(bounty.amount), 0)', 'total')
-        .where('bounty.status = :status', { status: BountyStatus.PAID })
-        .getRawOne<{ total: string }>(),
+      this.paymentRepo
+        .createQueryBuilder('payment')
+        .select('payment.asset', 'asset')
+        .addSelect('COALESCE(SUM(payment.amount), 0)', 'total')
+        .where('payment.status = :status', {
+          status: PaymentStatus.CONFIRMED,
+        })
+        .groupBy('payment.asset')
+        .getRawMany<{ asset: AssetType; total: string }>(),
       this.repositoryRepo.count(),
     ]);
 
+    const paidOutByAsset: Record<string, number> = {};
+    for (const row of paidRows) {
+      paidOutByAsset[row.asset] = Number(row.total);
+    }
+
     return {
       totalBounties,
-      totalPaidOut: Number(totalPaidRaw?.total ?? 0),
+      totalPaidOut: paidOutByAsset[AssetType.USDC] ?? 0,
+      paidOutByAsset,
       totalRepos,
     };
   }

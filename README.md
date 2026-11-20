@@ -35,7 +35,9 @@ RPC and mirrors on-chain state into Postgres for fast reads.
 - [API overview](#api-overview)
 - [Setup, run, test](#setup-run-test)
   - [Node.js version](#nodejs-version)
+  - [Dependency overrides](#dependency-overrides)
 - [Roadmap](#roadmap)
+- [License](#license)
 
 ---
 
@@ -442,6 +444,38 @@ npm run migration:run
 npm run migration:revert
 ```
 
+`1784000000000-InitialSchema` is the baseline: on an empty database it creates
+the schema as it stood before the first incremental migration, so
+`migration:run` works from scratch; on a database originally built by
+`synchronize` it detects the existing tables and does nothing. Every migration
+must have a unique timestamp prefix and a working `down()`.
+
+CI enforces both (#830): it runs `migration:run` against an empty Postgres,
+reverts every migration, checks that left no tables behind, runs them again and
+diffs the schema against the first pass. The e2e suite then runs on that
+migrated schema rather than one built by `synchronize`, so a migration that
+fails, can't be reverted, or diverges from what the code expects breaks the
+build instead of a deploy.
+
+### Dependency overrides
+
+`package.json` carries an `overrides` block for transitive dependencies whose
+fixed version a direct dependency doesn't yet allow. CI runs
+`npm audit --audit-level=high`, and Dependabot (`.github/dependabot.yml`) opens
+weekly npm and GitHub Actions update PRs. Remove an override once the
+dependency that pulls it in requires a patched version on its own; `npm ls
+<package>` shows where it comes from.
+
+- `multer` (via `@nestjs/platform-express`): pinned to `^2.5.0` for the
+  multipart Denial-of-Service and file-size-bypass advisories in `<=2.4.0`
+  (GHSA-wc9g-mqfw-jrwm, GHSA-qfvm-cv95-jqjf, GHSA-qvfw-j98x-7q72 and related),
+  and originally to `^2.2.0` for GHSA-72gw-mp4g-v24j / GHSA-3p4h-7m6x-2hcm.
+  Removable once `@nestjs/platform-express` depends on `multer >=2.5.0`.
+- `brace-expansion@1` (via `minimatch@3`, from ESLint's and Jest's tooling —
+  dev only): pinned to `^1.1.22` for the expansion Denial-of-Service advisories
+  in `<=1.1.20` (GHSA-3jxr-9vmj-r5cp and related). Removable once those tools
+  stop depending on `minimatch@3`.
+
 ## Roadmap
 
 - [x] ~~Wire up TypeORM migrations (currently relies on `synchronize` for local dev only).~~ See `src/database/migrations/` and the Migrations section above.
@@ -453,3 +487,9 @@ npm run migration:revert
 - [ ] Add role-based authorization guards (currently JWT-authenticated but not role-scoped) to maintainer/sponsor-only endpoints.
 - [ ] Add pagination/filtering to list endpoints (bounties, milestones, pools) as data volume grows.
 - [ ] Weighted (not just even) per-issue milestone budget distribution.
+
+## License
+
+Licensed under the [Apache License, Version 2.0](LICENSE), the same terms as
+`mergefi-contracts`. Contributions submitted to this repository are accepted
+under that license.
