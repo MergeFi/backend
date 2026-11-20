@@ -1,19 +1,50 @@
-import { Body, Controller, Get, Param, Post } from '@nestjs/common';
-import { ApiTags } from '@nestjs/swagger';
-import { IsOptional, IsString, IsUUID } from 'class-validator';
+import {
+  Body,
+  Controller,
+  Get,
+  Param,
+  ParseUUIDPipe,
+  Post,
+  Req,
+  UseGuards,
+} from '@nestjs/common';
+import {
+  ApiBearerAuth,
+  ApiOperation,
+  ApiProperty,
+  ApiTags,
+} from '@nestjs/swagger';
+import { IsOptional, IsUUID } from 'class-validator';
+import { Throttle } from '@nestjs/throttler';
 import { MilestonesService } from './milestones.service';
 import { CreateMilestoneDto } from './dto/create-milestone.dto';
 import { Idempotent } from '../common/idempotency/idempotent.decorator';
+import { IsStellarAddress } from '../common/validators/stellar-address.validator';
+import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
+import { RolesGuard } from '../auth/guards/roles.guard';
+import { Roles } from '../auth/decorators/roles.decorator';
+import { UserRole } from '../common/enums';
+import { Request } from 'express';
+import {
+  ApiInternalErrorResponse,
+  ApiStandardErrorResponses,
+} from '../common/swagger/api-common-responses.decorator';
 
-class FundMilestoneDto {
-  @IsString()
-  funderAddress: string;
+export class FundMilestoneDto {
+  @ApiProperty({ description: 'Stellar public key of the funder' })
+  @IsStellarAddress()
+  funderAddress!: string;
 }
 
-class ResolveIssueDto {
-  @IsString()
-  recipientAddress: string;
+export class ResolveIssueDto {
+  @ApiProperty({ description: 'Stellar public key of the payout recipient' })
+  @IsStellarAddress()
+  recipientAddress!: string;
 
+  @ApiProperty({
+    required: false,
+    description: 'Optional user UUID of the recipient',
+  })
   @IsOptional()
   @IsUUID()
   recipientId?: string;
@@ -21,40 +52,78 @@ class ResolveIssueDto {
 
 @ApiTags('milestones')
 @Controller('milestones')
+@ApiInternalErrorResponse()
 export class MilestonesController {
   constructor(private readonly milestonesService: MilestonesService) {}
 
+  @ApiOperation({ summary: 'Create a milestone' })
+  @ApiBearerAuth()
+  @ApiStandardErrorResponses()
+  @Idempotent('milestone.create')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(UserRole.SPONSOR, UserRole.MAINTAINER)
   @Post()
-  create(@Body() dto: CreateMilestoneDto) {
-    return this.milestonesService.create(dto);
+  create(@Body() dto: CreateMilestoneDto, @Req() req: Request) {
+    const userId = (req.user as any).userId;
+    return this.milestonesService.create(dto, userId);
   }
 
+  @ApiOperation({ summary: 'List milestones' })
+  @Throttle({ long: { limit: 1000, ttl: 3600000 } })
   @Get()
   list() {
     return this.milestonesService.list();
   }
 
+  @ApiOperation({ summary: 'Get a milestone by id' })
+  @Throttle({ default: { limit: 120, ttl: 60000 } })
   @Get(':id')
-  findOne(@Param('id') id: string) {
+  findOne(@Param('id', new ParseUUIDPipe()) id: string) {
     return this.milestonesService.findOne(id);
   }
 
+  @ApiOperation({ summary: 'Fund a milestone' })
+  @ApiBearerAuth()
+  @ApiStandardErrorResponses()
+  @Throttle({ short: { limit: 1, ttl: 1000 } })
   @Idempotent('milestone.fund')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(UserRole.SPONSOR, UserRole.MAINTAINER)
   @Post(':id/fund')
-  fund(@Param('id') id: string, @Body() dto: FundMilestoneDto) {
-    return this.milestonesService.fund(id, dto.funderAddress);
+  fund(
+    @Param('id', new ParseUUIDPipe()) id: string,
+    @Body() dto: FundMilestoneDto,
+    @Req() req: Request,
+  ) {
+    const userId = (req.user as any).userId;
+    return this.milestonesService.fund(id, dto.funderAddress, userId);
   }
 
+  @ApiOperation({ summary: 'Attach an issue to a milestone' })
+  @ApiBearerAuth()
+  @ApiStandardErrorResponses()
   @Post(':id/issues/:issueId')
-  addIssue(@Param('id') id: string, @Param('issueId') issueId: string) {
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(UserRole.MAINTAINER)
+  addIssue(
+    @Param('id', new ParseUUIDPipe()) id: string,
+    @Param('issueId', new ParseUUIDPipe()) issueId: string,
+  ) {
     return this.milestonesService.addIssue(id, issueId);
   }
 
+  @ApiOperation({
+    summary: 'Resolve a milestone issue and pay out the recipient',
+  })
+  @ApiBearerAuth()
+  @ApiStandardErrorResponses()
   @Idempotent('milestone.resolveIssue')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(UserRole.MAINTAINER)
   @Post(':id/issues/:issueId/resolve')
   resolveIssue(
-    @Param('id') id: string,
-    @Param('issueId') issueId: string,
+    @Param('id', new ParseUUIDPipe()) id: string,
+    @Param('issueId', new ParseUUIDPipe()) issueId: string,
     @Body() dto: ResolveIssueDto,
   ) {
     return this.milestonesService.resolveIssue(
@@ -63,5 +132,31 @@ export class MilestonesController {
       dto.recipientAddress,
       dto.recipientId,
     );
+  }
+
+  @ApiOperation({ summary: 'Allocate the milestone budget' })
+  @ApiBearerAuth()
+  @ApiStandardErrorResponses()
+  @Idempotent('milestone.allocateBudget')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(UserRole.MAINTAINER)
+  @Post(':id/allocate')
+  allocateBudget(@Param('id', new ParseUUIDPipe()) id: string) {
+    return this.milestonesService.allocateBudget(id);
+  }
+
+  @ApiOperation({ summary: 'Close a milestone and refund unspent budget' })
+  @ApiBearerAuth()
+  @ApiStandardErrorResponses()
+  @Idempotent('milestone.close')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(UserRole.SPONSOR, UserRole.MAINTAINER)
+  @Post(':id/close')
+  close(
+    @Param('id', new ParseUUIDPipe()) id: string,
+    @Req() req: Request,
+  ) {
+    const userId = (req.user as any)?.userId;
+    return this.milestonesService.close(id, userId);
   }
 }

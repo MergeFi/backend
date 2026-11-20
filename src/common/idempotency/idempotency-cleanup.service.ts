@@ -1,8 +1,11 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, Optional } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import { InjectRepository } from '@nestjs/typeorm';
-import { LessThan, Repository } from 'typeorm';
+import { DataSource, LessThan, Repository } from 'typeorm';
+import { AppConfig } from '../../config/configuration';
 import { IdempotencyKey } from '../entities/idempotency-key.entity';
+import { runWithAdvisoryLock } from '../advisory-lock';
 
 /**
  * Sweeps expired idempotency_keys rows (#16). Retention itself is set per
@@ -18,15 +21,39 @@ export class IdempotencyCleanupService {
   constructor(
     @InjectRepository(IdempotencyKey)
     private readonly repo: Repository<IdempotencyKey>,
+    private readonly configService: ConfigService<AppConfig, true>,
+    @Optional() private readonly dataSource?: DataSource,
   ) {}
 
   @Cron(CronExpression.EVERY_HOUR)
   async removeExpired(): Promise<void> {
-    const result = await this.repo.delete({
-      expiresAt: LessThan(new Date()),
-    });
-    if (result.affected) {
-      this.logger.log(`Removed ${result.affected} expired idempotency key(s)`);
+    if (!this.configService.get('schedulers', { infer: true }).enabled) {
+      return;
+    }
+
+    const lockId = 847292;
+    const work = async (): Promise<void> => {
+      const result = await this.repo.delete({
+        expiresAt: LessThan(new Date()),
+      });
+      if (result.affected) {
+        this.logger.log(
+          `Removed ${result.affected} expired idempotency key(s)`,
+        );
+      }
+    };
+
+    if (!this.dataSource?.isInitialized) {
+      await work();
+      return;
+    }
+
+    // Lock and unlock on one connection (#784), so the lock is always released.
+    const outcome = await runWithAdvisoryLock(this.dataSource, lockId, work);
+    if (!outcome.acquired) {
+      this.logger.debug(
+        'Skipping cleanup: another instance holds advisory lock',
+      );
     }
   }
 }

@@ -1,0 +1,11 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Report a security vulnerability
+    url: https://github.com/MergeFi/backend/security/policy
+    about: Please do not file security issues publicly. Follow the security policy to report privately.
+  - name: Frontend issues
+    url: https://github.com/MergeFi/frontend/issues
+    about: Problems with the web app UI belong in MergeFi/frontend.
+  - name: Smart contract issues
+    url: https://github.com/MergeFi/contracts/issues
+    about: Problems with the Soroban escrow contracts belong in MergeFi/contracts.

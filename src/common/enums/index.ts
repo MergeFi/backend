@@ -4,6 +4,11 @@ export enum UserRole {
   SPONSOR = 'sponsor',
 }
 
+export enum IssueState {
+  OPEN = 'open',
+  CLOSED = 'closed',
+}
+
 /**
  * Lifecycle of a paid issue (bounty).
  *
@@ -22,6 +27,7 @@ export enum BountyStatus {
   CLAIMED = 'claimed',
   IN_REVIEW = 'in_review',
   MERGED = 'merged',
+  RELEASE_FAILED = 'release_failed',
   PAID = 'paid',
   REFUNDED = 'refunded',
   EXPIRED = 'expired',
@@ -45,6 +51,12 @@ export enum EscrowStatus {
   RELEASED = 'released',
   REFUNDED = 'refunded',
   FAILED = 'failed',
+  /**
+   * On-chain release succeeded but the contract's reported stroop total
+   * diverges from the locally recorded total (#814). The reconciliation job
+   * must resolve this before the escrow transitions to RELEASED.
+   */
+  RECONCILIATION_PENDING = 'reconciliation_pending',
 }
 
 export enum EscrowAction {
@@ -80,6 +92,8 @@ export enum WebhookEventStatus {
   PROCESSED = 'processed',
   IGNORED = 'ignored',
   FAILED = 'failed',
+  /** Payload didn't have the shape its handler required; no business logic ran (#28). */
+  INVALID_PAYLOAD = 'invalid_payload',
 }
 
 /**

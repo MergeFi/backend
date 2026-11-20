@@ -6,11 +6,14 @@ import {
   HttpException,
   HttpStatus,
   Injectable,
+  Logger,
   NestInterceptor,
+  UnprocessableEntityException,
 } from '@nestjs/common';
 import { HTTP_CODE_METADATA } from '@nestjs/common/constants';
 import { Reflector } from '@nestjs/core';
 import { InjectRepository } from '@nestjs/typeorm';
+import { createHash } from 'crypto';
 import type { Request } from 'express';
 import { from, Observable, of, throwError } from 'rxjs';
 import { catchError, map, mergeMap } from 'rxjs/operators';
@@ -19,6 +22,7 @@ import type { QueryDeepPartialEntity } from 'typeorm';
 import { IdempotencyKey, JsonValue } from '../entities/idempotency-key.entity';
 import { IdempotencyKeyStatus } from '../enums';
 import { IDEMPOTENCY_SCOPE_KEY } from './idempotent.decorator';
+import { POLL_CEILING_MS } from '../../escrow/soroban-client.service';
 
 const UUID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -32,19 +36,86 @@ const UUID_PATTERN =
 export const IDEMPOTENCY_KEY_TTL_MS = 24 * 60 * 60 * 1000;
 
 /**
+ * Safety multiplier applied to `POLL_CEILING_MS` when computing
+ * `STALE_PROCESSING_MS`. The window must cover the full poll loop *plus*
+ * getAccount/simulate/send RPC round-trips; 3× leaves ~3x headroom over
+ * the poll ceiling itself (#810).
+ *
+ * Raising SOROBAN_TX_TIMEOUT_SECONDS (e.g. for congestion) automatically
+ * raises POLL_CEILING_MS and therefore this window, keeping the invariant
+ * STALE_PROCESSING_MS >= POLL_CEILING_MS * 2 intact without manual edits.
+ */
+const STALE_PROCESSING_SAFETY_FACTOR = 3;
+
+/**
  * A PROCESSING row older than this is treated as abandoned (the process
  * handling it almost certainly crashed rather than being merely slow) and
  * is reclaimed by the next request instead of permanently 409-ing.
+ *
+ * Must comfortably outlast the slowest legitimate handler: the escrow
+ * mutations this interceptor guards go through
+ * SorobanClientService.invoke → pollTransaction, which polls for the
+ * transaction's full time bound (#527) *on top of* the getAccount/simulate/
+ * send RPC round-trips. A 30s window was shorter than that worst case,
+ * letting a client retry reclaim a row whose original request was still
+ * actively running and re-execute a concurrent money-moving operation (#90).
+ *
+ * Derived from POLL_CEILING_MS × STALE_PROCESSING_SAFETY_FACTOR instead of
+ * a hardcoded constant so that tuning SOROBAN_TX_TIMEOUT_SECONDS
+ * automatically propagates here and CI can assert the invariant (#810).
  */
-const STALE_PROCESSING_MS = 30 * 1000;
+export const STALE_PROCESSING_MS = POLL_CEILING_MS * STALE_PROCESSING_SAFETY_FACTOR;
 
 /** Postgres SQLSTATE for unique_violation. */
 const PG_UNIQUE_VIOLATION = '23505';
+
+/** Attempts to record a successful outcome before giving up (#546). */
+const COMPLETE_WRITE_ATTEMPTS = 2;
 
 function isUniqueViolation(error: unknown): boolean {
   const driverError = (error as { driverError?: { code?: string } } | null)
     ?.driverError;
   return driverError?.code === PG_UNIQUE_VIOLATION;
+}
+
+/**
+ * Deterministic JSON serialization with object keys sorted recursively, so
+ * two logically-identical bodies that merely arrived with different key
+ * order (a real possibility across HTTP clients/serializers, including a
+ * client's own legitimate retry) hash identically rather than being
+ * mistaken for a mismatch.
+ */
+function stableStringify(value: unknown): string {
+  if (Array.isArray(value)) {
+    return `[${value.map(stableStringify).join(',')}]`;
+  }
+  if (value !== null && typeof value === 'object') {
+    const record = value as Record<string, unknown>;
+    const keys = Object.keys(record).sort();
+    return `{${keys
+      .map((k) => `${JSON.stringify(k)}:${stableStringify(record[k])}`)
+      .join(',')}}`;
+  }
+  return JSON.stringify(value);
+}
+
+/**
+ * Fingerprints "what request is this" — HTTP method, route path, path params
+ * plus body — so it can be bound to an idempotency key's identity alongside
+ * (key, scope, callerId) (#54, #805). Method and route make the fingerprint
+ * self-describing, so a scope string shared by two routes cannot replay one
+ * route's response for the other. Query params are deliberately excluded:
+ * none of the routes this guards read identity-relevant data from the query
+ * string.
+ */
+function computeRequestFingerprint(request: Request): string {
+  const payload = stableStringify({
+    method: request.method,
+    path: request.route?.path ?? request.path,
+    params: request.params ?? {},
+    body: (request.body as Record<string, unknown> | undefined) ?? {},
+  });
+  return createHash('sha256').update(payload).digest('hex');
 }
 
 interface KeyIdentity {
@@ -76,14 +147,35 @@ interface CachedOutcome {
  * released instead — because forcing every future retry to replay a server
  * error forever is worse than letting the retry try again cleanly.
  *
- * Caller scoping: none of the controllers this guards (bounties, escrow,
- * milestones, maintenance-pool) currently sit behind JwtAuthGuard, so there
- * is no authenticated caller to scope by yet. `resolveCallerId` falls back
- * to a shared 'anonymous' bucket per scope in that case — see its doc
- * comment for what that does and doesn't protect against.
+ * Caller scoping: keys are bucketed per caller, never in one shared bucket.
+ * An authenticated request (req.user set by JwtAuthGuard) is bucketed by its
+ * userId; an anonymous one by its client IP (`ip:<address>`). A request with
+ * neither is rejected rather than falling back to a shared constant. See
+ * `resolveCallerId` for the rule and its limits.
+ *
+ * Empty-body caveat: the fingerprint check (below) hashes path params plus
+ * body. When the body is empty (e.g. POST /bounties/:id/claim, which the
+ * frontend sends as `{}`), the fingerprint only binds the path params, so the
+ * fingerprint check is effectively vacuous for body-less routes. Caller
+ * scoping is what keeps one caller's key from replaying another's response.
+ *
+ * Request identity: `scope` is a static string per route (e.g.
+ * 'escrow.release'), the same for every request to that route regardless
+ * of path params or body — so (key, scope, callerId) alone can't tell two
+ * different resources (or two different payloads) apart. `resolveExisting`
+ * additionally compares a SHA-256 fingerprint of path params + body
+ * (`computeRequestFingerprint`) against the fingerprint stored on the
+ * existing row, and rejects with 422 on a mismatch rather than replaying
+ * the wrong cached response (#54). This binds identity via the body-hash
+ * comparison rather than folding path params into `scope` itself — scope
+ * stays a purely route-level concept (matches its existing "unique per
+ * scope, not globally" contract), and one mechanism covers both path
+ * params and body instead of two.
  */
 @Injectable()
 export class IdempotencyInterceptor implements NestInterceptor {
+  private readonly logger = new Logger(IdempotencyInterceptor.name);
+
   constructor(
     @InjectRepository(IdempotencyKey)
     private readonly repo: Repository<IdempotencyKey>,
@@ -117,8 +209,9 @@ export class IdempotencyInterceptor implements NestInterceptor {
       scope,
       callerId: this.resolveCallerId(request),
     };
+    const fingerprint = computeRequestFingerprint(request);
 
-    const cached = await this.claim(identity);
+    const cached = await this.claim(identity, fingerprint);
     if (cached) {
       const badRequestStatus: number = HttpStatus.BAD_REQUEST;
       if (cached.responseStatus >= badRequestStatus) {
@@ -143,8 +236,12 @@ export class IdempotencyInterceptor implements NestInterceptor {
 
     return next.handle().pipe(
       mergeMap((data: unknown) =>
+        // completeAfterSuccess never rejects: once the handler has succeeded
+        // (funds may already have moved on-chain), a failed bookkeeping write
+        // must not reach catchError → settleFailure, which would delete the
+        // key and let a retry run the operation again (#321, #546).
         from(
-          this.complete(identity, {
+          this.completeAfterSuccess(identity, {
             responseStatus: httpStatusCode,
             responseBody: (data ?? null) as JsonValue,
           }),
@@ -159,36 +256,59 @@ export class IdempotencyInterceptor implements NestInterceptor {
   }
 
   /**
-   * Determines the bucket a key is scoped to. `req.user.userId` is used
-   * when the route is authenticated (none of the current target routes
-   * are — see class doc comment). The 'anonymous' fallback still gives
-   * correct duplicate-suppression and concurrency-safety for a single
-   * client retrying its own request, since that's driven entirely by the
-   * (key, scope, callerId) uniqueness, not by callerId being a *real*
-   * per-user identity — it just means two different anonymous callers
-   * *could* collide if they both independently generated the same UUID
-   * for the same scope, which is the accepted, documented trade-off until
-   * these routes require auth.
+   * Determines the bucket a key is scoped to (#799).
+   *
+   * - Authenticated (JwtAuthGuard set req.user): the userId. JWT userIds are
+   *   UUIDs, so they never carry the `ip:` prefix.
+   * - Anonymous: `ip:<request.ip>`. This is per-client, so two anonymous
+   *   callers presenting the same key do not share a cached response or a
+   *   PROCESSING lock.
+   * - Neither available: throws. Falling back to a shared constant is what
+   *   let one caller's key block or replay another's.
+   *
+   * request.ip is the socket peer address unless Express `trust proxy` is set.
+   * Behind a reverse proxy without it, every anonymous caller shares the
+   * proxy's address, so the anonymous bucket degrades to one bucket per proxy
+   * IP. No trust-proxy setting was found in src/main.ts.
+   *
+   * Changing the bucket does not affect rows already stored under the old
+   * 'anonymous' callerId. Those expire under the 24h TTL, and a retry of one
+   * of those keys after deploy starts a new bucket.
    */
   private resolveCallerId(request: Request): string {
     const user = (request as Request & { user?: { userId?: string } }).user;
-    return user?.userId ?? 'anonymous';
+    if (user?.userId) {
+      return user.userId;
+    }
+    const ip = request.ip;
+    if (!ip) {
+      throw new BadRequestException(
+        'Unable to identify the caller for this Idempotency-Key',
+      );
+    }
+    return `ip:${ip}`;
   }
 
   /**
    * Returns a cached outcome to replay, or null if this call has become
    * the owner of the key and should proceed with the real handler.
-   * Throws ConflictException (409) if another request currently owns it.
+   * Throws ConflictException (409) if another request currently owns it,
+   * or UnprocessableEntityException (422) if it's owned by a request that
+   * targeted a different resource/body under the same key (#54).
    */
-  private async claim(identity: KeyIdentity): Promise<CachedOutcome | null> {
+  private async claim(
+    identity: KeyIdentity,
+    fingerprint: string,
+  ): Promise<CachedOutcome | null> {
     const existing = await this.repo.findOneBy(identity);
     if (existing) {
-      return this.resolveExisting(existing, identity);
+      return this.resolveExisting(existing, identity, fingerprint);
     }
 
     try {
       await this.repo.insert({
         ...identity,
+        requestFingerprint: fingerprint,
         expiresAt: new Date(Date.now() + IDEMPOTENCY_KEY_TTL_MS),
       });
       return null;
@@ -206,14 +326,30 @@ export class IdempotencyInterceptor implements NestInterceptor {
         // read) — safe to treat this as a fresh attempt.
         return null;
       }
-      return this.resolveExisting(winner, identity);
+      return this.resolveExisting(winner, identity, fingerprint);
     }
   }
 
   private async resolveExisting(
     existing: IdempotencyKey,
     identity: KeyIdentity,
+    fingerprint: string,
   ): Promise<CachedOutcome | null> {
+    // A null stored fingerprint means this row predates the column
+    // (migration deploy transition) — nothing to compare against, so it's
+    // exempt rather than treated as a guaranteed mismatch. Checked before
+    // status/staleness: a fingerprint mismatch means this was never "the
+    // same operation" in the first place, regardless of what state the
+    // true owner's row is in.
+    if (
+      existing.requestFingerprint !== null &&
+      existing.requestFingerprint !== fingerprint
+    ) {
+      throw new UnprocessableEntityException(
+        'This Idempotency-Key has already been used with a different request (different resource or body). Use a new Idempotency-Key for a different operation.',
+      );
+    }
+
     if (existing.status === IdempotencyKeyStatus.COMPLETED) {
       return {
         responseStatus: existing.responseStatus ?? HttpStatus.OK,
@@ -251,18 +387,57 @@ export class IdempotencyInterceptor implements NestInterceptor {
     if (!current) {
       return null;
     }
-    return this.resolveExisting(current, identity);
+    return this.resolveExisting(current, identity, fingerprint);
+  }
+
+  /**
+   * Records a successful handler outcome. Retries the write once; if it still
+   * fails, logs and leaves the row PROCESSING. A retry with the same key then
+   * gets 409 until the row goes stale instead of re-executing, and this
+   * request still returns the handler's real response (#546).
+   */
+  private async completeAfterSuccess(
+    identity: KeyIdentity,
+    outcome: CachedOutcome,
+  ): Promise<void> {
+    for (let attempt = 1; attempt <= COMPLETE_WRITE_ATTEMPTS; attempt++) {
+      try {
+        await this.complete(identity, outcome);
+        return;
+      } catch (error) {
+        if (attempt === COMPLETE_WRITE_ATTEMPTS) {
+          this.logger.error(
+            `Handler succeeded but recording the COMPLETED idempotency key failed ` +
+              `(scope=${identity.scope}); keeping it PROCESSING so a retry is rejected ` +
+              `rather than re-executed`,
+            error instanceof Error ? error.stack : String(error),
+          );
+        }
+      }
+    }
   }
 
   private async complete(
     identity: KeyIdentity,
     outcome: CachedOutcome,
   ): Promise<void> {
-    await this.repo.update(identity, {
-      status: IdempotencyKeyStatus.COMPLETED,
-      responseStatus: outcome.responseStatus,
-      responseBody: outcome.responseBody,
-    } as QueryDeepPartialEntity<IdempotencyKey>);
+    // Compare-and-swap on PROCESSING: if another request has already
+    // completed this row (it reclaimed the row after this request went
+    // stale), leave that outcome alone rather than overwrite it (#806).
+    const result = await this.repo.update(
+      { ...identity, status: IdempotencyKeyStatus.PROCESSING },
+      {
+        status: IdempotencyKeyStatus.COMPLETED,
+        responseStatus: outcome.responseStatus,
+        responseBody: outcome.responseBody,
+      } as QueryDeepPartialEntity<IdempotencyKey>,
+    );
+    if ((result.affected ?? 0) === 0) {
+      this.logger.warn(
+        `Idempotency key was no longer PROCESSING when recording the outcome ` +
+          `(scope=${identity.scope}); keeping the outcome already recorded`,
+      );
+    }
   }
 
   private async settleFailure(

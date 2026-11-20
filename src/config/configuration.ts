@@ -1,3 +1,5 @@
+import { AssetType } from '../common/enums';
+
 export interface AppConfig {
   env: string;
   port: number;
@@ -5,6 +7,7 @@ export interface AppConfig {
   frontendUrl: string;
   /** Exact origins (and/or `*.suffix` patterns) the CORS middleware allows. */
   corsAllowedOrigins: string[];
+  logLevel: string;
   database: {
     url: string;
     synchronize: boolean;
@@ -20,19 +23,71 @@ export interface AppConfig {
     oauthCallbackUrl: string;
     apiToken: string;
     webhookSecret: string;
+    /**
+     * Comma-separated `owner/repo` entries that a MAINTAINER may introduce as
+     * a first-time sync (#312). A repository already tracked in the database is
+     * governed by its `maintainerId` instead, so this only gates new repos.
+     */
+    syncAllowedRepos: string;
+  };
+  analytics: {
+    /**
+     * In-process TTL for GET /analytics/platform. Also invalidated on
+     * bounty create/pay and first-time repository insert.
+     */
+    platformSummaryTtlMs: number;
   };
   stellar: {
     network: string;
-    horizonUrl: string;
     sorobanRpcUrl: string;
     networkPassphrase: string;
     escrowContractId: string;
+    /**
+     * Optional separate deployment for maintenance-pool escrows. Falls back
+     * to `escrowContractId` when unset. Threaded through to
+     * `SorobanClientService.invoke(..., { contractId })` by `EscrowService`
+     * so maintenance-pool fund/release/refund calls target this contract
+     * instead of the single bounty escrow contract (#157).
+     */
     maintenancePoolContractId: string;
-    treasuryAddress: string;
     treasurySecret: string;
-    usdcAssetCode: string;
-    usdcAssetIssuer: string;
+    /**
+     * Soroban token (SAC) contract addresses per supported asset. The real
+     * `escrow::fund(issue_id, sponsor, token, amount, deadline)` takes the
+     * token contract as a required argument (#158); this is where that
+     * address is resolved from `Escrow.asset`. Left blank in environments
+     * with no deployed contracts (calls dry-run regardless).
+     */
+    assetContractIds: Record<AssetType, string>;
+    /**
+     * Fallback escrow deadline, in seconds from fund time, used as the real
+     * `escrow::fund`'s `deadline` argument when the funding bounty/milestone
+     * carries no explicit deadline of its own (#158). The contract's
+     * refund-after-deadline mechanism depends on this being set.
+     */
+    escrowDeadlineSeconds: number;
   };
+  schedulers: {
+    /**
+     * Whether this process runs the `@Cron` sweeps
+     * (`BountyExpiryScheduler`, `IdempotencyCleanupService`,
+     * `EscrowReconciliationScheduler`). Set
+     * `RUN_SCHEDULERS=false` on web replicas when a separate worker tier owns
+     * the schedulers (#831). See `parseSchedulersEnabled` for accepted values.
+     */
+    enabled: boolean;
+  };
+}
+
+/**
+ * `RUN_SCHEDULERS` is enabled unless explicitly switched off. `false`, `0`,
+ * `no` and `off` (case-insensitive, surrounding whitespace ignored) disable
+ * it, so a near-miss spelling such as `FALSE` no longer silently leaves the
+ * schedulers running on every replica (#831).
+ */
+export function parseSchedulersEnabled(raw: string | undefined): boolean {
+  if (raw === undefined) return true;
+  return !['false', '0', 'no', 'off'].includes(raw.trim().toLowerCase());
 }
 
 export default (): AppConfig => ({
@@ -47,6 +102,10 @@ export default (): AppConfig => ({
   corsAllowedOrigins: process.env.CORS_ALLOWED_ORIGINS
     ? process.env.CORS_ALLOWED_ORIGINS.split(',').map((o) => o.trim()).filter(Boolean)
     : [process.env.FRONTEND_URL ?? 'http://localhost:3001'],
+  port: parseInt(process.env.PORT ?? '4000', 10),
+  appUrl: process.env.APP_URL ?? 'http://localhost:4000',
+  frontendUrl: process.env.FRONTEND_URL ?? 'http://localhost:3000',
+  logLevel: process.env.LOG_LEVEL ?? 'debug',
   database: {
     url:
       process.env.DATABASE_URL ??
@@ -59,18 +118,24 @@ export default (): AppConfig => ({
     expiresIn: process.env.JWT_EXPIRES_IN ?? '7d',
   },
   github: {
-    clientId: process.env.GITHUB_CLIENT_ID ?? '',
-    clientSecret: process.env.GITHUB_CLIENT_SECRET ?? '',
+    clientId: process.env.GITHUB_CLIENT_ID || 'mock_client_id_12345',
+    clientSecret: process.env.GITHUB_CLIENT_SECRET || 'mock_secret_key_67890',
     oauthCallbackUrl:
-      process.env.GITHUB_OAUTH_CALLBACK_URL ??
+      process.env.GITHUB_OAUTH_CALLBACK_URL ||
       'http://localhost:3000/api/auth/github/callback',
     apiToken: process.env.GITHUB_API_TOKEN ?? '',
     webhookSecret: process.env.GITHUB_WEBHOOK_SECRET ?? '',
+    syncAllowedRepos: process.env.GITHUB_SYNC_ALLOWED_REPOS ?? '',
+  },
+
+  analytics: {
+    platformSummaryTtlMs: parseInt(
+      process.env.ANALYTICS_PLATFORM_SUMMARY_TTL_MS ?? '60000',
+      10,
+    ),
   },
   stellar: {
     network: process.env.STELLAR_NETWORK ?? 'testnet',
-    horizonUrl:
-      process.env.HORIZON_URL ?? 'https://horizon-testnet.stellar.org',
     sorobanRpcUrl:
       process.env.SOROBAN_RPC_URL ?? 'https://soroban-testnet.stellar.org',
     networkPassphrase:
@@ -78,12 +143,18 @@ export default (): AppConfig => ({
       'Test SDF Network ; September 2015',
     escrowContractId: process.env.ESCROW_CONTRACT_ID ?? '',
     maintenancePoolContractId:
-      process.env.MAINTENANCE_POOL_CONTRACT_ID ??
-      process.env.ESCROW_CONTRACT_ID ??
-      '',
-    treasuryAddress: process.env.TREASURY_ADDRESS ?? '',
+      process.env.MAINTENANCE_POOL_CONTRACT_ID ?? '',
     treasurySecret: process.env.TREASURY_SECRET ?? '',
-    usdcAssetCode: process.env.USDC_ASSET_CODE ?? 'USDC',
-    usdcAssetIssuer: process.env.USDC_ASSET_ISSUER ?? '',
+    assetContractIds: {
+      USDC: process.env.USDC_TOKEN_CONTRACT_ID ?? '',
+      XLM: process.env.XLM_TOKEN_CONTRACT_ID ?? '',
+    },
+    escrowDeadlineSeconds: parseInt(
+      process.env.ESCROW_DEADLINE_SECONDS ?? '7776000',
+      10,
+    ),
+  },
+  schedulers: {
+    enabled: parseSchedulersEnabled(process.env.RUN_SCHEDULERS),
   },
 });

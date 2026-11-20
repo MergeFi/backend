@@ -10,8 +10,46 @@ import {
   nativeToScVal,
   rpc,
   scValToNative,
+  xdr,
 } from '@stellar/stellar-sdk';
+import { AssetType } from '../common/enums';
 import { AppConfig } from '../config/configuration';
+
+/** Transaction time bound set on every invocation (`setTimeout`), in seconds. */
+export const SOROBAN_TX_TIMEOUT_SECONDS = 60;
+const POLL_DELAY_MS = 2000;
+/**
+ * Poll at least as long as the transaction's time bound (+1 attempt), so a
+ * timeout really means "outcome still unknown at expiry", not "gave up early" (#527).
+ */
+const POLL_ATTEMPTS =
+  Math.ceil((SOROBAN_TX_TIMEOUT_SECONDS * 1000) / POLL_DELAY_MS) + 1;
+
+/**
+ * Worst-case wall-clock time for a single `invoke` call, in ms.
+ *
+ * Exported so the idempotency interceptor can derive its staleness window
+ * from this value rather than a hardcoded constant that silently falls out
+ * of sync when SOROBAN_TX_TIMEOUT_SECONDS changes (#810).
+ *
+ * This is the poll loop alone; real callers also pay getAccount/simulate/
+ * send latency, which the safety multiplier in STALE_PROCESSING_MS covers.
+ */
+export const POLL_CEILING_MS = POLL_ATTEMPTS * POLL_DELAY_MS;
+
+/**
+ * The transaction was accepted (`sendTransaction` → PENDING) but had not
+ * finalized when polling ran out. Its outcome is unknown, not failed: it may
+ * still be included, so callers must not treat this as "nothing happened" (#527).
+ */
+export class SorobanPendingError extends Error {
+  constructor(public readonly txHash: string) {
+    super(
+      `Timed out waiting for Soroban transaction ${txHash} to finalize; outcome unknown`,
+    );
+    this.name = 'SorobanPendingError';
+  }
+}
 
 export interface ContractInvocationResult {
   txHash: string;
@@ -20,22 +58,71 @@ export interface ContractInvocationResult {
   status: string;
 }
 
+/** A single, unpolled `getTransaction(hash)` outcome (#849). */
+export interface TransactionLookup {
+  status: 'SUCCESS' | 'FAILED' | 'NOT_FOUND';
+  ledger: number | null;
+  returnValue: unknown;
+}
+
+/**
+ * A `bigint` that the escrow ABI types as `u64` rather than `i128` (#301).
+ *
+ * Soroban argument binding is strongly typed against the WASM export's
+ * parameter types: passing `ScVal::I128` where the contract declares `u64`
+ * fails host-side (conversion / `UnexpectedType` during simulation) instead
+ * of degrading gracefully. Wrapping the value in this marker before handing
+ * it to {@link SorobanClientService.invoke} makes the intended XDR type
+ * explicit at the call site.
+ */
+export interface U64Arg {
+  readonly __sorobanU64: bigint;
+}
+
+/** Wraps a value so {@link SorobanClientService} encodes it as `ScVal::U64`. */
+export function u64(value: bigint | number | string): U64Arg {
+  return { __sorobanU64: BigInt(value) };
+}
+
 /**
  * Thin wrapper around the Stellar/Soroban RPC client used to invoke the
  * escrow smart contract deployed by the sibling `mergefi-contracts` repo.
  *
- * TODO(mergefi-contracts): this client assumes a contract exposing
- * `fund`, `release`, `refund`, and `split_release` functions with the
- * signatures documented below. Adjust argument encoding once the real
- * contract interface (from the Soroban contract's generated bindings) is
- * available. Until ESCROW_CONTRACT_ID is configured, calls run in
- * "simulate-only" dry-run mode and never submit a real transaction.
+ * The bounty/milestone escrow signatures below track `mergefi-contracts`'
+ * `contracts/escrow/src/lib.rs`. Adjust argument encoding once the real
+ * generated bindings are available. Until ESCROW_CONTRACT_ID is configured,
+ * calls run in "simulate-only" dry-run mode and never submit a real
+ * transaction.
  *
- * Expected contract interface (Rust, illustrative):
- *   fn fund(env: Env, funder: Address, bounty_id: BytesN<32>, amount: i128, token: Address)
- *   fn release(env: Env, bounty_id: BytesN<32>, recipient: Address) -> i128
- *   fn split_release(env: Env, bounty_id: BytesN<32>, recipients: Vec<Address>, bps: Vec<u32>) -> i128
- *   fn refund(env: Env, bounty_id: BytesN<32>) -> i128
+ * Bounty/milestone escrow interface (Rust):
+ *   fn fund(env, issue_id: u64, sponsor: Address, token: Address, amount: i128, deadline: u64) -> Result<(), Error>
+ *   fn release(env, issue_id: u64, recipients: Vec<(Address, u32)>) -> Result<(), Error>
+ *   fn refund(env, issue_id: u64) -> Result<(), Error>
+ *   fn get_escrow(env, issue_id: u64) -> Option<Escrow>   (read-only; see {@link read}, #849)
+ *
+ * `release` is the single payout entrypoint — a lone recipient is just the
+ * degenerate `[(addr, 10_000)]` case of the same `(address, basis_points)`
+ * vector a team split uses; there is no separate `split_release` (#161).
+ *
+ * The `mergefi-maintenance-pool` contract is a distinct deposit/withdraw
+ * model (no lock step, no split): a running on-chain balance topped up by
+ * any sponsor via repeated `deposit()`, paid out by an admin against the
+ * live balance — see `EscrowService.poolWithdraw` (#163):
+ *   fn deposit(env: Env, sponsor: Address, pool_id: BytesN<32>, amount: i128, token: Address)
+ *   fn withdraw(env: Env, pool_id: BytesN<32>, recipient: Address, amount: i128) -> i128
+ *
+ * The `mergefi-milestones` contract is a two-step allocate/release model with
+ * no "partially drain one locked escrow" primitive (#160, #162):
+ * `create_milestone()` opens a budget pool, `allocate(milestone_id, issue_id,
+ * amount)` reserves a slice of the unallocated remainder for one issue
+ * (admin-only, rejects over-allocation), and `release_issue(milestone_id,
+ * issue_id, recipients)` pays out that issue's already-reserved slice.
+ * `MilestonesService.resolveIssue` therefore needs per-issue allocation
+ * tracking rather than repeated `releasePartial` calls against a single
+ * ever-LOCKED escrow row:
+ *   fn create_milestone(env: Env, sponsor: Address, milestone_id: BytesN<32>, budget: i128, token: Address)
+ *   fn allocate(env: Env, milestone_id: BytesN<32>, issue_id: BytesN<32>, amount: i128)
+ *   fn release_issue(env: Env, milestone_id: BytesN<32>, issue_id: BytesN<32>, recipients: Vec<(Address, u32)>) -> i128
  */
 @Injectable()
 export class SorobanClientService {
@@ -43,9 +130,12 @@ export class SorobanClientService {
   private readonly server: rpc.Server;
   private readonly networkPassphrase: string;
   private readonly stellar: AppConfig['stellar'];
+  private readonly isProduction: boolean;
 
   constructor(private readonly configService: ConfigService<AppConfig, true>) {
     this.stellar = this.configService.get('stellar', { infer: true });
+    this.isProduction =
+      this.configService.get('env', { infer: true }) === 'production';
     this.networkPassphrase = this.stellar.networkPassphrase || Networks.TESTNET;
     this.server = new rpc.Server(this.stellar.sorobanRpcUrl, {
       allowHttp: this.stellar.sorobanRpcUrl.startsWith('http://'),
@@ -57,6 +147,42 @@ export class SorobanClientService {
     return Boolean(
       this.stellar.escrowContractId && this.stellar.treasurySecret,
     );
+  }
+
+  /** Deployed contract ID for single-issue bounty/milestone escrows. */
+  get escrowContractId(): string {
+    return this.stellar.escrowContractId;
+  }
+
+  /**
+   * Deployed contract ID for maintenance-pool escrows.
+   *
+   * Returns an empty string when `MAINTENANCE_POOL_CONTRACT_ID` is unset.
+   * Callers must check `isPoolConfigured()` before invoking on-chain pool
+   * operations — the escrow contract has a disjoint interface and cannot
+   * service pool calls (#754).
+   */
+  get maintenancePoolContractId(): string {
+    return this.stellar.maintenancePoolContractId;
+  }
+
+  /**
+   * Whether a real maintenance-pool contract has been configured.
+   * Use this guard before any `deposit`/`withdraw`/`poolWithdraw` call to
+   * prevent money from being routed to the bounty escrow contract (#754).
+   */
+  isPoolConfigured(): boolean {
+    return Boolean(this.stellar.maintenancePoolContractId);
+  }
+
+  /** Soroban token (SAC) contract address for a supported escrow asset (#158). */
+  tokenContractId(asset: AssetType): string {
+    return this.stellar.assetContractIds[asset] ?? '';
+  }
+
+  /** Fallback escrow deadline, in seconds from now, for escrow::fund (#158). */
+  get escrowDeadlineSeconds(): number {
+    return this.stellar.escrowDeadlineSeconds;
   }
 
   private getTreasuryKeypair(): Keypair | null {
@@ -80,6 +206,11 @@ export class SorobanClientService {
    * contracts), this short-circuits into a deterministic dry-run result so
    * the rest of the orchestration (DB writes, status transitions) can still
    * be exercised end-to-end without live infrastructure.
+   *
+   * Production never dry-runs: a synthetic success there would write
+   * LOCKED escrows, CONFIRMED payments and PAID bounties for transactions
+   * that never happened. `assertRequiredConfig` already refuses to boot
+   * without both variables; this is the same guard at the point of use (#839).
    */
   async invoke(
     method: string,
@@ -87,6 +218,12 @@ export class SorobanClientService {
     opts: { contractId?: string } = {},
   ): Promise<ContractInvocationResult> {
     if (!this.isConfigured()) {
+      if (this.isProduction) {
+        throw new Error(
+          `Refusing to dry-run "${method}" in production: ESCROW_CONTRACT_ID ` +
+            'and TREASURY_SECRET must both be set.',
+        );
+      }
       this.logger.warn(
         `Soroban not configured (ESCROW_CONTRACT_ID/TREASURY_SECRET missing) — ` +
           `dry-running "${method}" instead of submitting an on-chain transaction.`,
@@ -116,7 +253,7 @@ export class SorobanClientService {
       networkPassphrase: this.networkPassphrase,
     })
       .addOperation(contract.call(method, ...scArgs))
-      .setTimeout(60)
+      .setTimeout(SOROBAN_TX_TIMEOUT_SECONDS)
       .build();
 
     const simulated = await this.server.simulateTransaction(tx);
@@ -135,6 +272,11 @@ export class SorobanClientService {
     }
 
     const result = await this.pollTransaction(send.hash);
+    if (result.status !== rpc.Api.GetTransactionStatus.SUCCESS) {
+      throw new Error(
+        `Soroban transaction ${send.hash} did not succeed on-chain (status: ${result.status})`,
+      );
+    }
 
     return {
       txHash: send.hash,
@@ -147,10 +289,74 @@ export class SorobanClientService {
     };
   }
 
+  /**
+   * One `getTransaction(hash)` lookup, no polling — what the reconciliation
+   * job uses to settle an escrow left PENDING by a {@link SorobanPendingError}
+   * (#849). NOT_FOUND means "not included yet, or already pruned from the
+   * RPC's retention window"; callers must not read it as "failed".
+   *
+   * Returns null when Soroban is not configured: a dry-run hash was never
+   * submitted, so there is nothing to look up.
+   */
+  async getTransaction(hash: string): Promise<TransactionLookup | null> {
+    if (!this.isConfigured()) return null;
+    const res = await this.server.getTransaction(hash);
+    if (res.status === rpc.Api.GetTransactionStatus.NOT_FOUND) {
+      return { status: 'NOT_FOUND', ledger: null, returnValue: null };
+    }
+    return {
+      status:
+        res.status === rpc.Api.GetTransactionStatus.SUCCESS
+          ? 'SUCCESS'
+          : 'FAILED',
+      ledger: 'ledger' in res ? (res.ledger ?? null) : null,
+      returnValue:
+        'returnValue' in res && res.returnValue
+          ? scValToNative(res.returnValue)
+          : null,
+    };
+  }
+
+  /**
+   * Reads contract state without submitting anything: the call is simulated
+   * and its return value decoded. Used for `get_escrow(issue_id)` by the
+   * reconciliation job (#849).
+   *
+   * Returns `undefined` when Soroban is not configured (there is no chain to
+   * read), and `null` when the contract returned nothing for the key.
+   */
+  async read(
+    method: string,
+    args: unknown[],
+    opts: { contractId?: string } = {},
+  ): Promise<unknown> {
+    const keypair = this.getTreasuryKeypair();
+    if (!this.isConfigured() || !keypair) return undefined;
+
+    const contract = this.getContract(opts.contractId);
+    const account = await this.server.getAccount(keypair.publicKey());
+    const tx = new TransactionBuilder(account, {
+      fee: BASE_FEE,
+      networkPassphrase: this.networkPassphrase,
+    })
+      .addOperation(
+        contract.call(method, ...args.map((arg) => this.toScVal(arg))),
+      )
+      .setTimeout(SOROBAN_TX_TIMEOUT_SECONDS)
+      .build();
+
+    const simulated = await this.server.simulateTransaction(tx);
+    if (rpc.Api.isSimulationError(simulated)) {
+      throw new Error(`Soroban simulation failed: ${simulated.error}`);
+    }
+    const retval = simulated.result?.retval;
+    return retval ? (scValToNative(retval) ?? null) : null;
+  }
+
   private async pollTransaction(
     hash: string,
-    attempts = 10,
-    delayMs = 2000,
+    attempts = POLL_ATTEMPTS,
+    delayMs = POLL_DELAY_MS,
   ): Promise<rpc.Api.GetTransactionResponse> {
     for (let i = 0; i < attempts; i++) {
       const res = await this.server.getTransaction(hash);
@@ -159,12 +365,36 @@ export class SorobanClientService {
       }
       await new Promise((resolve) => setTimeout(resolve, delayMs));
     }
-    throw new Error(
-      `Timed out waiting for Soroban transaction ${hash} to finalize`,
-    );
+    throw new SorobanPendingError(hash);
   }
 
-  private toScVal(value: unknown) {
+  private toScVal(value: unknown): xdr.ScVal {
+    if (isU64Arg(value)) {
+      // #301 — `issue_id` / `deadline` are declared u64 in the escrow ABI;
+      // a bare bigint would encode as ScVal::I128 and fail host-side
+      // argument binding during simulation.
+      return nativeToScVal(value.__sorobanU64, { type: 'u64' });
+    }
+    if (Buffer.isBuffer(value) || value instanceof Uint8Array) {
+      // BytesN<32> arguments (metadata hashes, description hashes, etc.)
+      // arrive as raw bytes, not strings — without this branch they fell
+      // through to the generic nativeToScVal(value) call below with no
+      // `bytes` type hint, which does not reliably encode a Buffer/
+      // Uint8Array as ScVal bytes (#45).
+      return nativeToScVal(Buffer.from(value), { type: 'bytes' });
+    }
+    if (Array.isArray(value)) {
+      // Vec<...> arguments, including the Vec<(Address, u32)> recipients
+      // list escrow::release takes. A [address, basisPoints] pair encodes
+      // as an (Address, u32) tuple; anything else element-by-element (#161).
+      if (this.isRecipientTuple(value)) {
+        return nativeToScVal([
+          new Address(value[0]).toScVal(),
+          nativeToScVal(value[1], { type: 'u32' }),
+        ]);
+      }
+      return nativeToScVal(value.map((element) => this.toScVal(element)));
+    }
     if (
       typeof value === 'string' &&
       value.length >= 32 &&
@@ -182,4 +412,22 @@ export class SorobanClientService {
     }
     return nativeToScVal(value);
   }
+
+  /** A `[stellarAddress, basisPoints]` pair destined for a `(Address, u32)` tuple. */
+  private isRecipientTuple(value: unknown[]): value is [string, number] {
+    return (
+      value.length === 2 &&
+      typeof value[0] === 'string' &&
+      typeof value[1] === 'number'
+    );
+  }
+}
+
+/** Type guard for the {@link u64} marker (#301). */
+function isU64Arg(value: unknown): value is U64Arg {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    typeof (value as U64Arg).__sorobanU64 === 'bigint'
+  );
 }

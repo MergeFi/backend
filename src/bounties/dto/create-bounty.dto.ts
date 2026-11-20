@@ -1,6 +1,7 @@
 import { ApiProperty } from '@nestjs/swagger';
 import { IsEnum, IsOptional, IsUUID, IsISO8601 } from 'class-validator';
 import { AssetType, BountyDifficulty } from '../../common/enums';
+import { IsFutureDate } from '../../common/validators/date.validator';
 import {
   IsMoneyAmount,
   IsSupportedEscrowAsset,
@@ -12,10 +13,6 @@ export class CreateBountyDto {
   })
   @IsUUID()
   issueId: string;
-
-  @ApiProperty()
-  @IsUUID()
-  sponsorId: string;
 
   @ApiProperty()
   @IsMoneyAmount()
@@ -35,5 +32,6 @@ export class CreateBountyDto {
   @ApiProperty({ required: false })
   @IsOptional()
   @IsISO8601()
+  @IsFutureDate()
   deadline?: string;
 }

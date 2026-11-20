@@ -1,6 +1,7 @@
 import { Logger } from '@nestjs/common';
 import { Test, TestingModule } from '@nestjs/testing';
 import { getRepositoryToken } from '@nestjs/typeorm';
+import { EventEmitter2 } from '@nestjs/event-emitter';
 import { Issue, Repository } from '../common/entities';
 import {
   GithubSyncInterruptedError,
@@ -8,6 +9,12 @@ import {
   RawGithubIssue,
 } from './github-sync.service';
 import { GITHUB_OCTOKIT } from './octokit.provider';
+
+const RATE_LIMIT_HEADERS = {
+  'x-ratelimit-limit': '5000',
+  'x-ratelimit-remaining': '4999',
+  'x-ratelimit-reset': '1234567890',
+};
 
 function issuePage(items: Array<Partial<RawGithubIssue>>) {
   return {
@@ -20,22 +27,8 @@ function issuePage(items: Array<Partial<RawGithubIssue>>) {
       updated_at: '2026-01-01T00:00:00Z',
       ...item,
     })),
+    headers: RATE_LIMIT_HEADERS,
   };
-}
-
-/**
- * Mimics `octokit.paginate.iterator`'s async-generator contract. A plain
- * (non-async) generator satisfies `for await...of` just as well when there's
- * nothing to actually await between yields.
- */
-function* pagesThenThrow(
-  pages: Array<ReturnType<typeof issuePage>>,
-  error?: Error,
-) {
-  for (const page of pages) {
-    yield page;
-  }
-  if (error) throw error;
 }
 
 describe('GithubSyncService', () => {
@@ -45,7 +38,6 @@ describe('GithubSyncService', () => {
     pulls: { get: jest.Mock };
     issues: { listForRepo: jest.Mock };
     paginate: { iterator: jest.Mock };
-    rest: { rateLimit: { get: jest.Mock } };
   };
   let repositoryRepo: {
     findOne: jest.Mock;
@@ -69,7 +61,6 @@ describe('GithubSyncService', () => {
       pulls: { get: jest.fn() },
       issues: { listForRepo: jest.fn() },
       paginate: { iterator: jest.fn() },
-      rest: { rateLimit: { get: jest.fn() } },
     };
     repositoryRepo = {
       findOne: jest.fn().mockResolvedValue(null),
@@ -100,20 +91,13 @@ describe('GithubSyncService', () => {
     warnSpy = jest.spyOn(Logger.prototype, 'warn').mockImplementation();
     errorSpy = jest.spyOn(Logger.prototype, 'error').mockImplementation();
 
-    octokit.rest.rateLimit.get.mockResolvedValue({
-      data: {
-        resources: {
-          core: { limit: 5000, remaining: 4999, reset: 1234567890 },
-        },
-      },
-    });
-
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         GithubSyncService,
         { provide: GITHUB_OCTOKIT, useValue: octokit },
         { provide: getRepositoryToken(Repository), useValue: repositoryRepo },
         { provide: getRepositoryToken(Issue), useValue: issueRepo },
+        { provide: EventEmitter2, useValue: { emit: jest.fn() } },
       ],
     }).compile();
 
@@ -127,45 +111,33 @@ describe('GithubSyncService', () => {
   });
 
   describe('syncIssues', () => {
-    it('persists issues page by page and skips pull requests', async () => {
-      octokit.paginate.iterator.mockReturnValue(
-        pagesThenThrow([
-          issuePage([
-            {
-              id: 1,
-              number: 1,
-              title: 'Issue one',
-              updated_at: '2026-01-01T00:00:00Z',
-            },
-            { id: 2, number: 2, title: 'A PR', pull_request: {} },
-          ]),
-          issuePage([
-            {
-              id: 3,
-              number: 3,
-              title: 'Issue three',
-              updated_at: '2026-01-02T00:00:00Z',
-            },
-          ]),
+    it('persists one page and skips pull requests', async () => {
+      octokit.issues.listForRepo.mockResolvedValue(
+        issuePage([
+          {
+            id: 1,
+            number: 1,
+            title: 'Issue one',
+            updated_at: '2026-01-01T00:00:00Z',
+          },
+          { id: 2, number: 2, title: 'A PR', pull_request: {} },
         ]),
       );
 
       const repository = { id: 'repo-1' } as Repository;
-      const saved = await service.syncIssues(repository, 'acme', 'widgets');
+      const { saved } = await service.syncIssues(repository, 'acme', 'widgets');
 
-      expect(saved).toHaveLength(2);
-      expect(saved.map((i) => i.title)).toEqual(['Issue one', 'Issue three']);
-      expect(issueRepo.save).toHaveBeenCalledTimes(2);
+      expect(saved).toHaveLength(1);
+      expect(saved.map((i) => i.title)).toEqual(['Issue one']);
+      expect(issueRepo.save).toHaveBeenCalledTimes(1);
     });
 
     it('never persists issues that carry pull_request', async () => {
-      octokit.paginate.iterator.mockReturnValue(
-        pagesThenThrow([
-          issuePage([{ id: 9, number: 9, pull_request: { url: 'x' } }]),
-        ]),
+      octokit.issues.listForRepo.mockResolvedValue(
+        issuePage([{ id: 9, number: 9, pull_request: { url: 'x' } }]),
       );
 
-      const saved = await service.syncIssues(
+      const { saved } = await service.syncIssues(
         { id: 'repo-1' } as Repository,
         'acme',
         'widgets',
@@ -174,32 +146,49 @@ describe('GithubSyncService', () => {
       expect(issueRepo.save).not.toHaveBeenCalled();
     });
 
-    it('keeps issues already persisted before a mid-pagination failure, and reports a resumable error', async () => {
+    it('reports a nextPage when the response Link header says there is more', async () => {
+      octokit.issues.listForRepo.mockResolvedValue({
+        data: issuePage([{ id: 1, number: 1 }]).data,
+        headers: {
+          ...RATE_LIMIT_HEADERS,
+          link: '<https://api.github.com/...&page=2>; rel="next"',
+        },
+      });
+
+      const { nextPage } = await service.syncIssues(
+        { id: 'repo-1' } as Repository,
+        'acme',
+        'widgets',
+      );
+      expect(nextPage).toBe(2);
+    });
+
+    it('keeps issues already persisted before a mid-page failure, and reports a resumable error', async () => {
       const rateLimitError = Object.assign(
         new Error('API rate limit exceeded'),
-        {
-          status: 429,
-        },
+        { status: 429 },
       );
 
-      octokit.paginate.iterator.mockReturnValue(
-        pagesThenThrow(
-          [
-            issuePage([
-              { id: 1, number: 1, title: 'Persisted before failure' },
-            ]),
-          ],
-          rateLimitError,
-        ),
+      octokit.issues.listForRepo.mockResolvedValue(
+        issuePage([
+          { id: 1, number: 1, title: 'Persisted before failure' },
+          { id: 2, number: 2, title: 'Never reached' },
+        ]),
       );
+      // The first upsert succeeds and is durably saved; the second fails
+      // partway through the same page, so the whole call is interrupted.
+      issueRepo.save
+        .mockImplementationOnce((issue: object) => Promise.resolve(issue))
+        .mockImplementationOnce(() => Promise.reject(rateLimitError));
 
       await expect(
         service.syncIssues({ id: 'repo-1' } as Repository, 'acme', 'widgets'),
       ).rejects.toThrow(GithubSyncInterruptedError);
 
-      // The page fetched before the 429 is durably saved, not discarded.
-      expect(issueRepo.save).toHaveBeenCalledTimes(1);
-      expect(issueRepo.save).toHaveBeenCalledWith(
+      // The issue upserted before the failure is durably saved, not discarded.
+      expect(issueRepo.save).toHaveBeenCalledTimes(2);
+      expect(issueRepo.save).toHaveBeenNthCalledWith(
+        1,
         expect.objectContaining({ title: 'Persisted before failure' }),
       );
       expect(errorSpy).toHaveBeenCalledWith(
@@ -209,15 +198,17 @@ describe('GithubSyncService', () => {
 
     it('the thrown error clearly reports how many issues survived and that re-running is safe', async () => {
       const networkError = new Error('ECONNRESET');
-      octokit.paginate.iterator.mockReturnValue(
-        pagesThenThrow(
-          [
-            issuePage([{ id: 1, number: 1 }]),
-            issuePage([{ id: 2, number: 2 }]),
-          ],
-          networkError,
-        ),
+      octokit.issues.listForRepo.mockResolvedValue(
+        issuePage([
+          { id: 1, number: 1 },
+          { id: 2, number: 2 },
+          { id: 3, number: 3 },
+        ]),
       );
+      issueRepo.save
+        .mockImplementationOnce((issue: object) => Promise.resolve(issue))
+        .mockImplementationOnce((issue: object) => Promise.resolve(issue))
+        .mockImplementationOnce(() => Promise.reject(networkError));
 
       let caught: GithubSyncInterruptedError | undefined;
       try {
@@ -321,8 +312,8 @@ describe('GithubSyncService', () => {
     });
   });
 
-  describe('syncRepository — rate-limit budget logging (#24)', () => {
-    it('logs rate-limit status before and after a sync', async () => {
+  describe('syncRepository — rate-limit budget logging (#24, #62)', () => {
+    it('logs rate-limit status from response headers before and after a sync', async () => {
       octokit.repos.get.mockResolvedValue({
         data: {
           id: 42,
@@ -332,10 +323,9 @@ describe('GithubSyncService', () => {
           default_branch: 'main',
           private: false,
         },
+        headers: RATE_LIMIT_HEADERS,
       });
-      octokit.paginate.iterator.mockReturnValue(
-        pagesThenThrow([issuePage([])]),
-      );
+      octokit.issues.listForRepo.mockResolvedValue(issuePage([]));
 
       await service.syncRepository('acme', 'widgets');
 
@@ -344,11 +334,9 @@ describe('GithubSyncService', () => {
         .filter((msg) => msg.includes('rate-limit'));
       expect(rateLimitLogs.some((m) => m.includes('before'))).toBe(true);
       expect(rateLimitLogs.some((m) => m.includes('after'))).toBe(true);
-      expect(octokit.rest.rateLimit.get).toHaveBeenCalledTimes(2);
     });
 
-    it('does not let a rate-limit status lookup failure block the sync itself', async () => {
-      octokit.rest.rateLimit.get.mockRejectedValue(new Error('unreachable'));
+    it('still syncs successfully when response headers lack rate-limit fields', async () => {
       octokit.repos.get.mockResolvedValue({
         data: {
           id: 42,
@@ -358,14 +346,102 @@ describe('GithubSyncService', () => {
           default_branch: 'main',
           private: false,
         },
+        headers: {},
       });
-      octokit.paginate.iterator.mockReturnValue(
-        pagesThenThrow([issuePage([])]),
-      );
+      octokit.issues.listForRepo.mockResolvedValue(issuePage([]));
 
       await expect(
         service.syncRepository('acme', 'widgets'),
       ).resolves.toBeDefined();
+    });
+  });
+
+  describe('syncRepository — paginated continuation avoids a redundant repos.get() (#314)', () => {
+    const PERSISTED_REPO = {
+      id: 'repo-1',
+      githubRepoId: '42',
+      owner: 'acme',
+      name: 'widgets',
+      fullName: 'acme/widgets',
+    } as unknown as Repository;
+
+    it('reuses the persisted repository row and skips repos.get() on page > 1', async () => {
+      repositoryRepo.findOne.mockResolvedValue(PERSISTED_REPO);
+      octokit.issues.listForRepo.mockResolvedValue(issuePage([]));
+
+      const result = await service.syncRepository('acme', 'widgets', 2);
+
+      expect(octokit.repos.get).not.toHaveBeenCalled();
+      expect(repositoryRepo.save).not.toHaveBeenCalled();
+      expect(octokit.issues.listForRepo).toHaveBeenCalledWith(
+        expect.objectContaining({ owner: 'acme', repo: 'widgets', page: 2 }),
+      );
+      expect(result.repository).toBe(PERSISTED_REPO);
+    });
+
+    it('still syncs and reports synced/nextPage on a continuation page', async () => {
+      repositoryRepo.findOne.mockResolvedValue(PERSISTED_REPO);
+      octokit.issues.listForRepo.mockResolvedValue(
+        issuePage([{ id: 2, number: 2, title: 'Issue two' }]),
+      );
+
+      const result = await service.syncRepository('acme', 'widgets', 3);
+
+      expect(result.synced).toBe(1);
+      expect(issueRepo.save).toHaveBeenCalledTimes(1);
+    });
+
+    it('falls back to repos.get() on a continuation page for an untracked repository', async () => {
+      repositoryRepo.findOne.mockResolvedValue(null);
+      octokit.repos.get.mockResolvedValue({
+        data: {
+          id: 42,
+          owner: { login: 'acme' },
+          name: 'widgets',
+          full_name: 'acme/widgets',
+          default_branch: 'main',
+          private: false,
+        },
+        headers: RATE_LIMIT_HEADERS,
+      });
+      octokit.issues.listForRepo.mockResolvedValue(issuePage([]));
+
+      await service.syncRepository('acme', 'widgets', 2);
+
+      expect(octokit.repos.get).toHaveBeenCalledWith({
+        owner: 'acme',
+        repo: 'widgets',
+      });
+      expect(repositoryRepo.create).toHaveBeenCalled();
+    });
+
+    it('still refreshes repository metadata on page 1 even when the row exists', async () => {
+      repositoryRepo.findOne.mockResolvedValue(PERSISTED_REPO);
+      octokit.repos.get.mockResolvedValue({
+        data: {
+          id: 42,
+          owner: { login: 'acme' },
+          name: 'widgets',
+          full_name: 'acme/widgets',
+          description: 'Widgets',
+          default_branch: 'main',
+          private: false,
+          stargazers_count: 12,
+        },
+        headers: RATE_LIMIT_HEADERS,
+      });
+      octokit.issues.listForRepo.mockResolvedValue(issuePage([]));
+
+      await service.syncRepository('acme', 'widgets', 1);
+
+      expect(octokit.repos.get).toHaveBeenCalledWith({
+        owner: 'acme',
+        repo: 'widgets',
+      });
+      expect(repositoryRepo.merge).toHaveBeenCalledWith(
+        PERSISTED_REPO,
+        expect.objectContaining({ stargazersCount: 12, description: 'Widgets' }),
+      );
     });
   });
 });

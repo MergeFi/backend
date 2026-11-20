@@ -1,0 +1,27 @@
+name: Missing Test
+description: Flag a function, branch or module wiring that lacks test coverage
+title: "[Test] "
+labels: ["testing"]
+body:
+  - type: textarea
+    id: untested
+    attributes:
+      label: What is not tested
+      description: The function, error path, invariant or module wiring with no test. Include the file and line number if known.
+      placeholder: src/escrow/soroban-client.service.ts:182-193 — the dry-run short-circuit
+    validations:
+      required: true
+
+  - type: textarea
+    id: why
+    attributes:
+      label: Why it matters
+      description: What failure mode could go undetected without this test?
+    validations:
+      required: true
+
+  - type: textarea
+    id: approach
+    attributes:
+      label: Suggested test approach
+      description: Optional — a sketch of the test, e.g. a unit spec with mocked repositories, a `Test.createTestingModule` compile, or an integration spec against Postgres.

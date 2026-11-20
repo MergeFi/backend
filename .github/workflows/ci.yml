@@ -4,6 +4,12 @@ on:
   pull_request:
     branches:
       - main
+  # Also run on commits that land on main by any path (admin bypass,
+  # misconfigured or not-yet-enabled branch protection), so the secret scan,
+  # lint, build and tests still gate the default branch (#156).
+  push:
+    branches:
+      - main
 
 jobs:
   ci:
@@ -25,76 +31,93 @@ jobs:
           --health-retries 5
 
     steps:
+      # #833 — Pin actions to full commit SHAs for supply-chain security; a
+      # tag like @v4 is a mutable pointer. Dependabot keeps these current.
       - name: Checkout Code
-        uses: actions/checkout@v4
-
-      - name: Setup Node.js v24
-        uses: actions/setup-node@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
-          node-version: 24
+          # Full history so the secret scan can inspect every commit, not
+          # just the working tree — a credential committed and later removed
+          # is invisible to a shallow checkout (#155).
+          fetch-depth: 0
+
+      # .nvmrc is the single source of truth for the Node major (#835), so
+      # CI can't drift from what contributors and the Dockerfile run.
+      - name: Setup Node.js (from .nvmrc)
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version-file: .nvmrc
           cache: 'npm'
 
-      - name: Scan for Hardcoded Secrets
+      - name: Scan for Hardcoded Secrets (gitleaks, full history)
+        env:
+          GITLEAKS_VERSION: 8.28.0
+          # SHA-256 of gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz, from the
+          # release's gitleaks_${GITLEAKS_VERSION}_checksums.txt. Update both
+          # together: the tarball is verified before it is extracted, so a
+          # substituted release asset fails the job instead of running (#833).
+          GITLEAKS_SHA256: a65b5253807a68ac0cafa4414031fd740aeb55f54fb7e55f386acb52e6a840eb
         run: |
-          echo "Scanning codebase for potential hardcoded secrets..."
-          
-          # Detect Stellar Secret Keys (starts with S, 56 characters, uppercase A-Z, digits 2-7)
-          if grep -r -E "\bS[A-D][A-Z2-7]{54}\b" --exclude-dir={node_modules,dist,coverage,.git} .; then
-            echo "::error::Potential Stellar Secret Key detected in codebase!"
-            exit 1
-          fi
-          
-          # Detect PEM Private Keys
-          if grep -r -E "(-+BEGIN [A-Z ]+ PRIVATE KEY-+)" --exclude-dir={node_modules,dist,coverage,.git} .; then
-            echo "::error::Potential PEM Private Key detected in codebase!"
-            exit 1
-          fi
-          
-          # Detect GitHub Personal Access Tokens (Legacy and Fine-grained)
-          if grep -r -E "(ghp_[a-zA-Z0-9]{36}|github_pat_[a-zA-Z0-9]{82})" --exclude-dir={node_modules,dist,coverage,.git} .; then
-            echo "::error::Potential GitHub Token detected in codebase!"
-            exit 1
-          fi
-          
-          echo "Secret scan completed. No secrets detected."
+          set -euo pipefail
+          tarball="gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          echo "Downloading gitleaks v${GITLEAKS_VERSION}..."
+          curl -sSfL -o "${tarball}" \
+            "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/${tarball}"
+          echo "${GITLEAKS_SHA256}  ${tarball}" | sha256sum --check --strict -
+          tar -xzf "${tarball}" gitleaks
+          rm -f "${tarball}"
+          # `gitleaks git` walks the full commit history (not just the current
+          # tree) using gitleaks' maintained rule set — AWS keys, generic
+          # high-entropy tokens, connection strings, webhook URLs, JWTs, etc.
+          # — replacing the three hand-rolled regexes this step used to run.
+          ./gitleaks git . --redact --verbose --exit-code 1
         shell: bash
 
       - name: Install Dependencies
         run: npm ci
 
+      # Fail immediately when two migration files share the same timestamp
+      # prefix: TypeORM uses the prefix as a primary key in the migrations
+      # table, so duplicates cause one of the colliding files to be silently
+      # skipped on `migration:run` (#734).
+      - name: Check for duplicate migration timestamps
+        run: |
+          ! ls src/database/migrations | cut -d- -f1 | sort | uniq -d | grep .
+
+      # `npm run lint` never passes --fix: auto-fixing in a throwaway checkout
+      # let fixable violations pass while they stayed in the repo, and without
+      # --max-warnings 0 warn-level findings never failed the build (#827).
+      # Contributors use `npm run lint:fix` locally.
       - name: Lint Code
         run: npm run lint
 
       - name: Build Application
         run: npm run build
 
-      - name: Run Unit & Integration Tests
-        env:
-          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/mergefi
-          NODE_ENV: test
-        run: npm run test
-
-      - name: Run Coverage Tests
+      # A single instrumented run: a plain `npm run test` before it executed
+      # the same suite twice for no extra signal (#828). The coverageThreshold
+      # in package.json fails this step if coverage regresses.
+      - name: Run Unit & Integration Tests (with coverage)
         env:
           DATABASE_URL: postgresql://postgres:postgres@localhost:5432/mergefi
           NODE_ENV: test
         run: npm run test:cov
 
-      - name: Run E2E Tests (Conditional)
+      - name: Upload Coverage Report
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: coverage/
+          if-no-files-found: warn
+          retention-days: 14
+
+      # The e2e specs run entirely against the local Postgres service and a
+      # mocked Stellar SDK; none of them use GITHUB_CLIENT_ID/SECRET. The step
+      # used to be gated on those (never-configured) secrets, so `npm run
+      # test:e2e` had never actually executed in CI (#164). Run it always.
+      - name: Run E2E Tests
         env:
           DATABASE_URL: postgresql://postgres:postgres@localhost:5432/mergefi
           NODE_ENV: test
-          # Map GitHub Secrets if configured in the repository
-          GITHUB_CLIENT_ID: ${{ secrets.GITHUB_CLIENT_ID }}
-          GITHUB_CLIENT_SECRET: ${{ secrets.GITHUB_CLIENT_SECRET }}
-        run: |
-          if [ -z "$GITHUB_CLIENT_ID" ] || [ -z "$GITHUB_CLIENT_SECRET" ]; then
-            echo "=========================================================================="
-            echo "WARNING: Skipping E2E tests because external GitHub OAuth secrets are not"
-            echo "configured in the repository settings (GITHUB_CLIENT_ID / GITHUB_CLIENT_SECRET)."
-            echo "To enable E2E tests in CI, please set these secrets in GitHub."
-            echo "=========================================================================="
-          else
-            npm run test:e2e
-          fi
-        shell: bash
+        run: npm run test:e2e

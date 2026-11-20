@@ -4,16 +4,31 @@ import {
   Logger,
   NotFoundException,
 } from '@nestjs/common';
-import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
-import { Escrow, Payment } from '../common/entities';
+import { InjectDataSource, InjectRepository } from '@nestjs/typeorm';
+import { DataSource, EntityManager, In, Repository } from 'typeorm';
+import { Escrow, Payment, User } from '../common/entities';
 import { AssetType, EscrowStatus, PaymentStatus } from '../common/enums';
 import {
   amountToStroops,
   isSupportedEscrowAsset,
   isValidMoneyAmount,
+  stroopsToAmount,
 } from '../common/validators/money.validator';
-import { SorobanClientService } from './soroban-client.service';
+import {
+  ContractInvocationResult,
+  SorobanClientService,
+  u64,
+  SorobanPendingError,
+} from './soroban-client.service';
+import {
+  apportionBasisPoints,
+  splitStroops,
+  TOTAL_BASIS_POINTS,
+} from './split-math.util';
+import {
+  assertUniqueSplitEntries,
+  validatePercentageSplits,
+} from '../common/validators/split-percentage.validator';
 
 export interface FundEscrowInput {
   amount: string;
@@ -30,6 +45,21 @@ export interface FundEscrowInput {
    * which aren't sponsor-attributed.
    */
   sponsorId?: string | null;
+  /**
+   * The `u64` key to store this escrow under on-chain — `escrow::fund`'s
+   * `issue_id` (#158). For a bounty this is the linked GitHub issue's
+   * numeric id, supplied by the caller. Omitted for milestone /
+   * maintenance-pool escrows, where a stable id is derived from the parent
+   * UUID until those move to their own sibling contracts.
+   */
+  onChainIssueId?: string | number | null;
+  /**
+   * Deadline passed to `escrow::fund`, after which the contract's
+   * permissionless refund path opens (#158). Defaults to
+   * `now + stellar.escrowDeadlineSeconds` when the funding bounty/milestone
+   * has none of its own.
+   */
+  deadline?: Date | null;
 }
 
 export interface SplitRecipient {
@@ -46,8 +76,18 @@ export class EscrowService {
     @InjectRepository(Escrow) private readonly escrowRepo: Repository<Escrow>,
     @InjectRepository(Payment)
     private readonly paymentRepo: Repository<Payment>,
+    @InjectRepository(User) private readonly userRepo: Repository<User>,
+    @InjectDataSource() private readonly dataSource: DataSource,
     private readonly soroban: SorobanClientService,
   ) {}
+
+  /**
+   * Whether a real maintenance-pool contract has been configured.
+   * Delegates to `SorobanClientService.isPoolConfigured` (#754).
+   */
+  isPoolConfigured(): boolean {
+    return this.soroban.isPoolConfigured();
+  }
 
   /** Locks funds for a bounty/milestone/pool by calling the escrow contract's `fund`. */
   async fund(input: FundEscrowInput): Promise<Escrow> {
@@ -63,29 +103,79 @@ export class EscrowService {
       maintenancePoolId: input.maintenancePoolId ?? null,
       sponsorId: input.sponsorId ?? null,
     });
+    escrow.contractId = this.resolveContractId(input) || null;
+    escrow.onChainId = this.resolveOnChainId(input);
+    const deadline = this.resolveDeadline(input);
+    escrow.deadline = deadline;
     await this.escrowRepo.save(escrow);
 
+    let result: ContractInvocationResult;
     try {
-      const referenceId =
-        input.bountyId ??
-        input.milestoneId ??
-        input.maintenancePoolId ??
-        escrow.id;
-      const result = await this.soroban.invoke('fund', [
-        input.funderAddress,
-        referenceId,
-        this.toStroops(input.amount),
-      ]);
-
-      escrow.status = EscrowStatus.LOCKED;
-      escrow.fundTxHash = result.txHash;
-      escrow.lockedAt = new Date();
-      escrow.metadata = { fund: result };
-      return this.escrowRepo.save(escrow);
+      // escrow::fund(issue_id: u64, sponsor: Address, token: Address,
+      //              amount: i128, deadline: u64) -> Result<(), Error>  (#158)
+      // `issue_id` and `deadline` are declared u64, so they are wrapped in
+      // `u64(...)` — a bare bigint would encode as ScVal::I128 and fail
+      // host-side argument binding (#301). `amount` really is i128 and stays
+      // a plain bigint.
+      result = await this.soroban.invoke(
+        'fund',
+        [
+          u64(BigInt(escrow.onChainId)),
+          input.funderAddress,
+          this.resolveTokenAddress(input.asset),
+          this.toStroops(input.amount),
+          u64(BigInt(Math.floor(deadline.getTime() / 1000))),
+        ],
+        this.contractOpts(escrow),
+      );
     } catch (err) {
+      if (err instanceof SorobanPendingError) {
+        // Submitted but not finalized when polling ran out: the funds may
+        // still lock. Keep PENDING with the hash so reconciliation (#371) or
+        // a retry resolves it via getTransaction(hash) — marking FAILED here
+        // invites a client retry that locks funds twice (#527).
+        escrow.fundTxHash = err.txHash;
+        escrow.metadata = {
+          pending: { txHash: err.txHash, at: new Date().toISOString() },
+        };
+        await this.escrowRepo.save(escrow);
+        throw err;
+      }
+      // Only reached when the *contract call* failed: nothing was locked
+      // on-chain, so FAILED is the truthful state.
       escrow.status = EscrowStatus.FAILED;
       escrow.metadata = { error: (err as Error).message };
       await this.escrowRepo.save(escrow);
+      throw err;
+    }
+
+    escrow.status = EscrowStatus.LOCKED;
+    escrow.fundTxHash = result.txHash;
+    escrow.lockedAt = new Date();
+    escrow.metadata = { fund: result };
+
+    try {
+      return await this.escrowRepo.save(escrow);
+    } catch (err) {
+      // The funds ARE locked on-chain — only the local ledger write failed
+      // (pool exhaustion, constraint violation, connection drop). Marking
+      // the escrow FAILED here is what #42 describes: the ledger would claim
+      // no funds are locked while the contract holds them. Keep the truthful
+      // LOCKED status (and the tx hash) and record the failure so a
+      // reconciliation job can find and repair the row (#302, #42, #8) —
+      // mirroring invokeOnLockedEscrow's `lastFailure` shape (#89).
+      escrow.metadata = {
+        ...(escrow.metadata ?? {}),
+        lastFailure: {
+          operation: 'fund',
+          error: (err as Error).message,
+          at: new Date().toISOString(),
+        },
+      };
+      // A second failure here means the row is genuinely unreachable; the
+      // tx hash above is the only remaining trace, so the original error is
+      // what propagates.
+      await this.escrowRepo.save(escrow).catch(() => undefined);
       throw err;
     }
   }
@@ -95,79 +185,143 @@ export class EscrowService {
     escrowId: string,
     recipientAddress: string,
     recipientId?: string,
+    manager?: EntityManager,
   ): Promise<Escrow> {
-    const escrow = await this.getOrThrow(escrowId);
-    this.assertLocked(escrow);
+    // Validated before the row lock is taken so a bad recipient doesn't hold
+    // the escrow locked while the lookup runs.
+    await this.assertRecipientsMatchUsers([{ recipientAddress, recipientId }]);
 
-    const result = await this.soroban.invoke('release', [
-      escrow.bountyId ??
-        escrow.milestoneId ??
-        escrow.maintenancePoolId ??
-        escrow.id,
-      recipientAddress,
-    ]);
+    // The whole read-check-act sequence runs under a pessimistic row lock, so
+    // a second concurrent release for the same escrow blocks here, then
+    // observes the RELEASED status written by the first and is rejected —
+    // instead of both passing the LOCKED check and double-paying (#303).
+    return this.withLockedEscrow(escrowId, async (escrow, manager) => {
+      const result = await this.invokeRelease(
+        escrow,
+        'release',
+        [[recipientAddress, TOTAL_BASIS_POINTS]],
+        manager,
+      );
 
-    escrow.status = EscrowStatus.RELEASED;
-    escrow.releaseTxHash = result.txHash;
-    escrow.releasedAt = new Date();
-    await this.escrowRepo.save(escrow);
+      // The on-chain release already succeeded; the local ledger must record
+      // (escrow -> RELEASED) and the Payment row atomically, or neither, so a
+      // Payment-insert failure can never leave a permanently-mismarked escrow
+      // with no record of who was paid (#154). The lock makes that whole span
+      // one indivisible unit.
+      escrow.status = EscrowStatus.RELEASED;
+      escrow.releaseTxHash = result.txHash;
+      escrow.releasedAt = new Date();
+      await manager.save(Escrow, escrow);
 
-    const payment = this.paymentRepo.create({
-      escrowId: escrow.id,
-      recipientId: recipientId ?? null,
-      recipientAddress,
-      amount: escrow.amount,
-      asset: escrow.asset,
-      status: PaymentStatus.CONFIRMED,
-      txHash: result.txHash,
-    });
-    await this.paymentRepo.save(payment);
+      await manager.save(
+        Payment,
+        this.paymentRepo.create({
+          escrowId: escrow.id,
+          recipientId: recipientId ?? null,
+          recipientAddress,
+          amount: escrow.amount,
+          asset: escrow.asset,
+          status: PaymentStatus.CONFIRMED,
+          txHash: result.txHash,
+        }),
+      );
 
-    return escrow;
+      return escrow;
+    }, manager);
   }
 
   /**
    * Splits the escrowed amount across multiple recipients by percentage
    * (team bounties). Percentages must sum to exactly 100.
+   *
+   * The recorded `Payment.amount` values are derived from the same
+   * basis-point integers sent on-chain — not recomputed independently from the
+   * raw percentages — so the local ledger can never drift from what was
+   * instructed to the contract. Shares are allocated in whole stroops via a
+   * largest-remainder method, guaranteeing `sum(payments.amount) ===
+   * escrow.amount` exactly (#43).
    */
   async splitRelease(
     escrowId: string,
     recipients: SplitRecipient[],
+    manager?: EntityManager,
   ): Promise<Payment[]> {
-    const escrow = await this.getOrThrow(escrowId);
-    this.assertLocked(escrow);
     this.assertValidSplits(recipients);
+    await this.assertRecipientsMatchUsers(recipients);
 
-    const result = await this.soroban.invoke('split_release', [
-      escrow.bountyId ?? escrow.milestoneId ?? escrow.id,
-      recipients.map((r) => r.recipientAddress),
-      recipients.map((r) => Math.round(r.percentage * 100)), // basis points-ish, 2dp -> integer
-    ]);
+    // Same pessimistic row lock as release(): concurrent split releases for
+    // one escrow must serialise rather than each observing LOCKED (#303).
+    return this.withLockedEscrow(escrowId, async (escrow, manager) => {
+      const totalStroops = amountToStroops(escrow.amount);
+      // Single source of truth for the split: integer basis points summing to
+      // exactly 10,000 (100.00%), used both on-chain and to derive the ledger.
+      const bps = apportionBasisPoints(recipients.map((r) => r.percentage));
 
-    escrow.status = EscrowStatus.RELEASED;
-    escrow.releaseTxHash = result.txHash;
-    escrow.releasedAt = new Date();
-    await this.escrowRepo.save(escrow);
-
-    const totalAmount = Number(escrow.amount);
-    const payments: Payment[] = [];
-    for (const recipient of recipients) {
-      const share = this.roundAmount(
-        (totalAmount * recipient.percentage) / 100,
+      const result = await this.invokeRelease(
+        escrow,
+        'splitRelease',
+        recipients.map(
+          (r, i) => [r.recipientAddress, bps[i]] as [string, number],
+        ),
+        manager,
       );
-      const payment = this.paymentRepo.create({
-        escrowId: escrow.id,
-        recipientId: recipient.recipientId ?? null,
-        recipientAddress: recipient.recipientAddress,
-        amount: share.toFixed(7),
-        asset: escrow.asset,
-        splitPercentage: recipient.percentage.toFixed(2),
-        status: PaymentStatus.CONFIRMED,
-        txHash: result.txHash,
-      });
-      payments.push(await this.paymentRepo.save(payment));
-    }
-    return payments;
+
+      const shares = splitStroops(totalStroops, bps);
+      const reconcile = this.reconcileSplitResult(
+        escrow.id,
+        totalStroops,
+        result.returnValue,
+      );
+
+      // Atomic: the escrow flips to RELEASED (or RECONCILIATION_PENDING when
+      // the contract's reported total diverges from our recorded total) and
+      // every recipient's Payment row is written in one transaction, so a
+      // mid-loop insert failure can no longer leave a RELEASED escrow with
+      // only some recipients recorded (#154) — and the row lock makes that
+      // span indivisible (#303). A divergence is written to
+      // metadata.reconciliation so the reconciliation job can query and act
+      // on it (#814).
+      const payments: Payment[] = [];
+      escrow.status = reconcile.diverged
+        ? EscrowStatus.RECONCILIATION_PENDING
+        : EscrowStatus.RELEASED;
+      escrow.releaseTxHash = result.txHash;
+      escrow.releasedAt = new Date();
+      escrow.metadata = {
+        ...(escrow.metadata ?? {}),
+        splitRelease: result,
+        ...(reconcile.diverged
+          ? {
+              reconciliation: {
+                divergedAt: new Date().toISOString(),
+                returnedStroops: String(reconcile.returned),
+                recordedStroops: String(reconcile.recorded),
+                resolved: false,
+              },
+            }
+          : {}),
+      };
+      await manager.save(Escrow, escrow);
+
+      for (let i = 0; i < recipients.length; i++) {
+        const recipient = recipients[i];
+        const payment = await manager.save(
+          Payment,
+          this.paymentRepo.create({
+            escrowId: escrow.id,
+            recipientId: recipient.recipientId ?? null,
+            recipientAddress: recipient.recipientAddress,
+            amount: stroopsToAmount(shares[i]),
+            asset: escrow.asset,
+            splitPercentage: (bps[i] / 100).toFixed(2),
+            status: PaymentStatus.CONFIRMED,
+            txHash: result.txHash,
+          }),
+        );
+        payments.push(payment);
+      }
+      return payments;
+    }, manager);
   }
 
   /**
@@ -176,75 +330,190 @@ export class EscrowService {
    * distributed incrementally as individual issues resolve. The escrow
    * moves to RELEASED once the cumulative released amount reaches the
    * total locked amount.
+   *
+   * When an `EntityManager` is supplied (e.g. from an outer
+   * `dataSource.transaction`), the Payment insert and optional escrow-status
+   * flip share that manager's transaction, guaranteeing atomicity with the
+   * caller's other writes (#254). Without one, a self-contained transaction
+   * is opened for backward compatibility.
    */
   async releasePartial(
     escrowId: string,
     amount: string,
     recipientAddress: string,
     recipientId?: string,
+    manager?: EntityManager,
   ): Promise<Payment> {
-    const escrow = await this.getOrThrow(escrowId);
-    this.assertLocked(escrow);
     this.assertValidAmount(amount);
+    await this.assertRecipientsMatchUsers([{ recipientAddress, recipientId }]);
 
-    const existingPayments = await this.paymentRepo.find({
-      where: { escrowId: escrow.id },
-    });
-    const releasedSoFar = existingPayments.reduce(
-      (sum, p) => sum + Number(p.amount),
-      0,
+    // The cumulative-released balance check is read-then-write just like the
+    // status check, so it runs under the same pessimistic row lock (#303):
+    // without it, two concurrent partial releases both read the same
+    // releasedSoFarStroops and together overshoot the locked amount.
+    return this.withLockedEscrow(
+      escrowId,
+      async (escrow, mgr) => {
+        const existingPayments = await mgr.find(Payment, {
+          where: { escrowId: escrow.id },
+        });
+        // Compare in stroops (BigInt) rather than Number to avoid IEEE-754
+        // precision loss / epsilon-fudge factors on financial amounts (#5).
+        const releasedSoFarStroops = existingPayments.reduce(
+          (sum, p) => sum + amountToStroops(p.amount),
+          0n,
+        );
+        const requestedStroops = amountToStroops(amount);
+        const escrowStroops = amountToStroops(escrow.amount);
+        if (releasedSoFarStroops + requestedStroops > escrowStroops) {
+          throw new BadRequestException(
+            `Partial release of ${amount} would exceed remaining escrow balance`,
+          );
+        }
+
+        const result = await this.invokeOnLockedEscrow(
+          escrow,
+          'releasePartial',
+          () =>
+            this.soroban.invoke(
+              'release_partial',
+              [
+                escrow.milestoneId ?? escrow.bountyId ?? escrow.id,
+                recipientAddress,
+                this.toStroops(amount),
+              ],
+              this.contractOpts(escrow),
+            ),
+          mgr,
+        );
+
+        // The Payment insert and the (conditional) escrow-status flip share
+        // one transaction so the two can't diverge — same guarantee as
+        // release() and splitRelease() (#154). When an outer `manager` is
+        // supplied, reuse it so the caller's transaction also covers these
+        // writes and this call's row lock (#254, #303).
+        const payment = await mgr.save(
+          Payment,
+          this.paymentRepo.create({
+            escrowId: escrow.id,
+            recipientId: recipientId ?? null,
+            recipientAddress,
+            amount,
+            asset: escrow.asset,
+            status: PaymentStatus.CONFIRMED,
+            txHash: result.txHash,
+          }),
+        );
+
+        if (releasedSoFarStroops + requestedStroops >= escrowStroops) {
+          escrow.status = EscrowStatus.RELEASED;
+          escrow.releaseTxHash = result.txHash;
+          escrow.releasedAt = new Date();
+          await mgr.save(Escrow, escrow);
+        }
+
+        return payment;
+      },
+      manager,
     );
-    const requested = Number(amount);
-    if (releasedSoFar + requested > Number(escrow.amount) + 1e-7) {
-      throw new BadRequestException(
-        `Partial release of ${amount} would exceed remaining escrow balance`,
-      );
-    }
-
-    const result = await this.soroban.invoke('release', [
-      escrow.milestoneId ?? escrow.bountyId ?? escrow.id,
-      recipientAddress,
-      this.toStroops(amount),
-    ]);
-
-    const payment = await this.paymentRepo.save(
-      this.paymentRepo.create({
-        escrowId: escrow.id,
-        recipientId: recipientId ?? null,
-        recipientAddress,
-        amount,
-        asset: escrow.asset,
-        status: PaymentStatus.CONFIRMED,
-        txHash: result.txHash,
-      }),
-    );
-
-    if (releasedSoFar + requested >= Number(escrow.amount) - 1e-7) {
-      escrow.status = EscrowStatus.RELEASED;
-      escrow.releaseTxHash = result.txHash;
-      escrow.releasedAt = new Date();
-      await this.escrowRepo.save(escrow);
-    }
-
-    return payment;
   }
 
-  /** Refunds the full escrowed amount back to the original funder. */
-  async refund(escrowId: string): Promise<Escrow> {
-    const escrow = await this.getOrThrow(escrowId);
-    this.assertLocked(escrow);
+  /**
+   * Pays a reward out of a maintenance pool's running balance.
+   *
+   * The real `mergefi-maintenance-pool` contract has no
+   * LOCKED-escrow-with-partial-release concept: it accrues an on-chain
+   * `balance` through repeated `deposit()` calls and pays out via
+   * `withdraw(pool_id, recipient, amount)` against the live balance, with no
+   * pre-`lock` step and no "fully released" terminal state (#163).
+   *
+   * So unlike {@link releasePartial} — which is milestone-shaped: it checks
+   * the cumulative payouts against a fixed locked `escrow.amount` and flips
+   * the escrow to RELEASED once they reach it — this call:
+   *   - invokes the pool contract's `withdraw`, not `release`;
+   *   - leaves the escrow row LOCKED (it mirrors an open, still-funded pool,
+   *     not a one-off lock that closes out);
+   *   - does not enforce a ceiling here. The spendable balance is tracked by
+   *     `MaintenancePoolService` on `pool.balance` and checked there before
+   *     this is called.
+   */
+  async poolWithdraw(
+    escrowId: string,
+    amount: string,
+    recipientAddress: string,
+    recipientId?: string,
+    issueId?: string,
+  ): Promise<Payment> {
+    // Validate amount and recipient identity before acquiring the row lock so
+    // bad-argument errors are cheap and do not briefly block concurrent callers.
+    this.assertValidAmount(amount);
+    await this.assertRecipientsMatchUsers([{ recipientAddress, recipientId }]);
 
-    const result = await this.soroban.invoke('refund', [
-      escrow.bountyId ??
-        escrow.milestoneId ??
-        escrow.maintenancePoolId ??
-        escrow.id,
-    ]);
+    // Route through withLockedEscrow for the same SELECT ... FOR UPDATE
+    // serialisation that release/refund use (#738). Without the lock a
+    // concurrent refund reads status = LOCKED before the withdraw commits,
+    // passes assertLocked, and both on-chain calls fly for the same escrow.
+    return this.withLockedEscrow(escrowId, async (escrow, manager) => {
+      const result = await this.invokeOnLockedEscrow(
+        escrow,
+        'poolWithdraw',
+        () =>
+          this.soroban.invoke(
+            'withdraw',
+            [this.onChainKeyFor(escrow), recipientAddress, this.toStroops(amount)],
+            this.contractOpts(escrow),
+          ),
+        manager,
+      );
 
-    escrow.status = EscrowStatus.REFUNDED;
-    escrow.refundTxHash = result.txHash;
-    escrow.refundedAt = new Date();
-    return this.escrowRepo.save(escrow);
+      // Write through the transaction manager so the Payment insert and the
+      // row lock (and any failure-metadata write) are one atomic span.
+      return manager.save(
+        Payment,
+        this.paymentRepo.create({
+          escrowId: escrow.id,
+          recipientId: recipientId ?? null,
+          recipientAddress,
+          issueId: issueId ?? null,
+          amount,
+          asset: escrow.asset,
+          status: PaymentStatus.CONFIRMED,
+          txHash: result.txHash,
+        }),
+      );
+    });
+  }
+
+  /**
+   * Refunds the full escrowed amount back to the original funder.
+   *
+   * Runs under the same row lock as release(). When an outer `manager` is given
+   * (#796), the refund and the caller's bounty status write share one transaction.
+   */
+  async refund(escrowId: string, manager?: EntityManager): Promise<Escrow> {
+    return this.withLockedEscrow(
+      escrowId,
+      async (escrow, mgr) => {
+        const result = await this.invokeOnLockedEscrow(
+          escrow,
+          'refund',
+          () =>
+            this.soroban.invoke(
+              'refund',
+              // `refund(issue_id: u64, ...)` — u64-typed on-chain, not i128 (#301).
+              [u64(this.onChainKeyFor(escrow))],
+              this.contractOpts(escrow),
+            ),
+          mgr,
+        );
+
+        escrow.status = EscrowStatus.REFUNDED;
+        escrow.refundTxHash = result.txHash;
+        escrow.refundedAt = new Date();
+        return mgr.save(Escrow, escrow);
+      },
+      manager,
+    );
   }
 
   async findOne(id: string): Promise<Escrow> {
@@ -257,6 +526,42 @@ export class EscrowService {
     return escrow;
   }
 
+  /**
+   * Runs `fn` against the escrow row while holding a `SELECT ... FOR UPDATE`
+   * lock on it, asserting the LOCKED precondition under that lock (#303).
+   *
+   * Without the lock, two concurrent requests for the same escrow both read
+   * status = LOCKED before either has written, both invoke the contract, and
+   * both record a full-amount `Payment` — a double-payout the on-chain call
+   * does not save us from in dry-run, where `SorobanClientService.invoke`
+   * succeeds unconditionally. With it, the second request blocks on the row
+   * until the first commits and then observes the non-LOCKED status.
+   *
+   * When an outer `manager` is supplied (a caller's own transaction), the
+   * lock is taken on that transaction instead of a new one, so the lock and
+   * the caller's other writes share a single atomic span (#254).
+   */
+  private async withLockedEscrow<T>(
+    escrowId: string,
+    fn: (escrow: Escrow, manager: EntityManager) => Promise<T>,
+    manager?: EntityManager,
+  ): Promise<T> {
+    const run = async (mgr: EntityManager): Promise<T> => {
+      const escrow = await mgr.findOne(Escrow, {
+        where: { id: escrowId },
+        lock: { mode: 'pessimistic_write' },
+      });
+      if (!escrow) throw new NotFoundException(`Escrow ${escrowId} not found`);
+      this.assertLocked(escrow);
+      return fn(escrow, mgr);
+    };
+
+    if (manager) {
+      return run(manager);
+    }
+    return this.dataSource.transaction(run);
+  }
+
   private assertLocked(escrow: Escrow) {
     if (escrow.status !== EscrowStatus.LOCKED) {
       throw new BadRequestException(
@@ -265,26 +570,245 @@ export class EscrowService {
     }
   }
 
-  /** Validates that split percentages sum to 100.00, within floating point tolerance. */
-  assertValidSplits(recipients: SplitRecipient[]): void {
-    if (recipients.length === 0) {
-      throw new BadRequestException(
-        'At least one recipient is required for a split release',
-      );
-    }
-    const total = recipients.reduce((sum, r) => sum + r.percentage, 0);
-    if (Math.abs(total - 100) > 0.01) {
-      throw new BadRequestException(
-        `Split percentages must sum to 100, got ${total.toFixed(2)}`,
-      );
-    }
-    if (recipients.some((r) => r.percentage <= 0)) {
-      throw new BadRequestException('Split percentages must be positive');
+  /**
+   * recipientId and recipientAddress must describe the same payee: whenever a
+   * user id is supplied, the user must exist and its address must match the
+   * Stellar address on file (#92). Runs before the Soroban invocation so a
+   * client-trusted, non-existent recipientId is rejected up front rather
+   * than surfacing as a foreign-key violation on the Payment insert *after*
+   * funds have already moved on-chain (#154).
+   */
+  private async assertRecipientsMatchUsers(
+    recipients: { recipientAddress: string; recipientId?: string }[],
+  ): Promise<void> {
+    const ids = [
+      ...new Set(
+        recipients
+          .map((r) => r.recipientId)
+          .filter((id): id is string => Boolean(id)),
+      ),
+    ];
+    if (ids.length === 0) return;
+
+    const users = await this.userRepo.find({ where: { id: In(ids) } });
+    const byId = new Map(users.map((u) => [u.id, u]));
+
+    for (const r of recipients) {
+      if (!r.recipientId) continue;
+      const user = byId.get(r.recipientId);
+      if (!user) {
+        throw new BadRequestException(
+          `recipientId ${r.recipientId} does not correspond to a known user`,
+        );
+      }
+      if (user.stellarAddress !== r.recipientAddress) {
+        throw new BadRequestException(
+          `recipientAddress does not match the Stellar address on file for user ${r.recipientId}`,
+        );
+      }
     }
   }
 
-  private roundAmount(value: number): number {
-    return Math.round(value * 1e7) / 1e7;
+  /**
+   * Runs a Soroban invocation against an already-LOCKED escrow and records a
+   * thrown failure in escrow.metadata so failed attempts are queryable state
+   * rather than only a server log line (#89). The status deliberately stays
+   * LOCKED — the funds are still held and the operation can be retried.
+   */
+  private async invokeOnLockedEscrow<T>(
+    escrow: Escrow,
+    operation: string,
+    call: () => Promise<T>,
+    manager?: EntityManager,
+  ): Promise<T> {
+    try {
+      return await call();
+    } catch (err) {
+      escrow.metadata = {
+        ...(escrow.metadata ?? {}),
+        lastFailure: {
+          operation,
+          error: (err as Error).message,
+          at: new Date().toISOString(),
+        },
+      };
+      // Saved through the transaction manager when one is supplied: the row
+      // lock this call holds would otherwise make a second connection's
+      // write on the same row block against itself (#303).
+      if (manager) {
+        await manager.save(Escrow, escrow);
+      } else {
+        await this.escrowRepo.save(escrow);
+      }
+      throw err;
+    }
+  }
+
+  /**
+   * The escrow contract's single payout entrypoint (#161):
+   * `release(issue_id: u64, recipients: Vec<(Address, u32)>)`. A single
+   * recipient is just the degenerate `[(addr, 10_000)]` case of the same
+   * call a team split makes — there is no separate `split_release` method on
+   * the deployed contract. Basis points must sum to exactly 10,000.
+   */
+  private invokeRelease(
+    escrow: Escrow,
+    operation: string,
+    recipients: Array<[string, number]>,
+    manager?: EntityManager,
+  ): Promise<ContractInvocationResult> {
+    return this.invokeOnLockedEscrow(
+      escrow,
+      operation,
+      () =>
+        this.soroban.invoke(
+          'release',
+          // `release(issue_id: u64, recipients)` — u64-typed on-chain (#301).
+          [u64(this.onChainKeyFor(escrow)), recipients],
+          this.contractOpts(escrow),
+        ),
+      manager,
+    );
+  }
+
+  /**
+   * The deployed contract a new escrow instance should be held by (#157):
+   * the maintenance-pool deployment for pool escrows, the bounty escrow
+   * contract otherwise. Resolved once at fund time and persisted on the row.
+   */
+  private resolveContractId(input: {
+    maintenancePoolId?: string | null;
+  }): string {
+    return input.maintenancePoolId
+      ? this.soroban.maintenancePoolContractId
+      : this.soroban.escrowContractId;
+  }
+
+  /**
+   * `invoke()` options pinning a call to the contract this escrow was funded
+   * in. Empty for rows created before `contractId` was persisted and in
+   * dry-run environments — the client then falls back to `ESCROW_CONTRACT_ID`.
+   */
+  private contractOpts(escrow: Escrow): { contractId?: string } {
+    return escrow.contractId ? { contractId: escrow.contractId } : {};
+  }
+
+  /**
+   * The `u64` key `escrow::fund` should store this escrow under (#158). A
+   * bounty carries the linked GitHub issue's numeric id (passed as
+   * `onChainIssueId`); milestone / maintenance-pool escrows, which belong on
+   * their own sibling contracts (#157), get a stable u64 derived from the
+   * parent UUID until then.
+   */
+  private resolveOnChainId(input: FundEscrowInput): string {
+    const explicit = input.onChainIssueId;
+    if (explicit != null && `${explicit}`.trim() !== '') {
+      const value = `${explicit}`.trim();
+      return /^\d+$/.test(value) ? value : this.deriveOnChainId(value);
+    }
+    return this.deriveOnChainId(
+      input.bountyId ?? input.milestoneId ?? input.maintenancePoolId ?? '',
+    );
+  }
+
+  /** Deterministic FNV-1a-64 hash of a non-numeric reference into a `u64` string. */
+  private deriveOnChainId(seed: string): string {
+    let hash = 14695981039346656037n;
+    for (let i = 0; i < seed.length; i++) {
+      hash ^= BigInt(seed.charCodeAt(i));
+      hash = BigInt.asUintN(64, hash * 1099511628211n);
+    }
+    return hash.toString();
+  }
+
+  /**
+   * The on-chain key for an already-persisted escrow: the `onChainId`
+   * captured at fund time, or the derived fallback for rows funded before
+   * that column existed. Always numeric so it round-trips through `BigInt`.
+   */
+  private onChainKeyFor(escrow: Escrow): bigint {
+    if (escrow.onChainId != null && escrow.onChainId !== '') {
+      return BigInt(escrow.onChainId);
+    }
+    return BigInt(
+      this.deriveOnChainId(
+        escrow.bountyId ??
+          escrow.milestoneId ??
+          escrow.maintenancePoolId ??
+          escrow.id,
+      ),
+    );
+  }
+
+  /** Resolves the funding deadline: the parent's own, or the configured default window. */
+  private resolveDeadline(input: FundEscrowInput): Date {
+    if (input.deadline) return input.deadline;
+    return new Date(Date.now() + this.soroban.escrowDeadlineSeconds * 1000);
+  }
+
+  /** Soroban token (SAC) contract address backing an escrow asset (#158). */
+  private resolveTokenAddress(asset: AssetType): string {
+    return this.soroban.tokenContractId(asset);
+  }
+
+  /**
+   * Validates that split percentages sum to 100.00 (within tolerance), with
+   * every entry in `(0, 100]`. Delegates to the shared
+   * {@link validatePercentageSplits} — the same implementation
+   * `TeamsService` uses for `CreateTeamDto.members` (#167).
+   */
+  assertValidSplits(recipients: SplitRecipient[]): void {
+    validatePercentageSplits(recipients, 'split release');
+    // #358: the same recipient listed twice would otherwise silently
+    // receive a doubled share — reject it, keyed on recipientAddress since
+    // that's always present (recipientId is an optional internal ref).
+    assertUniqueSplitEntries(
+      recipients,
+      (r) => r.recipientAddress,
+      'split recipient',
+    );
+  }
+
+  /**
+   * The deployed `release` entrypoint returns `Result<(), Error>` — no
+   * payout figure — so `result.returnValue` is normally null and the
+   * recorded Payment rows come from the locally computed shares. If a future
+   * contract revision returns a scalar stroop total, reconcile it against
+   * the local total and surface any divergence as queryable state so the
+   * reconciliation job can find and act on it (#814).
+   *
+   * Returns `true` when a divergence was detected.
+   */
+  private reconcileSplitResult(
+    escrowId: string,
+    totalStroops: bigint,
+    returnValue: unknown,
+  ):
+    | { diverged: false }
+    | { diverged: true; returned: bigint; recorded: bigint } {
+    const returned = this.toStroopsFromReturnValue(returnValue);
+    if (returned === null) return { diverged: false };
+    if (returned !== totalStroops) {
+      this.logger.warn(
+        `release returnValue (${returned} stroops) diverges from the ` +
+          `recorded total (${totalStroops} stroops) for escrow ${escrowId}`,
+      );
+      return { diverged: true, returned, recorded: totalStroops };
+    }
+    return { diverged: false };
+  }
+
+  /** Best-effort conversion of a contract return value to a stroop total. */
+  private toStroopsFromReturnValue(value: unknown): bigint | null {
+    if (value == null) return null;
+    if (typeof value === 'bigint') return value;
+    if (typeof value === 'number' && Number.isFinite(value)) {
+      return BigInt(Math.trunc(value));
+    }
+    if (typeof value === 'string' && /^-?\d+$/.test(value.trim())) {
+      return BigInt(value.trim());
+    }
+    return null;
   }
 
   private assertValidFundInput(input: FundEscrowInput): void {

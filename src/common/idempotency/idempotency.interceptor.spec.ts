@@ -3,16 +3,21 @@ import {
   CallHandler,
   ConflictException,
   ExecutionContext,
+  HttpException,
   InternalServerErrorException,
+  UnprocessableEntityException,
 } from '@nestjs/common';
-import { firstValueFrom, lastValueFrom, of, throwError } from 'rxjs';
+import { firstValueFrom, lastValueFrom, NEVER, of, throwError } from 'rxjs';
 import { IdempotencyKey } from '../entities/idempotency-key.entity';
 import { IdempotencyKeyStatus } from '../enums';
 import { IDEMPOTENCY_SCOPE_KEY } from './idempotent.decorator';
-import { IdempotencyInterceptor } from './idempotency.interceptor';
+import {
+  IdempotencyInterceptor,
+  STALE_PROCESSING_MS,
+} from './idempotency.interceptor';
+import { POLL_CEILING_MS } from '../../escrow/soroban-client.service';
 
 const PG_UNIQUE_VIOLATION = '23505';
-const STALE_PROCESSING_MS = 30 * 1000;
 
 function uniqueViolationError(): Error & { driverError: { code: string } } {
   return Object.assign(
@@ -70,6 +75,10 @@ class FakeIdempotencyRepo {
       key: data.key,
       scope: data.scope,
       callerId: data.callerId,
+      // Mirrors Postgres: an unspecified nullable column is NULL, not
+      // undefined — matters for rows seeded directly via repo.insert() in
+      // tests that simulate a pre-#54 row with no fingerprint on record.
+      requestFingerprint: data.requestFingerprint ?? null,
       status: IdempotencyKeyStatus.PROCESSING,
       responseStatus: null,
       responseBody: null,
@@ -109,12 +118,20 @@ function createContext(
     headers?: Record<string, string>;
     method?: string;
     user?: { userId: string };
+    ip?: string;
+    params?: Record<string, string>;
+    body?: unknown;
+    route?: { path: string };
   } = {},
 ): ExecutionContext {
   const request = {
     headers: overrides.headers ?? {},
     method: overrides.method ?? 'POST',
     user: overrides.user,
+    ip: overrides.ip ?? DEFAULT_IP,
+    params: overrides.params ?? {},
+    body: overrides.body ?? {},
+    route: overrides.route,
   };
   return {
     switchToHttp: () => ({
@@ -138,6 +155,10 @@ function createReflector(scope: string | undefined): { get: jest.Mock } {
     ),
   };
 }
+
+const DEFAULT_IP = '203.0.113.10';
+const OTHER_IP = '198.51.100.7';
+const DEFAULT_BUCKET = `ip:${DEFAULT_IP}`;
 
 const KEY_A = '11111111-1111-4111-8111-111111111111';
 const KEY_B = '22222222-2222-4222-8222-222222222222';
@@ -252,6 +273,69 @@ describe('IdempotencyInterceptor', () => {
     expect(next.handle).toHaveBeenCalledTimes(2);
   });
 
+  it('releases the key on a non-HttpException failure, so a retry re-executes the handler (#843)', async () => {
+    let calls = 0;
+    const next = createNext(() => {
+      calls += 1;
+      if (calls === 1) {
+        // e.g. a Soroban RPC/network failure surfacing as a plain Error —
+        // not a deterministic outcome, so it must not be cached.
+        return throwError(() => new Error('soroban rpc unavailable'));
+      }
+      return of({ ok: true });
+    });
+    const context = createContext({ headers: { 'idempotency-key': KEY_A } });
+
+    await expect(
+      firstValueFrom(await interceptor.intercept(context, next)),
+    ).rejects.toThrow('soroban rpc unavailable');
+    // The key row is gone after the first attempt, not left COMPLETED with
+    // a cached failure.
+    expect(repo.rows).toHaveLength(0);
+
+    const retryResult = await lastValueFrom(
+      await interceptor.intercept(context, next),
+    );
+
+    expect(retryResult).toEqual({ ok: true });
+    expect(next.handle).toHaveBeenCalledTimes(2);
+    expect(repo.rows).toHaveLength(1);
+    expect(repo.rows[0].status).toBe(IdempotencyKeyStatus.COMPLETED);
+  });
+
+  it('caches the exact 4xx status and body, not just the exception type (#843)', async () => {
+    const next = createNext(() =>
+      throwError(
+        () =>
+          new BadRequestException(
+            'Escrow e-1 is not in LOCKED state (current: released)',
+          ),
+      ),
+    );
+    const context = createContext({ headers: { 'idempotency-key': KEY_A } });
+
+    const first = await firstValueFrom(
+      await interceptor.intercept(context, next),
+    ).catch((error: unknown) => error);
+    expect(first).toBeInstanceOf(BadRequestException);
+    const firstException = first as BadRequestException;
+
+    expect(repo.rows[0]).toMatchObject({
+      status: IdempotencyKeyStatus.COMPLETED,
+      responseStatus: 400,
+      responseBody: firstException.getResponse(),
+    });
+
+    const replay = await interceptor
+      .intercept(context, next)
+      .catch((error: unknown) => error);
+    expect(replay).toBeInstanceOf(HttpException);
+    const replayException = replay as HttpException;
+    expect(replayException.getStatus()).toBe(400);
+    expect(replayException.getResponse()).toEqual(firstException.getResponse());
+    expect(next.handle).toHaveBeenCalledTimes(1);
+  });
+
   it('caches a 4xx outcome and replays the same exception on retry without re-executing', async () => {
     const next = createNext(() =>
       throwError(() => new BadRequestException('insufficient funds')),
@@ -301,7 +385,7 @@ describe('IdempotencyInterceptor', () => {
     await repo.insert({
       key: KEY_A,
       scope: 'test.scope',
-      callerId: 'anonymous',
+      callerId: DEFAULT_BUCKET,
       expiresAt: new Date(Date.now() + 60_000),
     });
     // Simulate the original request having crashed mid-handler: back-date
@@ -324,7 +408,7 @@ describe('IdempotencyInterceptor', () => {
     await repo.insert({
       key: KEY_A,
       scope: 'test.scope',
-      callerId: 'anonymous',
+      callerId: DEFAULT_BUCKET,
       expiresAt: new Date(Date.now() + 60_000),
     });
 
@@ -355,5 +439,331 @@ describe('IdempotencyInterceptor', () => {
       'user-1',
       'user-2',
     ]);
+  });
+
+  describe('caller scoping for anonymous requests (#799)', () => {
+    it('does not replay another anonymous caller\'s cached response for the same key', async () => {
+      const callerA = createContext({
+        headers: { 'idempotency-key': KEY_A },
+        ip: DEFAULT_IP,
+      });
+      const callerB = createContext({
+        headers: { 'idempotency-key': KEY_A },
+        ip: OTHER_IP,
+      });
+      const next = createNext(() => of({ owner: 'A' }));
+      await lastValueFrom(await interceptor.intercept(callerA, next));
+
+      const nextB = createNext(() => of({ owner: 'B' }));
+      const result = await lastValueFrom(
+        await interceptor.intercept(callerB, nextB),
+      );
+
+      expect(result).toEqual({ owner: 'B' });
+      expect(nextB.handle).toHaveBeenCalledTimes(1);
+      expect(repo.rows.map((r) => r.callerId).sort()).toEqual(
+        [DEFAULT_BUCKET, `ip:${OTHER_IP}`].sort(),
+      );
+    });
+
+    it('does not let another anonymous caller\'s PROCESSING lock block a request with the same key', async () => {
+      const callerA = createContext({
+        headers: { 'idempotency-key': KEY_A },
+        ip: DEFAULT_IP,
+      });
+      const callerB = createContext({
+        headers: { 'idempotency-key': KEY_A },
+        ip: OTHER_IP,
+      });
+      // Caller A has claimed the key and its handler never completes, so its
+      // PROCESSING row stays fresh. Claiming happens inside intercept(), so
+      // the row exists once the promise resolves.
+      await interceptor.intercept(callerA, createNext(() => NEVER));
+
+      const nextB = createNext(() => of({ owner: 'B' }));
+      const result = await lastValueFrom(
+        await interceptor.intercept(callerB, nextB),
+      );
+
+      expect(result).toEqual({ owner: 'B' });
+      expect(nextB.handle).toHaveBeenCalledTimes(1);
+    });
+
+    it('still replays the cached response for the same anonymous caller (same IP)', async () => {
+      const context = createContext({
+        headers: { 'idempotency-key': KEY_A },
+        ip: DEFAULT_IP,
+      });
+      const first = createNext(() => of({ owner: 'A' }));
+      await lastValueFrom(await interceptor.intercept(context, first));
+
+      const retry = createNext(() => of({ owner: 'SHOULD-NOT-RUN' }));
+      const result = await lastValueFrom(
+        await interceptor.intercept(context, retry),
+      );
+
+      expect(result).toEqual({ owner: 'A' });
+      expect(retry.handle).not.toHaveBeenCalled();
+    });
+
+    it('rejects a request with neither a user nor a client IP instead of using a shared bucket', async () => {
+      const context = createContext({
+        headers: { 'idempotency-key': KEY_A },
+        ip: undefined,
+      });
+      // createContext defaults an undefined ip to DEFAULT_IP; strip it here.
+      (context.switchToHttp().getRequest() as { ip?: string }).ip = undefined;
+      const next = createNext(() => of({ ok: true }));
+
+      await expect(interceptor.intercept(context, next)).rejects.toBeInstanceOf(
+        BadRequestException,
+      );
+      expect(next.handle).not.toHaveBeenCalled();
+      expect(repo.rows).toHaveLength(0);
+    });
+  });
+
+  describe('request fingerprint (#54)', () => {
+    it('replays correctly when the retried request has identical params and body', async () => {
+      const next = createNext(() => of({ id: 'escrow-A', status: 'released' }));
+      const context = createContext({
+        headers: { 'idempotency-key': KEY_A },
+        params: { id: 'escrow-A' },
+        body: { recipientAddress: 'GADDRESSA' },
+      });
+
+      await lastValueFrom(await interceptor.intercept(context, next));
+      const secondResult = await lastValueFrom(
+        await interceptor.intercept(context, next),
+      );
+
+      expect(secondResult).toEqual({ id: 'escrow-A', status: 'released' });
+      expect(next.handle).toHaveBeenCalledTimes(1);
+    });
+
+    it('rejects reusing a key across two different resources on the same scope instead of replaying the first (#54)', async () => {
+      const contextA = createContext({
+        headers: { 'idempotency-key': KEY_A },
+        params: { id: 'escrow-A' },
+        body: { recipientAddress: 'GADDRESSA' },
+      });
+      const contextB = createContext({
+        headers: { 'idempotency-key': KEY_A }, // same key
+        params: { id: 'escrow-B' }, // different resource
+        body: { recipientAddress: 'GADDRESSB' },
+      });
+
+      const nextA = createNext(() => of({ id: 'escrow-A', released: true }));
+      await lastValueFrom(await interceptor.intercept(contextA, nextA));
+
+      const nextB = createNext(() => of({ id: 'escrow-B', released: true }));
+      await expect(
+        interceptor.intercept(contextB, nextB),
+      ).rejects.toBeInstanceOf(UnprocessableEntityException);
+
+      // The second (different) resource's handler must never run — this is
+      // exactly the "escrow B was never actually released" failure mode.
+      expect(nextB.handle).not.toHaveBeenCalled();
+      expect(repo.rows).toHaveLength(1);
+      expect(repo.rows[0].responseBody).toEqual({
+        id: 'escrow-A',
+        released: true,
+      });
+    });
+
+    it('rejects reusing a key with the same resource but a different body', async () => {
+      const contextFirst = createContext({
+        headers: { 'idempotency-key': KEY_A },
+        params: { id: 'escrow-A' },
+        body: { recipientAddress: 'GADDRESSA' },
+      });
+      const contextDifferentBody = createContext({
+        headers: { 'idempotency-key': KEY_A },
+        params: { id: 'escrow-A' },
+        body: { recipientAddress: 'GADDRESSC' }, // different recipient
+      });
+
+      const next = createNext(() => of({ ok: true }));
+      await lastValueFrom(await interceptor.intercept(contextFirst, next));
+
+      await expect(
+        interceptor.intercept(contextDifferentBody, next),
+      ).rejects.toBeInstanceOf(UnprocessableEntityException);
+      expect(next.handle).toHaveBeenCalledTimes(1);
+    });
+
+    it('does not reject a pre-#54 row with no stored fingerprint, even if the incoming fingerprint differs', async () => {
+      // Simulates a row created before this migration/column existed.
+      await repo.insert({
+        key: KEY_A,
+        scope: 'test.scope',
+        callerId: DEFAULT_BUCKET,
+        expiresAt: new Date(Date.now() + 60_000),
+      });
+      repo.rows[0].status = IdempotencyKeyStatus.COMPLETED;
+      repo.rows[0].responseStatus = 200;
+      repo.rows[0].responseBody = { legacy: true };
+      expect(repo.rows[0].requestFingerprint).toBeNull();
+
+      const context = createContext({
+        headers: { 'idempotency-key': KEY_A },
+        params: { id: 'escrow-A' },
+        body: { recipientAddress: 'GADDRESSA' },
+      });
+      const next = createNext(() => of({ ok: true }));
+
+      const result = await lastValueFrom(
+        await interceptor.intercept(context, next),
+      );
+
+      expect(result).toEqual({ legacy: true });
+      expect(next.handle).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('request method and route in the fingerprint (#805)', () => {
+    it('rejects reusing a key on the same scope and params when the HTTP method differs', async () => {
+      const post = createContext({
+        headers: { 'idempotency-key': KEY_A },
+        method: 'POST',
+        params: { id: 'bounty-1' },
+        body: {},
+      });
+      const del = createContext({
+        headers: { 'idempotency-key': KEY_A },
+        method: 'DELETE',
+        params: { id: 'bounty-1' },
+        body: {},
+      });
+
+      const nextPost = createNext(() => of({ claimed: true }));
+      await lastValueFrom(await interceptor.intercept(post, nextPost));
+
+      const nextDelete = createNext(() => of({ deleted: true }));
+      await expect(
+        interceptor.intercept(del, nextDelete),
+      ).rejects.toBeInstanceOf(UnprocessableEntityException);
+      expect(nextDelete.handle).not.toHaveBeenCalled();
+    });
+
+    it('rejects reusing a key on the same scope and params when the route path differs', async () => {
+      const release = createContext({
+        headers: { 'idempotency-key': KEY_A },
+        route: { path: '/escrow/:id/release' },
+        params: { id: 'escrow-1' },
+        body: {},
+      });
+      const splitRelease = createContext({
+        headers: { 'idempotency-key': KEY_A },
+        route: { path: '/escrow/:id/split-release' },
+        params: { id: 'escrow-1' },
+        body: {},
+      });
+
+      const nextRelease = createNext(() => of({ released: true }));
+      await lastValueFrom(await interceptor.intercept(release, nextRelease));
+
+      const nextSplit = createNext(() => of({ split: true }));
+      await expect(
+        interceptor.intercept(splitRelease, nextSplit),
+      ).rejects.toBeInstanceOf(UnprocessableEntityException);
+      expect(nextSplit.handle).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('when the row was already completed by another request (#806)', () => {
+    it('does not overwrite a COMPLETED outcome recorded by another request', async () => {
+      const next = createNext(() => {
+        // Another request reclaims the stale row and completes it while this
+        // handler is still running.
+        const row = repo.rows[0];
+        row.status = IdempotencyKeyStatus.COMPLETED;
+        row.responseStatus = 201;
+        row.responseBody = { owner: 'other-request' };
+        return of({ owner: 'this-request' });
+      });
+      const context = createContext({
+        headers: { 'idempotency-key': KEY_A },
+        params: { id: 'bounty-1' },
+        body: {},
+      });
+
+      await lastValueFrom(await interceptor.intercept(context, next));
+
+      expect(repo.rows).toHaveLength(1);
+      expect(repo.rows[0].responseStatus).toBe(201);
+      expect(repo.rows[0].responseBody).toEqual({ owner: 'other-request' });
+    });
+  });
+
+  describe('when recording the COMPLETED outcome fails (#546)', () => {
+    it('retries the write and still caches the result', async () => {
+      const realUpdate = repo.update.bind(repo);
+      jest
+        .spyOn(repo, 'update')
+        .mockRejectedValueOnce(new Error('connection reset'))
+        .mockImplementation(realUpdate);
+      const next = createNext(() => of({ id: 'payment-1' }));
+      const context = createContext({ headers: { 'idempotency-key': KEY_A } });
+
+      const result = await lastValueFrom(
+        await interceptor.intercept(context, next),
+      );
+
+      expect(result).toEqual({ id: 'payment-1' });
+      expect(repo.rows[0].status).toBe(IdempotencyKeyStatus.COMPLETED);
+    });
+
+    it('returns the success, keeps the key, and a retry is rejected instead of re-executing', async () => {
+      jest.spyOn(repo, 'update').mockRejectedValue(new Error('pool exhausted'));
+      const deleteSpy = jest.spyOn(repo, 'delete');
+      const next = createNext(() => of({ id: 'payment-1' }));
+      const context = createContext({ headers: { 'idempotency-key': KEY_A } });
+
+      // The handler (money movement) succeeded, so the client gets its result.
+      const result = await lastValueFrom(
+        await interceptor.intercept(context, next),
+      );
+      expect(result).toEqual({ id: 'payment-1' });
+
+      // The key is not deleted: it stays PROCESSING.
+      expect(deleteSpy).not.toHaveBeenCalled();
+      expect(repo.rows).toHaveLength(1);
+      expect(repo.rows[0].status).toBe(IdempotencyKeyStatus.PROCESSING);
+
+      // A retry with the same key gets 409 and the handler does not run again.
+      await expect(
+        interceptor.intercept(
+          createContext({ headers: { 'idempotency-key': KEY_A } }),
+          next,
+        ),
+      ).rejects.toBeInstanceOf(ConflictException);
+      expect(next.handle).toHaveBeenCalledTimes(1);
+    });
+  });
+});
+
+// ─── Invariant: staleness window vs. poll ceiling (#810) ─────────────────────
+//
+// STALE_PROCESSING_MS must always comfortably exceed the worst-case poll
+// ceiling so that a legitimately slow (but not crashed) handler is never
+// reclaimed by a concurrent retry.  The minimum safe multiple is 2× — 1×
+// leaves no room for RPC latency on top of the poll loop itself.
+//
+// This test pins the relationship so that tuning SOROBAN_TX_TIMEOUT_SECONDS
+// never silently narrows the window below the safety threshold (#810).
+describe('STALE_PROCESSING_MS / POLL_CEILING_MS invariant (#810)', () => {
+  it('STALE_PROCESSING_MS is at least 2× the poll ceiling', () => {
+    expect(STALE_PROCESSING_MS).toBeGreaterThanOrEqual(POLL_CEILING_MS * 2);
+  });
+
+  it('POLL_CEILING_MS covers the full transaction timeout plus one poll interval', () => {
+    // The poll loop runs POLL_ATTEMPTS × POLL_DELAY_MS.  POLL_ATTEMPTS is
+    // ceil(TIMEOUT_MS / POLL_DELAY_MS) + 1, so POLL_CEILING_MS must be
+    // strictly greater than SOROBAN_TX_TIMEOUT_SECONDS × 1000.
+    const { SOROBAN_TX_TIMEOUT_SECONDS } = jest.requireActual<typeof import('../../escrow/soroban-client.service')>(
+      '../../escrow/soroban-client.service',
+    );
+    expect(POLL_CEILING_MS).toBeGreaterThan(SOROBAN_TX_TIMEOUT_SECONDS * 1000);
   });
 });

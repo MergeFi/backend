@@ -1,9 +1,10 @@
 import { ApiProperty } from '@nestjs/swagger';
-import { IsOptional, IsString, IsUUID } from 'class-validator';
+import { IsOptional, IsUUID } from 'class-validator';
+import { IsStellarAddress } from '../../common/validators/stellar-address.validator';
 
 export class ReleaseEscrowDto {
   @ApiProperty({ description: 'Stellar public key of the recipient' })
-  @IsString()
+  @IsStellarAddress()
   recipientAddress: string;
 
   @ApiProperty({ required: false })

@@ -16,12 +16,10 @@ describe('UsersController (e2e)', () => {
   beforeAll(async () => {
     const moduleFixture: TestingModule = await Test.createTestingModule({
       controllers: [UsersController],
-      providers: [
-        { provide: UsersService, useValue: mockUsersService },
-      ],
+      providers: [{ provide: UsersService, useValue: mockUsersService }],
     })
       .overrideGuard(JwtAuthGuard)
-      .useValue({ canActivate: () => false }) // Simulate unauthenticated
+      .useValue({ canActivate: () => false }) // Simulate a guard-denied request (always 403)
       .compile();
 
     app = moduleFixture.createNestApplication();
@@ -33,15 +31,13 @@ describe('UsersController (e2e)', () => {
   });
 
   describe('GET /users', () => {
-    it('should reject unauthenticated requests with 401', () => {
-      return request(app.getHttpServer())
-        .get('/users')
-        .expect(403); // Assuming the guard returns 403 when not authorized
+    it('should return 403 when the guard denies the request', () => {
+      return request(app.getHttpServer()).get('/users').expect(403);
     });
   });
 
   describe('GET /users/:id', () => {
-    it('should reject unauthenticated requests with 401', () => {
+    it('should return 403 when the guard denies the request', () => {
       return request(app.getHttpServer())
         .get('/users/00000000-0000-0000-0000-000000000000')
         .expect(403);

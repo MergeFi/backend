@@ -2,6 +2,7 @@ import {
   Column,
   CreateDateColumn,
   Entity,
+  Index,
   JoinColumn,
   ManyToOne,
   PrimaryGeneratedColumn,
@@ -11,8 +12,24 @@ import { Escrow } from './escrow.entity';
 import { User } from './user.entity';
 import { AssetType, PaymentStatus } from '../enums';
 
-/** A single payout leg from an escrow release — one per recipient (team splits produce many). */
+/**
+ * A single payout leg from an escrow release — one per recipient (team splits
+ * produce many).
+ *
+ * `IDX_payment_escrow` serves `WHERE escrowId = :escrowId`, the lookup
+ * `EscrowService.releasePartial` runs on every call to compute the
+ * cumulative released-so-far balance before allowing a further partial
+ * payout — a hot path on every milestone-driven incremental release
+ * (#307). The same gap class as `IDX_escrow_sponsor_status` (#97) and the
+ * `Bounty.claimedById` index (#148).
+ */
 @Entity('payments')
+@Index('IDX_payment_escrow', ['escrowId'])
+// One reward per issue per escrow (#779). Partial, so ordinary payouts with no issue are unaffected.
+@Index('UQ_payment_escrow_issue', ['escrowId', 'issueId'], {
+  unique: true,
+  where: '"issueId" IS NOT NULL',
+})
 export class Payment {
   @PrimaryGeneratedColumn('uuid')
   id: string;
@@ -38,6 +55,10 @@ export class Payment {
 
   @Column({ type: 'varchar', nullable: true })
   recipientAddress: string | null;
+
+  /** The issue a maintenance-pool reward pays for. Null for every other payout. */
+  @Column({ type: 'varchar', nullable: true })
+  issueId: string | null;
 
   @Column({ type: 'decimal', precision: 20, scale: 7 })
   amount: string;

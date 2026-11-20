@@ -4,16 +4,16 @@ import {
   ArrayMinSize,
   IsNumber,
   IsOptional,
-  IsString,
   IsUUID,
   Max,
   Min,
   ValidateNested,
 } from 'class-validator';
+import { IsStellarAddress } from '../../common/validators/stellar-address.validator';
 
 export class SplitRecipientDto {
   @ApiProperty()
-  @IsString()
+  @IsStellarAddress()
   recipientAddress: string;
 
   @ApiProperty({ required: false })

@@ -30,8 +30,11 @@ RPC and mirrors on-chain state into Postgres for fast reads.
 - [Data model](#data-model)
 - [Environment variables](#environment-variables)
 - [Escrow / Soroban integration](#escrow--soroban-integration)
+  - [Dry-run mode](#dry-run-mode)
+  - [`ESCROW_DEADLINE_SECONDS` and the permissionless refund window](#escrow_deadline_seconds-and-the-permissionless-refund-window)
 - [API overview](#api-overview)
 - [Setup, run, test](#setup-run-test)
+  - [Node.js version](#nodejs-version)
 - [Roadmap](#roadmap)
 
 ---
@@ -92,13 +95,13 @@ Design principles:
 | `users` | User + linked `GithubAccount` records, role management, Stellar address linking. |
 | `github` | Repository/issue sync via Octokit (`github-sync.service.ts`) and inbound webhook handling with HMAC-SHA256 signature verification (`github-webhooks.service.ts`, `webhook-signature.util.ts`). On a merged PR, resolves the linked issue → bounty and triggers escrow release. |
 | `bounties` | Paid-issue lifecycle: create, fund, claim, review, merge, pay, refund, expire. State machine in `bounty-state-machine.ts`. |
-| `escrow` | Orchestrates fund/release/split-release/refund against the escrow contract via `SorobanClientService`, and keeps `Escrow`/`Payment` rows in sync. |
+| `escrow` | Orchestrates fund/release/refund against the escrow contract via `SorobanClientService`, and keeps `Escrow`/`Payment` rows in sync. Single-recipient and team-split payouts both go through the contract's one `release(issue_id, recipients)` entrypoint. |
 | `teams` | Team bounties: create a team with percentage splits (e.g. frontend 40 / backend 40 / testing 20), assign it to a bounty, validated to sum to 100%. |
 | `milestones` | Fund an entire milestone's budget up front; distribute it incrementally as issues resolve (`resolveIssue`), splitting the remaining budget across still-open issues. |
 | `maintenance-pool` | Recurring sponsor deposits into a shared pool; maintainers assign rewards out of the running balance for maintenance-type work. |
 | `sponsors` | Sponsor dashboard: active bounties, total spend, budget locked in escrow, milestone progress, recent payments. |
 | `reputation` | Computes and snapshots per-contributor stats: earnings, merged PR count, completion rate, avg review time, on-time delivery %, languages, orgs. |
-| `analytics` | Lifetime earnings, repo/org counts, merge rate, review time, languages, a payout heatmap, and top clients (sponsors) per contributor; a platform-wide summary for the homepage. |
+| `analytics` | Lifetime earnings, repo/org counts, merge rate, review time, languages, a payout heatmap, and top clients (sponsors) per contributor; a platform-wide summary for the homepage. Contributor stats are SQL `GROUP BY` / `SUM` / `COUNT` (heatmap is UTC calendar days, capped at 366 buckets; top clients `ORDER BY` spend `LIMIT 10`). `GET /analytics/platform` is cached in-process for `ANALYTICS_PLATFORM_SUMMARY_TTL_MS` (default 60s) and invalidated when a bounty is created or paid or a repository is first synced. Multi-instance deploys may serve up to one TTL of stale data per process. |
 
 Cross-cutting: `config` (typed `@nestjs/config` configuration + `.env`),
 `common/entities` (all TypeORM entities + enums), Swagger mounted at
@@ -133,39 +136,126 @@ See [`.env.example`](./.env.example) for the full annotated list. Highlights:
 | `GITHUB_CLIENT_ID` / `_SECRET`, `GITHUB_OAUTH_CALLBACK_URL` | GitHub OAuth login app. |
 | `GITHUB_API_TOKEN` | Token used by Octokit for repo/issue sync (PAT for now; see roadmap). |
 | `GITHUB_WEBHOOK_SECRET` | HMAC-SHA256 secret configured on the GitHub webhook. |
-| `STELLAR_NETWORK`, `HORIZON_URL`, `SOROBAN_RPC_URL`, `STELLAR_NETWORK_PASSPHRASE` | Stellar network config. |
-| `ESCROW_CONTRACT_ID` | Deployed escrow contract ID from `mergefi-contracts`. **Not set in this environment** — see below. |
-| `MAINTENANCE_POOL_CONTRACT_ID` | Optional separate contract for the maintenance pool; falls back to `ESCROW_CONTRACT_ID`. |
-| `TREASURY_ADDRESS` / `TREASURY_SECRET` | Platform signer used to submit release/refund transactions. |
-| `USDC_ASSET_CODE` / `USDC_ASSET_ISSUER` | Stablecoin asset identity on Stellar. |
+| `ANALYTICS_PLATFORM_SUMMARY_TTL_MS` | In-process TTL for `GET /analytics/platform` (default `60000`). Also invalidated on bounty create/pay and first repository sync. |
+| `STELLAR_NETWORK`, `SOROBAN_RPC_URL`, `STELLAR_NETWORK_PASSPHRASE` | Stellar network config. |
+| `ESCROW_CONTRACT_ID` | Deployed escrow contract ID from `mergefi-contracts`. **Blank → [dry-run mode](#dry-run-mode)**: nothing settles on-chain. |
+| `MAINTENANCE_POOL_CONTRACT_ID` | Optional separate contract for maintenance-pool escrows; falls back to `ESCROW_CONTRACT_ID`. |
+| `USDC_TOKEN_CONTRACT_ID`, `XLM_TOKEN_CONTRACT_ID` | Soroban token (SAC) contract addresses, passed as `escrow::fund`'s required `token` argument. |
+| `ESCROW_DEADLINE_SECONDS` | Fallback `escrow::fund` deadline (seconds from fund time) when the bounty/milestone has none. Default `7776000` (90 days), minimum `86400`. **Controls when anyone can refund the escrow on-chain** — see [below](#escrow_deadline_seconds-and-the-permissionless-refund-window). |
+| `TREASURY_SECRET` | Platform signer used to submit release/refund transactions. **Blank → [dry-run mode](#dry-run-mode).** |
 
 ## Escrow / Soroban integration
 
 `src/escrow/soroban-client.service.ts` wraps `@stellar/stellar-sdk`'s
 `rpc.Server` to build, simulate, sign, and submit Soroban contract
-invocations (`fund` / `release` / `split_release` / `refund`) against the
+invocations (`fund` / `release` / `refund`) against the
 escrow contract. `src/escrow/escrow.service.ts` is the orchestration layer:
 it calls the client, then persists `Escrow`/`Payment` rows and drives the
 `Bounty`/`Milestone`/`MaintenancePool` state alongside it.
 
-**Current limitation:** there is no live deployed escrow contract available
-in this environment (`mergefi-contracts` is a separate repo/session). When
-`ESCROW_CONTRACT_ID` or `TREASURY_SECRET` are unset, `SorobanClientService`
-transparently short-circuits into a deterministic **dry-run** mode — it logs
-a warning, returns a synthetic tx hash, and skips the network call — so the
-rest of the system (state transitions, DB writes, split-percentage math,
-webhook-triggered releases) can still be exercised end-to-end in tests and
-local dev. Once real contracts are deployed:
+### Dry-run mode
 
-1. Set `ESCROW_CONTRACT_ID` (and `MAINTENANCE_POOL_CONTRACT_ID` if separate).
-2. Set `TREASURY_ADDRESS` / `TREASURY_SECRET` to a funded Stellar account.
-3. Confirm the contract's `fund`/`release`/`split_release`/`refund` function
-   signatures match the ones documented at the top of
-   `soroban-client.service.ts` (adjust argument encoding there if not —
-   TODOs are marked inline).
+> **If you are running this locally from `.env.example`, you are in dry-run
+> mode. Bounties you see marked PAID were not paid.**
+
+**When it engages.** `SorobanClientService.invoke`
+(`src/escrow/soroban-client.service.ts`) dry-runs whenever
+`ESCROW_CONTRACT_ID` **or** `TREASURY_SECRET` is empty. There is no separate
+flag: it is inferred from those two variables. Both are blank in
+`.env.example`, so it is the default for local development, for CI, and for
+any non-production deployment where they were missed. (In
+`NODE_ENV=production` the app refuses to boot with either one unset, and
+`invoke` itself throws rather than dry-running if it is ever reached that
+way.)
+
+**What it does.** Instead of building, signing and submitting a transaction,
+`invoke` logs a warning and immediately returns a synthetic success. Every
+caller treats that as a confirmed on-chain result, so the full orchestration
+runs and writes real rows:
+
+| Operation | Records written as if settled |
+|---|---|
+| Fund (`fund`) | `Escrow` → `LOCKED`, with `fundTxHash` set; bounty/milestone/pool marked funded. |
+| Release / split release / partial release | `Escrow` → `RELEASED` (`releaseTxHash`, `releasedAt`); one `Payment` per recipient with `status = CONFIRMED` and `txHash`; the bounty moves to `PAID` and counts toward contributor earnings and sponsor spend. |
+| Pool withdraw | `Payment` with `status = CONFIRMED`; the pool balance is decremented. |
+| Refund | `Escrow` → `REFUNDED` (`refundTxHash`, `refundedAt`). |
+
+No tokens move and nothing is written to any ledger. The contract's own
+checks (balance, status, authorisation) never run, so the database row lock
+is the only thing stopping a duplicate release (see
+`src/escrow/escrow-lock.integration.spec.ts`).
+
+**How to recognise dry-run records.** Only the transaction hash shows it.
+Dry-run hashes look like `dry-run-<method>-<epoch-ms>` (for example
+`dry-run-release-1731400000000`) instead of a 64-character hex hash. They
+appear in `escrows.fundTxHash` / `releaseTxHash` / `refundTxHash` and
+`payments.txHash`. The invocation result's `status` is `DRY_RUN`, with
+`ledger = null`. That result is also stored in `escrows.metadata.fund`, and
+in `escrows.metadata.splitRelease` for split releases. The server log also prints
+`Soroban not configured (ESCROW_CONTRACT_ID/TREASURY_SECRET missing) —
+dry-running "<method>"` on every call. The API responses and the frontend
+do **not** surface it: a dry-run "paid" badge or lifetime-earnings figure
+looks exactly like a real one. To find them in a database:
+
+```sql
+SELECT id, "txHash" FROM payments WHERE "txHash" LIKE 'dry-run-%';
+SELECT id, status FROM escrows
+ WHERE "fundTxHash" LIKE 'dry-run-%' OR "releaseTxHash" LIKE 'dry-run-%'
+    OR "refundTxHash" LIKE 'dry-run-%';
+```
+
+Dry-run data should never be mixed with real data: if a database was ever
+run in dry-run mode, don't later point a configured instance at it.
+
+**Leaving dry-run mode.** Once real contracts are deployed:
+
+1. Set `ESCROW_CONTRACT_ID` (and `MAINTENANCE_POOL_CONTRACT_ID` if the pool
+   uses a separate deployment), plus `USDC_TOKEN_CONTRACT_ID` /
+   `XLM_TOKEN_CONTRACT_ID` for the token argument.
+2. Set `TREASURY_SECRET` to a funded Stellar account.
+3. Confirm the contract's `fund`/`release`/`refund` function signatures match
+   the ones documented at the top of `soroban-client.service.ts` (adjusted in
+   this change to track `mergefi-contracts`' `contracts/escrow/src/lib.rs`).
 
 No private keys for end users are ever stored — only the platform treasury
 signer, and only as an env var for this MVP (see Roadmap: move to KMS/multi-sig).
+
+### `ESCROW_DEADLINE_SECONDS` and the permissionless refund window
+
+Every escrow is funded with a `deadline` argument to `escrow::fund`. It is
+the funding bounty's or milestone's own deadline, or, when it has none,
+`now + ESCROW_DEADLINE_SECONDS` (`EscrowService.resolveDeadline`; default
+`7776000` = 90 days, from `src/config/configuration.ts`).
+
+That deadline is enforced **on-chain**, not just recorded locally. In the
+deployed `mergefi-contracts` escrow contract, once
+`now >= deadline + GRACE_PERIOD`, where `GRACE_PERIOD` is **14 days**,
+`escrow::refund` becomes **permissionless**. Anyone can call it, and the
+funds go back to the funders on record. This backend is not consulted. A
+bounty it still considers open and claimable can be unwound by a third party
+from that point on.
+
+So `ESCROW_DEADLINE_SECONDS` decides how long each deadline-less bounty
+stays safe from third-party refunds:
+
+| `ESCROW_DEADLINE_SECONDS` | Permissionless refund opens after |
+|---|---|
+| `7776000` (90 days, default) | 104 days |
+| `2592000` (30 days) | 44 days |
+| `604800` (7 days) | 21 days |
+
+Choose a value longer than a bounty can realistically stay open. A value
+that seems sensible for a bounty deadline, like 7 days, is usually too
+short here. Changing it only affects escrows funded afterwards; existing
+escrows keep the deadline they were funded with.
+
+The value is checked at boot in every environment (`collectConfigIssues`
+in `src/config/validate-required-config.ts`). It must be an integer of at
+least `86400` (1 day), or the app refuses to start. Without this check, a
+typo would turn into `NaN` and a `RangeError` at fund time. The 1-day
+minimum only catches unit mistakes (`90` meant as days); it is not a
+recommended value. `PORT` is validated the same way (an integer from 1 to
+65535).
 
 ## API overview
 
@@ -201,6 +291,15 @@ connection can't double-execute:
   Conflict` instead of racing into a duplicate execution. If the original
   request crashed before completing, the key is reclaimed after 30s so it
   doesn't 409 forever.
+- A key's identity is bound to the actual request, not just the route: a
+  SHA-256 fingerprint of the path params and body is stored alongside the
+  key, and a retry whose fingerprint doesn't match gets `422 Unprocessable
+  Entity` instead of replaying the original request's response. Without
+  this, reusing a key across two different resources on the same route
+  (e.g. `Idempotency-Key: K` sent to both `/escrow/A/release` and
+  `/escrow/B/release`) would silently replay A's cached response for B,
+  which looks like a successful release to the client while B's funds
+  never actually moved (#54).
 - Cached keys are retained for 24h (`IDEMPOTENCY_KEY_TTL_MS` in
   `IdempotencyInterceptor`) and swept hourly by `IdempotencyCleanupService`.
 
@@ -210,6 +309,29 @@ job.
 ## Setup, run, test
 
 You can run this project either natively on your host machine or completely containerized using Docker.
+
+### Node.js version
+
+This repository runs on **Node.js 24**. The major is pinned in one place,
+`.nvmrc`, and everything else is kept in step with it:
+
+| Where | Value |
+| --- | --- |
+| `.nvmrc` | `24` |
+| `package.json` `engines.node` | `>=24.0.0 <25.0.0` |
+| `.npmrc` | `engine-strict=true` — `npm install`/`npm ci` refuse to run on any other major instead of only warning |
+| CI (`.github/workflows/ci.yml`) | `node-version-file: .nvmrc` |
+| `Dockerfile` | `node:24-alpine` |
+
+With [nvm](https://github.com/nvm-sh/nvm) (or fnm / Volta, which read the
+same file), run `nvm use` in this directory before `npm install`.
+
+The sibling repositories pin different majors today (`mergefi-frontend` builds
+on 20; `mergefi-contracts`' scripts require >=22.12 while its `.nvmrc` says
+20). Running the backend next to the frontend locally therefore needs a
+version manager and a `nvm use` in each checkout. Aligning the org on a single
+major is tracked in #835. When that lands, change `.nvmrc` here and update the
+rows above to match.
 
 ### 1. Local Development via Docker Compose (Recommended)
 
@@ -226,7 +348,7 @@ docker compose up --build
 - **Hot Reloading**: The codebase is mounted into the container using a bind mount. File changes on the host will automatically trigger application restarts.
 - **Node Modules Isolation**: The container uses an anonymous volume for `/usr/src/app/node_modules`. This prevents Windows/Host compiled node packages from contaminating the Linux-native container.
 - **Services**:
-  - The API is served at `http://localhost:3000/api` (Swagger docs at `http://localhost:3000/api/docs`).
+  - The API is served at `http://localhost:4000/api` (Swagger docs at `http://localhost:4000/api/docs`).
   - PostgreSQL is mapped to port `5432` on your localhost with credentials `postgres:postgres` and database name `mergefi`.
 
 ### 2. Local Development Natively on Host
@@ -234,7 +356,8 @@ docker compose up --build
 If you prefer to run NestJS directly on your host machine:
 
 ```bash
-# A. Install Dependencies
+# A. Install Dependencies (on the Node major in .nvmrc — see "Node.js version")
+nvm use
 npm install
 
 # B. Spin up only the Database service in Docker
@@ -260,9 +383,15 @@ docker build --target runner -t mergefi-backend:latest .
 #### Production Guardrails (Important):
 - **Least Privilege**: The container runs under the non-root `node` user (`USER node`).
 - **Production Mode**: The final image forces `NODE_ENV=production`.
-- **JWT Secret Enforcer**: If the application boots in production with the default `JWT_SECRET=insecure-dev-secret` (or is missing entirely), the startup hook in `src/main.ts` will crash the container. You **must** provide a secure custom `JWT_SECRET` when running the production container:
+- **Required-secret Enforcer**: When `NODE_ENV=production`, `assertRequiredConfig` (`src/config/validate-required-config.ts`, called from `src/main.ts`) crashes the container at boot — listing every problem at once — unless all of `JWT_SECRET` (not the `insecure-dev-secret` default), `DATABASE_URL` (not the local `postgres:postgres@localhost` default), `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET`, `GITHUB_WEBHOOK_SECRET`, `ESCROW_CONTRACT_ID` and `TREASURY_SECRET` are set to real values. This closes the silent-failure gap where, for example, an empty `GITHUB_WEBHOOK_SECRET` made the app boot "healthy" while rejecting 100% of webhook deliveries. You **must** provide these when running the production container, e.g.:
   ```bash
-  docker run -p 3000:3000 -e JWT_SECRET="your-highly-secure-random-jwt-key" mergefi-backend:latest
+  docker run -p 3000:3000 \
+    -e JWT_SECRET="your-highly-secure-random-jwt-key" \
+    -e DATABASE_URL="postgresql://user:pass@db-host:5432/mergefi" \
+    -e GITHUB_CLIENT_ID=... -e GITHUB_CLIENT_SECRET=... \
+    -e GITHUB_WEBHOOK_SECRET=... \
+    -e ESCROW_CONTRACT_ID=... -e TREASURY_SECRET=... \
+    mergefi-backend:latest
   ```
 
 ### 4. Running Tests
@@ -283,12 +412,17 @@ npm run test:e2e
 Unit tests cover critical domains including:
 - `src/bounties/bounty-state-machine.spec.ts` — the bounty lifecycle state machine.
 - `src/teams/team-split.util.spec.ts` — team payout split percentage math.
-- `src/escrow/escrow.service.spec.ts` — escrow fund/release/split-release/refund orchestration (Soroban client mocked).
+- `src/escrow/escrow.service.spec.ts` — escrow fund/release/refund orchestration (Soroban client mocked).
 - `src/github/webhook-signature.util.spec.ts` — GitHub webhook HMAC-SHA256 signature verification.
 - `src/github/github-webhooks.service.spec.ts` — webhook-to-escrow release logic.
 - `src/bounties/bounties.service.spec.ts` — bounty core management.
 - `src/sponsors/sponsors.service.spec.ts` — sponsor dashboard aggregate queries (budgetLocked/totalSpend read the Escrow/Payment ledger directly).
 - `src/database/escrow-fk-integrity.integration.spec.ts` — **integration** test against a real Postgres (requires `DATABASE_URL`, not mocked): the exactly-one-parent CHECK constraint on `escrows`, and that sponsor dashboard figures survive a parent bounty/milestone being deleted.
+- `src/escrow/escrow-lock.integration.spec.ts` — **integration** test against a real Postgres: two concurrent `release` calls (and two over-budget `releasePartial` calls) on one escrow serialise on `withLockedEscrow`'s row lock, so exactly one succeeds and exactly one `Payment` is written (#844).
+- `src/common/filters/global-exception.filter.integration.spec.ts` — includes the throttled **429** contract mergefi-frontend depends on: a `Retry-After` header and a JSON body with `message` (#842).
+- `test/merge-to-payout.e2e-spec.ts` — **e2e** against a real Postgres: a signed `pull_request.closed(merged)` delivery drives the whole chain (signature gate → webhook dispatch → `markMergedAndRelease` → escrow release/split → `Payment` rows → bounty PAID → platform-summary refresh), for a single contributor and for a team of three (#848).
+- `test/soroban-xdr-encoding.e2e-spec.ts` — decodes the `xdr.ScVal`s the real Stellar SDK produces for every contract call the backend makes (`fund`, `release`, `refund`, `withdraw`, `release_partial`) and checks them against the `mergefi-contracts` signatures (#840). It runs under the e2e config because the unit config stubs the SDK.
+- `src/analytics/analytics.integration.spec.ts` — Postgres load/parity test: SQL heatmap + top-N match the old JS bucketing on a small fixture; a 3,000-bounty seed must not call `find`/`getMany` (O(n) entity load → O(days)+O(1) aggregates), `forContributor` under 2s, cached homepage summary on a second call.
 
 `DATABASE_SYNCHRONIZE=true` (set in development) will auto-create tables from entities for fast local iteration. Real deployments should run migrations instead — see `src/database/migrations/` and the `migration:*` npm scripts below.
 
@@ -313,7 +447,8 @@ npm run migration:revert
 - [ ] Move GitHub sync from a static PAT to a GitHub App installation-token flow for multi-org, least-privilege access.
 - [ ] Deploy the real escrow contract from `mergefi-contracts` and drop the Soroban dry-run fallback.
 - [ ] Replace the single `TREASURY_SECRET` signer with a proper signing service (KMS / multi-sig) before handling real funds.
-- [ ] Add a scheduled job for `BountiesService.expireOverdue()` (deadline sweeps) and recurring `MaintenancePool` deposits.
+- [x] ~~Add a scheduled job for `BountiesService.expireOverdue()` (deadline sweeps).~~ See `BountyExpiryScheduler` (hourly `@Cron`).
+- [ ] Add a scheduled job for recurring `MaintenancePool` deposits.
 - [ ] Add role-based authorization guards (currently JWT-authenticated but not role-scoped) to maintainer/sponsor-only endpoints.
 - [ ] Add pagination/filtering to list endpoints (bounties, milestones, pools) as data volume grows.
 - [ ] Weighted (not just even) per-issue milestone budget distribution.

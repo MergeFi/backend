@@ -1,8 +1,20 @@
-import { Inject, Injectable, Logger, NotFoundException } from '@nestjs/common';
+import {
+  Inject,
+  Injectable,
+  Logger,
+  NotFoundException,
+  Optional,
+} from '@nestjs/common';
+import { EventEmitter2 } from '@nestjs/event-emitter';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Octokit } from '@octokit/rest';
-import { Repository as TypeOrmRepository } from 'typeorm';
+import {
+  FindOptionsRelations,
+  Repository as TypeOrmRepository,
+} from 'typeorm';
+import { ANALYTICS_PLATFORM_INVALIDATE_EVENT } from '../analytics/analytics.events';
 import { Issue, Repository } from '../common/entities';
+import { IssueState } from '../common/enums';
 import { GITHUB_OCTOKIT } from './octokit.provider';
 
 const MAINTENANCE_LABELS = ['maintenance', 'dependencies', 'chore', 'docs'];
@@ -76,17 +88,71 @@ export class GithubSyncService {
     private readonly repositoryRepo: TypeOrmRepository<Repository>,
     @InjectRepository(Issue)
     private readonly issueRepo: TypeOrmRepository<Issue>,
+    @Optional() private readonly eventEmitter?: EventEmitter2,
   ) {}
 
-  /** Imports (or refreshes) a single repository and all of its open+closed issues. */
-  async syncRepository(owner: string, repo: string): Promise<Repository> {
-    await this.logRateLimitStatus(`before ${owner}/${repo}`);
+  /**
+   * Syncs one page of a repository's issues.
+   *
+   * Since the pagination cap (#129) each call handles exactly one page, so a
+   * caller walking a 1,000-issue repo makes 10 sequential calls. Page 1 (and
+   * any call for a repository we have no row for yet) fetches the repository
+   * metadata from GitHub and upserts it; continuation pages reuse the
+   * already-persisted `Repository` row instead, because the metadata
+   * (stargazers, description, default branch) does not meaningfully change
+   * between two calls made seconds apart (#314). Re-fetching it on every
+   * continuation page doubled GitHub API usage — precisely in the large-repo
+   * case the pagination cap exists to keep affordable.
+   */
+  /**
+   * Records `userId` as the maintainer of a repository that has none (#776).
+   * Conditional on maintainerId still being null, so a concurrent claim cannot
+   * overwrite an earlier one.
+   */
+  async claimRepository(repositoryId: string, userId: string): Promise<void> {
+    await this.repositoryRepo
+      .createQueryBuilder()
+      .update()
+      .set({ maintainerId: userId })
+      .where('id = :repositoryId AND "maintainerId" IS NULL', { repositoryId })
+      .execute();
+  }
 
-    const { data: repoData } = await this.octokit.repos.get({ owner, repo });
+  async syncRepository(
+    owner: string,
+    repo: string,
+    page = 1,
+  ): Promise<{ repository: Repository; synced: number; nextPage?: number }> {
+    if (page > 1) {
+      const existing = await this.repositoryRepo.findOne({
+        where: { owner, name: repo },
+      });
+      if (existing) {
+        this.logger.log(
+          `Continuing sync of ${owner}/${repo} at page ${page} from the ` +
+            `persisted repository record (skipping the repos.get() refresh)`,
+        );
+        const result = await this.syncIssues(existing, owner, repo, page);
+        return {
+          repository: existing,
+          synced: result.saved.length,
+          nextPage: result.nextPage,
+        };
+      }
+    }
+
+    const repoResponse = await this.octokit.repos.get({ owner, repo });
+    this.logRateLimitFromHeaders(
+      `before ${owner}/${repo}`,
+      repoResponse.headers,
+    );
+
+    const { data: repoData } = repoResponse;
 
     let repository = await this.repositoryRepo.findOne({
       where: { githubRepoId: String(repoData.id) },
     });
+    const isNewRepository = !repository;
 
     const attrs = {
       githubRepoId: String(repoData.id),
@@ -105,58 +171,101 @@ export class GithubSyncService {
       ? this.repositoryRepo.merge(repository, attrs)
       : this.repositoryRepo.create(attrs);
     repository = await this.repositoryRepo.save(repository);
-
-    try {
-      await this.syncIssues(repository, owner, repo);
-    } finally {
-      await this.logRateLimitStatus(`after ${owner}/${repo}`);
+    if (isNewRepository) {
+      this.eventEmitter?.emit(ANALYTICS_PLATFORM_INVALIDATE_EVENT);
     }
-    return repository;
+
+    const result = await this.syncIssues(repository, owner, repo, page);
+    return {
+      repository,
+      synced: result.saved.length,
+      nextPage: result.nextPage,
+    };
   }
 
   /**
-   * Pages through every issue for a repo, persisting each page as soon as
-   * it's fetched (rather than collecting the whole paginated result first)
-   * so a rate-limit/network failure on a later page doesn't discard the
-   * issues already fetched — those stay durably saved, and re-running the
-   * sync resumes via the idempotent upsert below rather than starting over.
+   * Pages through a repo's issues, persisting each page as soon as it's
+   * fetched (rather than collecting the whole paginated result first) so a
+   * rate-limit/network failure on a later page doesn't discard the issues
+   * already fetched — those stay durably saved, and re-running the sync
+   * resumes via the idempotent upsert below rather than starting over.
+   *
+   * When the repository has been synced before, only issues updated since
+   * `lastSyncedAt` are requested, using GitHub's own `since` filter (#315).
+   * Without it every periodic re-sync re-downloaded the repository's entire
+   * issue history — thousands of already-current issues — purely to discover
+   * none of them had changed, paying full pagination and rate-limit cost each
+   * time.
+   *
+   * `since` is only applied to page 1, since the filter shifts the result set
+   * and paginating past the first page would re-introduce the same full
+   * history walk it is meant to avoid.
+   *
+   * To force a full re-read of everything (for example after `MAINTENANCE_LABELS`
+   * changes, which alter `isMaintenanceType` on already-stored issues and so
+   * cannot be picked up by an incremental window), clear the repository's
+   * `lastSyncedAt` first — the next sync then runs unfiltered.
    */
   async syncIssues(
     repository: Repository,
     owner: string,
     repo: string,
-  ): Promise<Issue[]> {
+    page = 1,
+  ): Promise<{ saved: Issue[]; nextPage?: number }> {
     const saved: Issue[] = [];
-    let pagesFetched = 0;
+
+    // An unparseable/absent timestamp must not silently disable the incremental
+    // filter, so only a real Date narrows the request.
+    const since =
+      page === 1 && repository.lastSyncedAt instanceof Date
+        ? repository.lastSyncedAt.toISOString()
+        : undefined;
+
+    if (since) {
+      this.logger.log(
+        `Incremental issue sync for ${owner}/${repo}: only issues updated since ${since}`,
+      );
+    }
 
     try {
-      for await (const response of this.octokit.paginate.iterator(
-        this.octokit.issues.listForRepo,
-        { owner, repo, state: 'all', per_page: 100 },
-      )) {
-        pagesFetched += 1;
-        for (const raw of response.data as RawGithubIssue[]) {
-          // Octokit returns PRs in the issues list too; skip those.
-          if (raw.pull_request) continue;
+      const response = await this.octokit.issues.listForRepo({
+        owner,
+        repo,
+        state: 'all',
+        per_page: 100,
+        page,
+        ...(since ? { since } : {}),
+      });
 
-          const { issue, applied } = await this.upsertIssueRecord(
-            repository.id,
-            raw,
-          );
-          if (applied) saved.push(issue);
-        }
+      for (const raw of response.data as RawGithubIssue[]) {
+        // Octokit returns PRs in the issues list too; skip those.
+        if (raw.pull_request) continue;
+
+        const { issue, applied } = await this.upsertIssueRecord(
+          repository.id,
+          raw,
+        );
+        if (applied) saved.push(issue);
       }
+      this.logRateLimitFromHeaders(
+        `after ${owner}/${repo} (page ${page})`,
+        response.headers,
+      );
+
+      const hasNextPage = response.headers.link?.includes('rel="next"');
+
+      this.logger.log(
+        `Synced ${saved.length} issues for ${owner}/${repo} (page ${page})`,
+      );
+      return { saved, nextPage: hasNextPage ? page + 1 : undefined };
     } catch (err) {
       const cause = err as Error;
       this.logger.error(
-        `GitHub sync interrupted for ${owner}/${repo} after ${pagesFetched} ` +
-          `page(s) / ${saved.length} issue(s) persisted: ${cause.message}`,
+        `GitHub sync interrupted for ${owner}/${repo} at page ${page} ` +
+          `/ ${saved.length} issue(s) persisted: ${cause.message}`,
       );
       throw new GithubSyncInterruptedError(owner, repo, saved.length, cause);
     }
-
-    this.logger.log(`Synced ${saved.length} issues for ${owner}/${repo}`);
-    return saved;
   }
 
   /**
@@ -176,9 +285,7 @@ export class GithubSyncService {
     const githubIssueId = String(raw.id);
     const incomingUpdatedAt = new Date(raw.updated_at);
 
-    const existing = await this.issueRepo.findOne({
-      where: { githubIssueId },
-    });
+    const existing = await this.findIssueByGithubIdOrNull(githubIssueId);
 
     if (
       existing?.githubUpdatedAt &&
@@ -201,7 +308,7 @@ export class GithubSyncService {
       number: raw.number,
       title: raw.title,
       body: raw.body ?? null,
-      state: raw.state as 'open' | 'closed',
+      state: raw.state as IssueState,
       labels,
       githubUrl: raw.html_url,
       authorLogin: raw.user?.login ?? null,
@@ -234,37 +341,72 @@ export class GithubSyncService {
     return data;
   }
 
+  /**
+   * Looks up a tracked issue by its GitHub issue id, or null when it isn't
+   * tracked yet. This is the read path shared by {@link findIssueByGithubId}
+   * and the sync's own upsert, so an issue is never resolved by two different
+   * queries (#311).
+   */
+  async findIssueByGithubIdOrNull(
+    githubIssueId: string,
+  ): Promise<Issue | null> {
+    return this.issueRepo.findOne({ where: { githubIssueId } });
+  }
+
+  /**
+   * Same lookup for callers that treat an untracked issue as an error rather
+   * than as "not seen yet" (#311).
+   */
   async findIssueByGithubId(githubIssueId: string): Promise<Issue> {
-    const issue = await this.issueRepo.findOne({ where: { githubIssueId } });
+    const issue = await this.findIssueByGithubIdOrNull(githubIssueId);
     if (!issue)
       throw new NotFoundException(`Issue ${githubIssueId} not tracked`);
     return issue;
   }
 
+  /**
+   * Resolves an issue by the repository it belongs to and its in-repo number —
+   * the lookup a linked issue in a pull_request body needs, where only the
+   * number and the owning repository are known (#311). `relations` lets a
+   * caller pull in what it needs alongside (the webhook path loads `bounty`).
+   */
   async findIssueByRepoAndNumber(
     repositoryId: string,
     number: number,
+    relations?: FindOptionsRelations<Issue>,
   ): Promise<Issue | null> {
-    return this.issueRepo.findOne({ where: { repositoryId, number } });
+    return this.issueRepo.findOne({
+      where: { repositoryId, number },
+      ...(relations ? { relations } : {}),
+    });
   }
 
   /**
-   * Logs remaining/limit for the core REST rate-limit budget around large
-   * sync operations (#24), so a mid-sync rate-limit interruption shows up as
-   * an obviously-low "before" number in logs rather than a mystery failure.
-   * Best-effort: a failure to fetch rate-limit status never blocks the sync.
+   * Logs remaining/limit for the core REST rate-limit budget from the
+   * response headers of an already-made API call (#24, #62). Reads the
+   * x-ratelimit-* headers that GitHub includes on every REST response
+   * instead of issuing a dedicated rateLimit.get() request, which would
+   * itself consume quota and accelerate the very exhaustion being monitored.
    */
-  private async logRateLimitStatus(label: string): Promise<void> {
-    try {
-      const { data } = await this.octokit.rest.rateLimit.get();
-      const { limit, remaining, reset } = data.resources.core;
+  private logRateLimitFromHeaders(
+    label: string,
+    headers: Record<string, unknown>,
+  ): void {
+    const remaining = headers['x-ratelimit-remaining'];
+    const limit = headers['x-ratelimit-limit'];
+    const reset = headers['x-ratelimit-reset'];
+    if (remaining != null && limit != null && reset != null) {
+      const remainingText =
+        typeof remaining === 'string' || typeof remaining === 'number'
+          ? String(remaining)
+          : 'unknown';
+      const limitText =
+        typeof limit === 'string' || typeof limit === 'number'
+          ? String(limit)
+          : 'unknown';
       this.logger.log(
-        `[rate-limit ${label}] core: ${remaining}/${limit} remaining, ` +
-          `resets at ${new Date(reset * 1000).toISOString()}`,
-      );
-    } catch (err) {
-      this.logger.warn(
-        `Failed to fetch rate-limit status (${label}): ${(err as Error).message}`,
+        `[rate-limit ${label}] core: ${remainingText}/${limitText} remaining, ` +
+          `resets at ${new Date(Number(reset) * 1000).toISOString()}`,
       );
     }
   }

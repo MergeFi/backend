@@ -1,26 +1,63 @@
-import { Body, Controller, Get, Param, Post } from '@nestjs/common';
-import { ApiTags } from '@nestjs/swagger';
-import { IsOptional, IsString, IsUUID } from 'class-validator';
+import {
+  Body,
+  Controller,
+  Get,
+  Param,
+  ParseUUIDPipe,
+  Post,
+  Req,
+  UseGuards,
+} from '@nestjs/common';
+import { Request } from 'express';
+import {
+  ApiBearerAuth,
+  ApiOperation,
+  ApiProperty,
+  ApiTags,
+} from '@nestjs/swagger';
+import { Throttle } from '@nestjs/throttler';
+import { IsOptional, IsUUID } from 'class-validator';
 import { MaintenancePoolService } from './maintenance-pool.service';
 import { CreatePoolDto } from './dto/create-pool.dto';
 import { IsMoneyAmount } from '../common/validators/money.validator';
+import { IsStellarAddress } from '../common/validators/stellar-address.validator';
 import { Idempotent } from '../common/idempotency/idempotent.decorator';
+import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
+import { RolesGuard } from '../auth/guards/roles.guard';
+import { Roles } from '../auth/decorators/roles.decorator';
+import { UserRole } from '../common/enums';
+import {
+  ApiInternalErrorResponse,
+  ApiStandardErrorResponses,
+} from '../common/swagger/api-common-responses.decorator';
 
-class DepositDto {
+export class DepositDto {
+  @ApiProperty({ description: 'Amount to deposit into the maintenance pool' })
   @IsMoneyAmount()
   amount: string;
 
-  @IsString()
+  @ApiProperty({ description: 'Stellar public key of the funder' })
+  @IsStellarAddress()
   funderAddress: string;
 }
 
-class AssignRewardDto {
+export class AssignRewardDto {
+  @ApiProperty({ description: 'UUID of the issue being rewarded' })
+  @IsUUID()
+  issueId: string;
+
+  @ApiProperty({ description: 'Amount to reward from the pool' })
   @IsMoneyAmount()
   amount: string;
 
-  @IsString()
+  @ApiProperty({ description: 'Stellar public key of the recipient' })
+  @IsStellarAddress()
   recipientAddress: string;
 
+  @ApiProperty({
+    required: false,
+    description: 'Optional user UUID of the recipient',
+  })
   @IsOptional()
   @IsUUID()
   recipientId?: string;
@@ -28,35 +65,76 @@ class AssignRewardDto {
 
 @ApiTags('maintenance-pool')
 @Controller('maintenance-pools')
+@ApiInternalErrorResponse()
 export class MaintenancePoolController {
   constructor(private readonly poolService: MaintenancePoolService) {}
 
+  @ApiOperation({ summary: 'Create a maintenance pool' })
+  @ApiBearerAuth()
+  @ApiStandardErrorResponses()
   @Post()
-  create(@Body() dto: CreatePoolDto) {
-    return this.poolService.create(dto);
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(UserRole.SPONSOR, UserRole.MAINTAINER)
+  create(@Body() dto: CreatePoolDto, @Req() req: Request) {
+    const callerUserId = (req.user as any).userId as string;
+    return this.poolService.create(dto, callerUserId);
   }
 
+  @ApiOperation({ summary: 'List maintenance pools' })
+  @Throttle({ long: { limit: 1000, ttl: 3600000 } })
   @Get()
   list() {
     return this.poolService.list();
   }
 
+  @ApiOperation({ summary: 'Get a maintenance pool by id' })
+  @ApiStandardErrorResponses()
+  @Throttle({ default: { limit: 120, ttl: 60000 } })
   @Get(':id')
-  findOne(@Param('id') id: string) {
+  findOne(@Param('id', new ParseUUIDPipe()) id: string) {
     return this.poolService.findOne(id);
   }
 
+  @ApiOperation({ summary: 'Deposit funds into a maintenance pool' })
+  @ApiBearerAuth()
+  @ApiStandardErrorResponses()
   @Idempotent('pool.deposit')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(UserRole.SPONSOR, UserRole.MAINTAINER)
   @Post(':id/deposit')
-  deposit(@Param('id') id: string, @Body() dto: DepositDto) {
-    return this.poolService.deposit(id, dto.amount, dto.funderAddress);
+  deposit(
+    @Param('id', new ParseUUIDPipe()) id: string,
+    @Body() dto: DepositDto,
+    @Req() req: Request,
+  ) {
+    const callerUserId = (req.user as any).userId as string;
+    return this.poolService.deposit(
+      id,
+      dto.amount,
+      dto.funderAddress,
+      callerUserId,
+    );
   }
 
+  @ApiOperation({
+    summary: 'Assign a maintenance pool reward for a resolved issue',
+    description: 'Rate-limited to 1 request/second against DoS/flooding.',
+  })
+  @ApiBearerAuth()
+  @ApiStandardErrorResponses()
+  // High-value mutation protection (Requirement: max 1 req/sec against DoS/flooding)
+  @Throttle({ short: { limit: 1, ttl: 1000 } })
   @Idempotent('pool.assignReward')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(UserRole.MAINTAINER)
   @Post(':id/assign-reward')
-  assignReward(@Param('id') id: string, @Body() dto: AssignRewardDto) {
+  assignReward(
+    @Param('id', new ParseUUIDPipe()) id: string,
+    @Body() dto: AssignRewardDto,
+  ) {
     return this.poolService.assignReward(
       id,
+      dto.issueId,
       dto.amount,
       dto.recipientAddress,
       dto.recipientId,

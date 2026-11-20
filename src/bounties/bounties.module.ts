@@ -1,14 +1,27 @@
 import { Module } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
-import { Bounty, Team, User } from '../common/entities';
+import { Bounty, Issue, Team, User } from '../common/entities';
+import { IdempotencyKey } from '../common/entities/idempotency-key.entity';
 import { BountiesService } from './bounties.service';
 import { BountiesController } from './bounties.controller';
+import { BountyExpiryScheduler } from './bounty-expiry.scheduler';
 import { EscrowModule } from '../escrow/escrow.module';
+import { AuthModule } from '../auth/auth.module';
 
 @Module({
-  imports: [TypeOrmModule.forFeature([Bounty, Team, User]), EscrowModule],
+  imports: [
+    // RolesGuard and @Idempotent()'s IdempotencyInterceptor are used via
+    // @UseGuards/@UseInterceptors class references on BountiesController —
+    // see TeamsModule for why each needs its repository resolvable here
+    // directly rather than only through an imported/global module.
+    // Issue backs BountiesService.create's existence check; without it the
+    // module cannot resolve BountiesService and the app fails to boot (#848).
+    TypeOrmModule.forFeature([Bounty, Issue, Team, User, IdempotencyKey]),
+    EscrowModule,
+    AuthModule,
+  ],
   controllers: [BountiesController],
-  providers: [BountiesService],
+  providers: [BountiesService, BountyExpiryScheduler],
   exports: [BountiesService],
 })
 export class BountiesModule {}
