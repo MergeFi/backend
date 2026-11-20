@@ -58,6 +58,13 @@ export interface ContractInvocationResult {
   status: string;
 }
 
+/** A single, unpolled `getTransaction(hash)` outcome (#849). */
+export interface TransactionLookup {
+  status: 'SUCCESS' | 'FAILED' | 'NOT_FOUND';
+  ledger: number | null;
+  returnValue: unknown;
+}
+
 /**
  * A `bigint` that the escrow ABI types as `u64` rather than `i128` (#301).
  *
@@ -91,6 +98,7 @@ export function u64(value: bigint | number | string): U64Arg {
  *   fn fund(env, issue_id: u64, sponsor: Address, token: Address, amount: i128, deadline: u64) -> Result<(), Error>
  *   fn release(env, issue_id: u64, recipients: Vec<(Address, u32)>) -> Result<(), Error>
  *   fn refund(env, issue_id: u64) -> Result<(), Error>
+ *   fn get_escrow(env, issue_id: u64) -> Option<Escrow>   (read-only; see {@link read}, #849)
  *
  * `release` is the single payout entrypoint — a lone recipient is just the
  * degenerate `[(addr, 10_000)]` case of the same `(address, basis_points)`
@@ -269,6 +277,70 @@ export class SorobanClientService {
           : null,
       status: result.status,
     };
+  }
+
+  /**
+   * One `getTransaction(hash)` lookup, no polling — what the reconciliation
+   * job uses to settle an escrow left PENDING by a {@link SorobanPendingError}
+   * (#849). NOT_FOUND means "not included yet, or already pruned from the
+   * RPC's retention window"; callers must not read it as "failed".
+   *
+   * Returns null when Soroban is not configured: a dry-run hash was never
+   * submitted, so there is nothing to look up.
+   */
+  async getTransaction(hash: string): Promise<TransactionLookup | null> {
+    if (!this.isConfigured()) return null;
+    const res = await this.server.getTransaction(hash);
+    if (res.status === rpc.Api.GetTransactionStatus.NOT_FOUND) {
+      return { status: 'NOT_FOUND', ledger: null, returnValue: null };
+    }
+    return {
+      status:
+        res.status === rpc.Api.GetTransactionStatus.SUCCESS
+          ? 'SUCCESS'
+          : 'FAILED',
+      ledger: 'ledger' in res ? (res.ledger ?? null) : null,
+      returnValue:
+        'returnValue' in res && res.returnValue
+          ? scValToNative(res.returnValue)
+          : null,
+    };
+  }
+
+  /**
+   * Reads contract state without submitting anything: the call is simulated
+   * and its return value decoded. Used for `get_escrow(issue_id)` by the
+   * reconciliation job (#849).
+   *
+   * Returns `undefined` when Soroban is not configured (there is no chain to
+   * read), and `null` when the contract returned nothing for the key.
+   */
+  async read(
+    method: string,
+    args: unknown[],
+    opts: { contractId?: string } = {},
+  ): Promise<unknown> {
+    const keypair = this.getTreasuryKeypair();
+    if (!this.isConfigured() || !keypair) return undefined;
+
+    const contract = this.getContract(opts.contractId);
+    const account = await this.server.getAccount(keypair.publicKey());
+    const tx = new TransactionBuilder(account, {
+      fee: BASE_FEE,
+      networkPassphrase: this.networkPassphrase,
+    })
+      .addOperation(
+        contract.call(method, ...args.map((arg) => this.toScVal(arg))),
+      )
+      .setTimeout(SOROBAN_TX_TIMEOUT_SECONDS)
+      .build();
+
+    const simulated = await this.server.simulateTransaction(tx);
+    if (rpc.Api.isSimulationError(simulated)) {
+      throw new Error(`Soroban simulation failed: ${simulated.error}`);
+    }
+    const retval = simulated.result?.retval;
+    return retval ? (scValToNative(retval) ?? null) : null;
   }
 
   private async pollTransaction(

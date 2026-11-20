@@ -252,6 +252,89 @@ describe('SorobanClientService', () => {
     });
   });
 
+  // Read paths used by EscrowReconciliationService (#849).
+  describe('getTransaction / read (#849)', () => {
+    const configured = () =>
+      makeService({
+        escrowContractId: 'CCONTRACT1234567890',
+        treasurySecret: 'SSECRET',
+      });
+
+    it('returns null without an RPC call when not configured', async () => {
+      const spy = jest.spyOn(rpc.Server.prototype, 'getTransaction');
+      const service = makeService();
+
+      await expect(service.getTransaction('h')).resolves.toBeNull();
+      await expect(service.read('get_escrow', [u64(1n)])).resolves.toBe(
+        undefined,
+      );
+      expect(spy).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      ['SUCCESS', 'SUCCESS'],
+      ['FAILED', 'FAILED'],
+      ['NOT_FOUND', 'NOT_FOUND'],
+    ])('maps a single %s lookup without polling', async (rpcStatus, status) => {
+      const spy = jest
+        .spyOn(rpc.Server.prototype, 'getTransaction')
+        .mockResolvedValue(
+          txResponse({ status: rpcStatus, ledger: 9, returnValue: null }),
+        );
+
+      const result = await configured().getTransaction('hash-1');
+
+      expect(spy).toHaveBeenCalledTimes(1);
+      expect(spy).toHaveBeenCalledWith('hash-1');
+      expect(result?.status).toBe(status);
+    });
+
+    it('simulates a read-only call and never submits it', async () => {
+      const service = configured();
+      jest
+        .spyOn(rpc.Server.prototype, 'getAccount')
+        .mockResolvedValue({} as never);
+      jest
+        .spyOn(rpc.Server.prototype, 'simulateTransaction')
+        .mockResolvedValue({ result: { retval: undefined } } as never);
+      const send = jest.spyOn(rpc.Server.prototype, 'sendTransaction');
+
+      await expect(service.read('get_escrow', [u64(1n)])).resolves.toBeNull();
+      expect(send).not.toHaveBeenCalled();
+    });
+
+    it('decodes the simulated return value', async () => {
+      const service = configured();
+      jest
+        .spyOn(rpc.Server.prototype, 'getAccount')
+        .mockResolvedValue({} as never);
+      jest
+        .spyOn(rpc.Server.prototype, 'simulateTransaction')
+        .mockResolvedValue({
+          result: { retval: { status: ['Locked'] } },
+        } as never);
+
+      await expect(service.read('get_escrow', [u64(1n)])).resolves.toEqual({
+        status: ['Locked'],
+      });
+    });
+
+    it('throws when the read simulation fails', async () => {
+      const service = configured();
+      jest
+        .spyOn(rpc.Server.prototype, 'getAccount')
+        .mockResolvedValue({} as never);
+      jest.spyOn(rpc.Api, 'isSimulationError').mockReturnValue(true);
+      jest
+        .spyOn(rpc.Server.prototype, 'simulateTransaction')
+        .mockResolvedValue({ error: 'no such method' } as never);
+
+      await expect(service.read('get_escrow', [u64(1n)])).rejects.toThrow(
+        'Soroban simulation failed: no such method',
+      );
+    });
+  });
+
   describe('pollTransaction (via invoke)', () => {
     let service: SorobanClientService;
 
