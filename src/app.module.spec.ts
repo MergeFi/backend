@@ -35,6 +35,7 @@ async function compileAppModule(): Promise<TestingModule> {
 
 describe('AppModule wiring (#837)', () => {
   const originalSynchronize = process.env.DATABASE_SYNCHRONIZE;
+  const originalNodeEnv = process.env.NODE_ENV;
   let moduleRef: TestingModule;
 
   beforeAll(async () => {
@@ -53,6 +54,11 @@ describe('AppModule wiring (#837)', () => {
       delete process.env.DATABASE_SYNCHRONIZE;
     } else {
       process.env.DATABASE_SYNCHRONIZE = originalSynchronize;
+    }
+    if (originalNodeEnv === undefined) {
+      delete process.env.NODE_ENV;
+    } else {
+      process.env.NODE_ENV = originalNodeEnv;
     }
     jest.restoreAllMocks();
   });
@@ -112,13 +118,36 @@ describe('AppModule wiring (#837)', () => {
       expect(options.entities).toEqual(entities);
     });
 
-    it('turns synchronize on only when DATABASE_SYNCHRONIZE=true', async () => {
+    it('turns synchronize on only in development when DATABASE_SYNCHRONIZE=true', async () => {
+      process.env.NODE_ENV = 'development';
       process.env.DATABASE_SYNCHRONIZE = 'true';
       const syncRef = await compileAppModule();
       try {
         expect(syncRef.get(DataSource).options.synchronize).toBe(true);
       } finally {
         delete process.env.DATABASE_SYNCHRONIZE;
+        if (originalNodeEnv === undefined) {
+          delete process.env.NODE_ENV;
+        } else {
+          process.env.NODE_ENV = originalNodeEnv;
+        }
+        await syncRef.close();
+      }
+    });
+
+    it('ignores DATABASE_SYNCHRONIZE outside development', async () => {
+      process.env.NODE_ENV = 'production';
+      process.env.DATABASE_SYNCHRONIZE = 'true';
+      const syncRef = await compileAppModule();
+      try {
+        expect(syncRef.get(DataSource).options.synchronize).toBe(false);
+      } finally {
+        delete process.env.DATABASE_SYNCHRONIZE;
+        if (originalNodeEnv === undefined) {
+          delete process.env.NODE_ENV;
+        } else {
+          process.env.NODE_ENV = originalNodeEnv;
+        }
         await syncRef.close();
       }
     });

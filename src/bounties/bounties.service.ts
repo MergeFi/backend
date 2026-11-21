@@ -1,5 +1,6 @@
 import {
   BadRequestException,
+  ConflictException,
   ForbiddenException,
   Injectable,
   Logger,
@@ -103,36 +104,56 @@ export class BountiesService {
     funderAddress: string,
     callerUserId: string,
   ): Promise<Bounty> {
-    const bounty = await this.bountyRepo.findOne({
+    const candidate = await this.bountyRepo.findOne({
       where: { id },
       relations: { issue: true },
     });
-    if (!bounty) throw new NotFoundException(`Bounty ${id} not found`);
+    if (!candidate) throw new NotFoundException(`Bounty ${id} not found`);
 
     // Verify caller is the sponsor (or admin - admin role checked by guard)
-    if (bounty.sponsorId !== callerUserId) {
+    if (candidate.sponsorId !== callerUserId) {
       throw new ForbiddenException(
         'Only the bounty sponsor can fund this bounty',
       );
     }
 
-    assertTransition(bounty.status, BountyStatus.FUNDED);
+    return this.bountyRepo.manager.transaction(async (manager) => {
+      const bounty = await manager.findOne(Bounty, {
+        where: { id },
+        lock: { mode: 'pessimistic_write' },
+      });
+      if (!bounty) throw new NotFoundException(`Bounty ${id} not found`);
+      if (bounty.sponsorId !== callerUserId) {
+        throw new ForbiddenException(
+          'Only the bounty sponsor can fund this bounty',
+        );
+      }
+      if (bounty.escrowId != null) {
+        throw new ConflictException(
+          `Bounty ${id} already has escrow ${bounty.escrowId}`,
+        );
+      }
+      assertTransition(bounty.status, BountyStatus.FUNDED);
 
-    const escrow = await this.escrowService.fund({
-      amount: bounty.amount,
-      asset: bounty.asset,
-      funderAddress,
-      bountyId: bounty.id,
-      sponsorId: bounty.sponsorId,
-      // The on-chain escrow contract is keyed by the GitHub issue id (#158).
-      onChainIssueId: bounty.issue?.githubIssueId ?? null,
-      deadline: bounty.deadline,
+      const escrow = await this.escrowService.fund(
+        {
+          amount: bounty.amount,
+          asset: bounty.asset,
+          funderAddress,
+          bountyId: bounty.id,
+          sponsorId: bounty.sponsorId,
+          // The on-chain escrow contract is keyed by the GitHub issue id (#158).
+          onChainIssueId: candidate.issue?.githubIssueId ?? null,
+          deadline: bounty.deadline,
+        },
+        manager,
+      );
+
+      bounty.escrow = escrow;
+      bounty.escrowId = escrow.id;
+      bounty.status = BountyStatus.FUNDED;
+      return manager.save(Bounty, bounty);
     });
-
-    bounty.escrow = escrow;
-    bounty.escrowId = escrow.id;
-    bounty.status = BountyStatus.FUNDED;
-    return this.bountyRepo.save(bounty);
   }
 
   /** Contributor claims a funded bounty. */

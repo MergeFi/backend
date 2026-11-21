@@ -1,6 +1,7 @@
 import 'reflect-metadata';
 import { DataSource } from 'typeorm';
 import { entities } from '../common/entities/typeorm-entities';
+import { databaseSslOptions } from '../config/configuration';
 
 /**
  * TypeORM CLI DataSource — used only for `migration:generate`/`migration:run`/
@@ -23,4 +24,8 @@ export const AppDataSource = new DataSource({
   migrationsTableName: 'migrations',
   synchronize: false,
   logging: process.env.DATABASE_LOGGING === 'true',
+  ssl: databaseSslOptions(
+    process.env.DATABASE_SSL === 'true',
+    process.env.DATABASE_SSL_CA ?? '',
+  ),
 });

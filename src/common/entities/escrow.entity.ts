@@ -41,6 +41,10 @@ import { AssetType, EscrowStatus } from '../enums';
  */
 @Entity('escrows')
 @Index('IDX_escrow_sponsor_status', ['sponsorId', 'status'])
+@Index('UQ_escrow_onChainId', ['onChainId'], {
+  unique: true,
+  where: '"onChainId" IS NOT NULL',
+})
 @Check(
   'CHK_escrow_at_most_one_parent',
   `(
@@ -109,11 +113,11 @@ export class Escrow {
   /**
    * The `u64` key this escrow is stored under in the on-chain escrow
    * contract — `escrow::fund`'s `issue_id` argument (#158). For bounty
-   * escrows this is the linked GitHub issue's numeric id; for milestone /
-   * maintenance-pool escrows it is derived from the parent UUID until those
-   * move to their own sibling contracts. Stored as a decimal string
-   * because a u64 exceeds JS's safe integer range. Persisted at fund time
-   * so release/refund reference exactly the key fund created.
+   * escrows this is the linked GitHub issue's numeric id; otherwise it is
+   * derived from the parent ID with a parent-type namespace. Stored as a
+   * decimal string because a u64 exceeds JS's safe integer range. Persisted
+   * at fund time and unique so release/refund reference exactly the key fund created
+   * without assigning it to another escrow.
    */
   @Column({ type: 'varchar', nullable: true })
   onChainId: string | null;

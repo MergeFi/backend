@@ -16,6 +16,8 @@ const validProduction = (): Config => ({
     url: 'postgresql://user:pw@db.internal:5432/mergefi',
     synchronize: false,
     logging: false,
+    ssl: true,
+    sslCa: '',
   },
   jwt: { secret: 'a-long-random-secret', expiresIn: '7d' },
   github: {
@@ -100,6 +102,30 @@ describe('collectConfigIssues', () => {
     expect(keys(config)).toEqual(['DATABASE_URL']);
     config.database.url = '';
     expect(keys(config)).toEqual(['DATABASE_URL']);
+  });
+
+  it('refuses production schema synchronization', () => {
+    const config = validProduction();
+    config.database.synchronize = true;
+    expect(collectConfigIssues(config)).toEqual([
+      expect.objectContaining({
+        key: 'DATABASE_SYNCHRONIZE',
+        message: expect.stringContaining('Refusing production startup'),
+      }),
+    ]);
+  });
+
+  it('requires TLS and rejects sslmode=disable in production', () => {
+    const config = validProduction();
+    config.database.ssl = false;
+    expect(keys(config)).toEqual(['DATABASE_SSL']);
+
+    config.database.ssl = true;
+    config.database.url += '?sslmode=disable';
+    expect(keys(config)).toEqual(['DATABASE_URL']);
+    expect(collectConfigIssues(config)[0].message).toContain(
+      'must not set sslmode=disable',
+    );
   });
 
   it('collects every problem at once', () => {

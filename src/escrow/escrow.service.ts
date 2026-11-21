@@ -1,11 +1,18 @@
 import {
   BadRequestException,
+  ConflictException,
   Injectable,
   Logger,
   NotFoundException,
 } from '@nestjs/common';
 import { InjectDataSource, InjectRepository } from '@nestjs/typeorm';
-import { DataSource, EntityManager, In, Repository } from 'typeorm';
+import {
+  DataSource,
+  EntityManager,
+  In,
+  QueryFailedError,
+  Repository,
+} from 'typeorm';
 import { Escrow, Payment, User } from '../common/entities';
 import { AssetType, EscrowStatus, PaymentStatus } from '../common/enums';
 import {
@@ -90,7 +97,7 @@ export class EscrowService {
   }
 
   /** Locks funds for a bounty/milestone/pool by calling the escrow contract's `fund`. */
-  async fund(input: FundEscrowInput): Promise<Escrow> {
+  async fund(input: FundEscrowInput, manager?: EntityManager): Promise<Escrow> {
     this.assertValidFundInput(input);
     if (
       !this.soroban.dryRunEnabled &&
@@ -101,6 +108,34 @@ export class EscrowService {
       );
     }
 
+    const onChainId = this.resolveOnChainId(input);
+    const existing = manager
+      ? await manager.findOne(Escrow, { where: { onChainId } })
+      : await this.escrowRepo.findOne({ where: { onChainId } });
+    if (existing) {
+      throw new ConflictException(
+        `On-chain escrow id ${onChainId} is already assigned to escrow ${existing.id}`,
+      );
+    }
+
+    const saveEscrow = async (entity: Escrow) => {
+      try {
+        return manager
+          ? await manager.save(Escrow, entity)
+          : await this.escrowRepo.save(entity);
+      } catch (error) {
+        if (
+          error instanceof QueryFailedError &&
+          error.driverError?.code === '23505' &&
+          error.driverError?.constraint === 'UQ_escrow_onChainId'
+        ) {
+          throw new ConflictException(
+            `On-chain escrow id ${onChainId} is already assigned`,
+          );
+        }
+        throw error;
+      }
+    };
     const escrow = this.escrowRepo.create({
       amount: input.amount,
       asset: input.asset,
@@ -112,10 +147,10 @@ export class EscrowService {
       sponsorId: input.sponsorId ?? null,
     });
     escrow.contractId = this.resolveContractId(input) || null;
-    escrow.onChainId = this.resolveOnChainId(input);
+    escrow.onChainId = onChainId;
     const deadline = this.resolveDeadline(input);
     escrow.deadline = deadline;
-    await this.escrowRepo.save(escrow);
+    await saveEscrow(escrow);
 
     let result: ContractInvocationResult;
     try {
@@ -146,14 +181,14 @@ export class EscrowService {
         escrow.metadata = {
           pending: { txHash: err.txHash, at: new Date().toISOString() },
         };
-        await this.escrowRepo.save(escrow);
+        await saveEscrow(escrow);
         throw err;
       }
       // Only reached when the *contract call* failed: nothing was locked
       // on-chain, so FAILED is the truthful state.
       escrow.status = EscrowStatus.FAILED;
       escrow.metadata = { error: (err as Error).message };
-      await this.escrowRepo.save(escrow);
+      await saveEscrow(escrow);
       throw err;
     }
 
@@ -164,7 +199,7 @@ export class EscrowService {
     escrow.metadata = { fund: result };
 
     try {
-      return await this.escrowRepo.save(escrow);
+      return await saveEscrow(escrow);
     } catch (err) {
       // The funds ARE locked on-chain — only the local ledger write failed
       // (pool exhaustion, constraint violation, connection drop). Marking
@@ -184,7 +219,7 @@ export class EscrowService {
       // A second failure here means the row is genuinely unreachable; the
       // tx hash above is the only remaining trace, so the original error is
       // what propagates.
-      await this.escrowRepo.save(escrow).catch(() => undefined);
+      await saveEscrow(escrow).catch(() => undefined);
       throw err;
     }
   }
@@ -856,15 +891,43 @@ export class EscrowService {
     const explicit = input.onChainIssueId;
     if (explicit != null && `${explicit}`.trim() !== '') {
       const value = `${explicit}`.trim();
-      return /^\d+$/.test(value) ? value : this.deriveOnChainId(value);
+      return /^\d+$/.test(value)
+        ? BigInt(value).toString()
+        : this.deriveOnChainId('issue', value);
     }
-    return this.deriveOnChainId(
-      input.bountyId ?? input.milestoneId ?? input.maintenancePoolId ?? '',
+    if (input.bountyId != null) {
+      return this.deriveOnChainId('bounty', input.bountyId);
+    }
+    if (input.milestoneId != null) {
+      return this.deriveOnChainId('milestone', input.milestoneId);
+    }
+    if (input.maintenancePoolId != null) {
+      return this.deriveOnChainId('maintenance-pool', input.maintenancePoolId);
+    }
+    throw new BadRequestException(
+      'Exactly one of bountyId, milestoneId, or maintenancePoolId is required',
     );
   }
 
-  /** Deterministic FNV-1a-64 hash of a non-numeric reference into a `u64` string. */
-  private deriveOnChainId(seed: string): string {
+  /** Deterministic, parent-namespaced FNV-1a-64 hash into a `u64` string. */
+  private deriveOnChainId(
+    namespace: 'issue' | 'bounty' | 'milestone' | 'maintenance-pool',
+    seed: string,
+  ): string {
+    if (seed.trim() === '') {
+      throw new BadRequestException('Escrow parent id must not be empty');
+    }
+    const namespacedSeed = `${namespace}:${seed}`;
+    let hash = 14695981039346656037n;
+    for (let i = 0; i < namespacedSeed.length; i++) {
+      hash ^= BigInt(namespacedSeed.charCodeAt(i));
+      hash = BigInt.asUintN(64, hash * 1099511628211n);
+    }
+    return hash.toString();
+  }
+
+  /** Hash used only for pre-onChainId rows whose original key was unnamespaced. */
+  private deriveLegacyOnChainId(seed: string): string {
     let hash = 14695981039346656037n;
     for (let i = 0; i < seed.length; i++) {
       hash ^= BigInt(seed.charCodeAt(i));
@@ -883,7 +946,7 @@ export class EscrowService {
       return BigInt(escrow.onChainId);
     }
     return BigInt(
-      this.deriveOnChainId(
+      this.deriveLegacyOnChainId(
         escrow.bountyId ??
           escrow.milestoneId ??
           escrow.maintenancePoolId ??
@@ -996,6 +1059,11 @@ export class EscrowService {
       throw new BadRequestException(
         'Exactly one of bountyId, milestoneId, or maintenancePoolId is required',
       );
+    }
+    const parentId =
+      input.bountyId ?? input.milestoneId ?? input.maintenancePoolId;
+    if (parentId?.trim() === '') {
+      throw new BadRequestException('Escrow parent id must not be empty');
     }
   }
 

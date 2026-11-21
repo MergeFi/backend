@@ -7,7 +7,10 @@ import { ThrottlerGuard, ThrottlerModule } from '@nestjs/throttler';
 import { ScheduleModule } from '@nestjs/schedule';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
-import configuration, { AppConfig } from './config/configuration';
+import configuration, {
+  AppConfig,
+  databaseSslOptions,
+} from './config/configuration';
 import { entities } from './common/entities/typeorm-entities';
 import { AuthModule } from './auth/auth.module';
 import { UsersModule } from './users/users.module';
@@ -41,12 +44,14 @@ import { IdempotencyModule } from './common/idempotency/idempotency.module';
       inject: [ConfigService],
       useFactory: (configService: ConfigService<AppConfig, true>) => {
         const database = configService.get('database', { infer: true });
+        const env = configService.get('env', { infer: true });
         return {
           type: 'postgres' as const,
           url: database.url,
           entities,
-          synchronize: database.synchronize,
+          synchronize: env === 'development' && database.synchronize,
           logging: database.logging,
+          ssl: databaseSslOptions(database.ssl, database.sslCa),
         };
       },
     }),

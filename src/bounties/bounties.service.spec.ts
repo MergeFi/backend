@@ -99,7 +99,7 @@ describe('BountiesService', () => {
       sponsorId: 'sponsor-1',
     });
 
-    const bounty = await service.fund('b1', 'GFUNDER');
+    const bounty = await service.fund('b1', 'GFUNDER', 'sponsor-1');
 
     expect(escrowService.fund).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -107,7 +107,10 @@ describe('BountiesService', () => {
         funderAddress: 'GFUNDER',
         sponsorId: 'sponsor-1',
       }),
+      transactionManager,
     );
+    expect(bountyRepo.manager.transaction).toHaveBeenCalledTimes(1);
+    expect(transactionManager.save).toHaveBeenCalledWith(Bounty, bounty);
     expect(bounty.status).toBe(BountyStatus.FUNDED);
   });
 
@@ -123,14 +126,34 @@ describe('BountiesService', () => {
       issue: { githubIssueId: '2891234567' },
     });
 
-    await service.fund('b1', 'GFUNDER');
+    await service.fund('b1', 'GFUNDER', 'sponsor-1');
 
     expect(escrowService.fund).toHaveBeenCalledWith(
       expect.objectContaining({
         onChainIssueId: '2891234567',
         deadline,
       }),
+      transactionManager,
     );
+  });
+
+  it('rejects re-funding a bounty that already has an escrow', async () => {
+    bountyRepo.findOne.mockResolvedValue({
+      id: 'b1',
+      status: BountyStatus.OPEN,
+      sponsorId: 'sponsor-1',
+    });
+    transactionManager.findOne.mockResolvedValue({
+      id: 'b1',
+      status: BountyStatus.OPEN,
+      sponsorId: 'sponsor-1',
+      escrowId: 'existing-escrow',
+    });
+
+    await expect(
+      service.fund('b1', 'GFUNDER', 'sponsor-1'),
+    ).rejects.toThrow('already has escrow existing-escrow');
+    expect(escrowService.fund).not.toHaveBeenCalled();
   });
 
   it('rejects funding a bounty that is already FUNDED', async () => {

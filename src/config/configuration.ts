@@ -16,6 +16,8 @@ export interface AppConfig {
     url: string;
     synchronize: boolean;
     logging: boolean;
+    ssl: boolean;
+    sslCa: string;
   };
   jwt: {
     secret: string;
@@ -100,6 +102,17 @@ export function parseSchedulersEnabled(raw: string | undefined): boolean {
   return !['false', '0', 'no', 'off'].includes(raw.trim().toLowerCase());
 }
 
+export function databaseSslOptions(
+  enabled: boolean,
+  ca: string,
+): false | { rejectUnauthorized: true; ca?: string } {
+  if (!enabled) return false;
+  return {
+    rejectUnauthorized: true,
+    ...(ca.trim() ? { ca } : {}),
+  };
+}
+
 export function parseTrustProxy(
   raw: string | undefined,
 ): false | number | string[] {
@@ -153,6 +166,8 @@ export default (): AppConfig => ({
       'postgresql://postgres:postgres@localhost:5432/mergefi',
     synchronize: process.env.DATABASE_SYNCHRONIZE === 'true',
     logging: process.env.DATABASE_LOGGING === 'true',
+    ssl: process.env.DATABASE_SSL === 'true',
+    sslCa: process.env.DATABASE_SSL_CA ?? '',
   },
   jwt: {
     secret: process.env.JWT_SECRET ?? 'insecure-dev-secret',
