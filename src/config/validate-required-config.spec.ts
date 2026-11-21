@@ -37,7 +37,78 @@ const validProduction = (): Config => ({
 
 const keys = (config: Config) => collectConfigIssues(config).map((i) => i.key);
 
+const REQUIRED_PRODUCTION_KEYS = [
+  'JWT_SECRET',
+  'DATABASE_URL',
+  'GITHUB_WEBHOOK_SECRET',
+  'GITHUB_CLIENT_ID',
+  'GITHUB_CLIENT_SECRET',
+  'ESCROW_CONTRACT_ID',
+  'TREASURY_SECRET',
+];
+
+const emptyConfig = (env = 'production'): Config => ({
+  env,
+  database: {
+    url: '',
+    synchronize: false,
+    logging: false,
+  },
+  jwt: { secret: '', expiresIn: '' },
+  github: {
+    clientId: '',
+    clientSecret: '',
+    oauthCallbackUrl: '',
+    apiToken: '',
+    webhookSecret: '',
+    syncAllowedRepos: '',
+  },
+  stellar: {
+    network: '',
+    sorobanRpcUrl: '',
+    networkPassphrase: '',
+    escrowContractId: '',
+    maintenancePoolContractId: '',
+    treasurySecret: '',
+    assetContractIds: { USDC: '', XLM: '' },
+    escrowDeadlineSeconds: 0,
+  },
+});
+
 describe('collectConfigIssues', () => {
+  it.each(['development', 'test', 'staging', 'local', 'ci', ''])(
+    'returns no issues outside production (env: %p) even with no secrets set',
+    (env) => {
+      const config = emptyConfig(env);
+      expect(collectConfigIssues(config)).toEqual([]);
+      expect(() => assertRequiredConfig(config)).not.toThrow();
+    },
+  );
+
+  it.each([
+    ['empty secrets', emptyConfig('production')],
+    [
+      'development defaults',
+      {
+        ...emptyConfig('production'),
+        database: {
+          url: DEFAULT_LOCAL_DATABASE_URL,
+          synchronize: false,
+          logging: false,
+        },
+        jwt: {
+          secret: INSECURE_DEFAULT_JWT_SECRET,
+          expiresIn: '7d',
+        },
+      },
+    ],
+  ])(
+    'reports the exact set of required keys for an empty production config with %s',
+    (_, config) => {
+      expect(keys(config)).toEqual(REQUIRED_PRODUCTION_KEYS);
+    },
+  );
+
   it('is a no-op outside production, even with every secret missing', () => {
     const config: Config = {
       ...configuration(),
@@ -203,6 +274,13 @@ describe('assertRequiredConfig', () => {
     config.stellar.treasurySecret = '';
     expect(() => assertRequiredConfig(config)).toThrow(
       /Refusing to start in production[\s\S]*JWT_SECRET[\s\S]*TREASURY_SECRET/,
+    );
+  });
+
+  it('throws listing all required issues in one throw for an empty production config', () => {
+    const config = emptyConfig('production');
+    expect(() => assertRequiredConfig(config)).toThrow(
+      new RegExp(REQUIRED_PRODUCTION_KEYS.join('[\\s\\S]*')),
     );
   });
 
