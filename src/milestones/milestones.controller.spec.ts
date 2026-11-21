@@ -1,4 +1,5 @@
 import { Test, TestingModule } from '@nestjs/testing';
+import { getRepositoryToken } from '@nestjs/typeorm';
 import { plainToInstance } from 'class-transformer';
 import { validate } from 'class-validator';
 import { MilestonesController } from './milestones.controller';
@@ -7,6 +8,8 @@ import { CreateMilestoneDto } from './dto/create-milestone.dto';
 import { AssetType, MilestoneStatus } from '../common/enums';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
+import { IdempotencyInterceptor } from '../common/idempotency/idempotency.interceptor';
+import { IdempotencyKey } from '../common/entities/idempotency-key.entity';
 
 describe('MilestonesController', () => {
   let controller: MilestonesController;
@@ -22,10 +25,16 @@ describe('MilestonesController', () => {
 
   beforeEach(async () => {
     milestonesService = {
-      create: jest.fn().mockResolvedValue({ id: 'm1', status: MilestoneStatus.OPEN }),
-      findOne: jest.fn().mockResolvedValue({ id: 'm1', status: MilestoneStatus.OPEN }),
+      create: jest
+        .fn()
+        .mockResolvedValue({ id: 'm1', status: MilestoneStatus.OPEN }),
+      findOne: jest
+        .fn()
+        .mockResolvedValue({ id: 'm1', status: MilestoneStatus.OPEN }),
       list: jest.fn().mockResolvedValue([]),
-      fund: jest.fn().mockResolvedValue({ id: 'm1', status: MilestoneStatus.FUNDED }),
+      fund: jest
+        .fn()
+        .mockResolvedValue({ id: 'm1', status: MilestoneStatus.FUNDED }),
       addIssue: jest.fn().mockResolvedValue({ id: 'm1' }),
       resolveIssue: jest.fn().mockResolvedValue({ id: 'm1' }),
       allocateBudget: jest.fn().mockResolvedValue({ id: 'm1' }),
@@ -33,7 +42,14 @@ describe('MilestonesController', () => {
 
     const module: TestingModule = await Test.createTestingModule({
       controllers: [MilestonesController],
-      providers: [{ provide: MilestonesService, useValue: milestonesService }],
+      providers: [
+        { provide: MilestonesService, useValue: milestonesService },
+        IdempotencyInterceptor,
+        {
+          provide: getRepositoryToken(IdempotencyKey),
+          useValue: { findOne: jest.fn(), save: jest.fn() },
+        },
+      ],
     })
       .overrideGuard(JwtAuthGuard)
       .useValue({ canActivate: () => true })
@@ -53,9 +69,9 @@ describe('MilestonesController', () => {
         asset: AssetType.USDC,
       };
 
-      await controller.create(dto);
+      await controller.create(dto, { user: { userId: 'u1' } } as any);
 
-      expect(milestonesService.create).toHaveBeenCalledWith(dto);
+      expect(milestonesService.create).toHaveBeenCalledWith(dto, 'u1');
     });
   });
 
@@ -77,9 +93,13 @@ describe('MilestonesController', () => {
 
   describe('fund', () => {
     it('calls milestonesService.fund with id and funderAddress', async () => {
-      await controller.fund('m1', { funderAddress: 'GFUNDER' });
+      await controller.fund(
+        'm1',
+        { funderAddress: 'GFUNDER' },
+        { user: { userId: 'u1' } } as any,
+      );
 
-      expect(milestonesService.fund).toHaveBeenCalledWith('m1', 'GFUNDER');
+      expect(milestonesService.fund).toHaveBeenCalledWith('m1', 'GFUNDER', 'u1');
     });
   });
 
@@ -98,7 +118,12 @@ describe('MilestonesController', () => {
         recipientId: 'u1',
       });
 
-      expect(milestonesService.resolveIssue).toHaveBeenCalledWith('m1', 'i1', 'GADDR', 'u1');
+      expect(milestonesService.resolveIssue).toHaveBeenCalledWith(
+        'm1',
+        'i1',
+        'GADDR',
+        'u1',
+      );
     });
   });
 
@@ -107,6 +132,20 @@ describe('MilestonesController', () => {
       await controller.allocateBudget('m1');
 
       expect(milestonesService.allocateBudget).toHaveBeenCalledWith('m1');
+    });
+
+    it('is documented in Swagger as deprecated and not implemented (#613)', () => {
+      const handler = (
+        MilestonesController.prototype as unknown as Record<
+          string,
+          (...args: unknown[]) => unknown
+        >
+      )['allocateBudget'];
+      const apiOperation = Reflect.getMetadata('swagger/apiOperation', handler);
+      expect(apiOperation).toMatchObject({
+        deprecated: true,
+        description: 'Not implemented',
+      });
     });
   });
 
