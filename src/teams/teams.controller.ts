@@ -11,6 +11,7 @@ import {
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { TeamsService } from './teams.service';
 import { CreateTeamDto, UpdateTeamSplitsDto } from './dto/create-team.dto';
+import { toTeamResponse } from './dto/team-response.dto';
 import { Idempotent } from '../common/idempotency/idempotent.decorator';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
@@ -47,13 +48,20 @@ export class TeamsController {
   }
 
   @ApiOperation({ summary: 'Get a team and its current member splits' })
+  @ApiBearerAuth()
+  @ApiStandardErrorResponses()
   @Get(':id')
-  findOne(@Param('id', new ParseUUIDPipe()) id: string) {
-    return this.teamsService.findOne(id);
+  @UseGuards(JwtAuthGuard)
+  async findOne(
+    @Param('id', new ParseUUIDPipe()) id: string,
+    @CurrentUser() user: AuthenticatedUser,
+  ) {
+    const team = await this.teamsService.findOne(id, user?.userId);
+    return toTeamResponse(team);
   }
 
   @ApiOperation({
-    summary: 'Replace a team\'s member payout splits',
+    summary: "Replace a team's member payout splits",
     description: 'Same validation as create: unique members, splits sum to 100.',
   })
   @ApiBearerAuth()
