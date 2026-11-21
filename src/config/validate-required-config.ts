@@ -147,6 +147,32 @@ export function collectConfigIssues(config: RequiredConfig): ConfigIssue[] {
     });
   }
 
+  if (config.database.synchronize) {
+    issues.push({
+      key: 'DATABASE_SYNCHRONIZE',
+      message:
+        'Refusing production startup with DATABASE_SYNCHRONIZE=true because TypeORM may alter the live schema; set it to false and apply migrations',
+    });
+  }
+
+  if (!config.database.ssl) {
+    issues.push({
+      key: 'DATABASE_SSL',
+      message:
+        'DATABASE_SSL must be true in production so PostgreSQL connections use TLS',
+    });
+  }
+
+  const query = config.database.url.split('?')[1]?.split('#')[0] ?? '';
+  const sslMode = new URLSearchParams(query).get('sslmode')?.toLowerCase();
+  if (sslMode === 'disable') {
+    issues.push({
+      key: 'DATABASE_URL',
+      message:
+        'DATABASE_URL must not set sslmode=disable in production; database connections must use TLS',
+    });
+  }
+
   requireNonEmpty(
     'GITHUB_WEBHOOK_SECRET',
     config.github.webhookSecret,

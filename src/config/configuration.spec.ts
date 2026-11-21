@@ -1,4 +1,5 @@
 import configuration, {
+  databaseSslOptions,
   parseSchedulersEnabled,
   parseTrustProxy,
 } from './configuration';
@@ -11,6 +12,8 @@ const ENV_KEYS = [
   'DATABASE_URL',
   'DATABASE_SYNCHRONIZE',
   'DATABASE_LOGGING',
+  'DATABASE_SSL',
+  'DATABASE_SSL_CA',
   'JWT_SECRET',
   'GITHUB_CLIENT_ID',
   'GITHUB_CLIENT_SECRET',
@@ -51,6 +54,8 @@ describe('configuration', () => {
       url: 'postgresql://postgres:postgres@localhost:5432/mergefi',
       synchronize: false,
       logging: false,
+      ssl: false,
+      sslCa: '',
     });
     expect(config.jwt.secret).toBe('insecure-dev-secret');
     expect(config.github.webhookSecret).toBe('');
@@ -95,6 +100,8 @@ describe('configuration', () => {
     process.env.ESCROW_DEADLINE_SECONDS = '120';
     process.env.DATABASE_SYNCHRONIZE = 'true';
     process.env.DATABASE_LOGGING = 'false';
+    process.env.DATABASE_SSL = 'true';
+    process.env.DATABASE_SSL_CA = 'test-ca';
     process.env.SOROBAN_DRY_RUN = 'true';
     process.env.SOROBAN_INCLUSION_FEE = '9000';
     process.env.SOROBAN_FEE_BPS = '125';
@@ -103,6 +110,8 @@ describe('configuration', () => {
     expect(config.stellar.escrowDeadlineSeconds).toBe(120);
     expect(config.database.synchronize).toBe(true);
     expect(config.database.logging).toBe(false);
+    expect(config.database.ssl).toBe(true);
+    expect(config.database.sslCa).toBe('test-ca');
     expect(config.stellar.dryRun).toBe(true);
     expect(config.stellar.inclusionFee).toBe(9000);
     expect(config.stellar.protocolFeeBps).toBe(125);
@@ -111,6 +120,17 @@ describe('configuration', () => {
   it('only treats the exact string "true" as a true boolean', () => {
     process.env.DATABASE_SYNCHRONIZE = '1';
     expect(configuration().database.synchronize).toBe(false);
+  });
+
+  it('builds verified PostgreSQL SSL options with an optional CA', () => {
+    expect(databaseSslOptions(true, 'private-ca')).toEqual({
+      rejectUnauthorized: true,
+      ca: 'private-ca',
+    });
+    expect(databaseSslOptions(true, '')).toEqual({
+      rejectUnauthorized: true,
+    });
+    expect(databaseSslOptions(false, 'private-ca')).toBe(false);
   });
 
   it('keeps an empty-string env var where ?? is used, but falls back where || is used', () => {

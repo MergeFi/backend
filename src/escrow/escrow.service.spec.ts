@@ -221,6 +221,58 @@ describe('EscrowService', () => {
       expect(() => BigInt(first.onChainId as string)).not.toThrow();
     });
 
+    it('namespaces derived ids by parent type', async () => {
+      const milestone = await service.fund({
+        amount: '1.0000000',
+        asset: AssetType.USDC,
+        funderAddress: 'GFUNDER',
+        milestoneId: 'same-parent-id',
+      });
+      const pool = await service.fund({
+        amount: '1.0000000',
+        asset: AssetType.USDC,
+        funderAddress: 'GFUNDER',
+        maintenancePoolId: 'same-parent-id',
+      });
+
+      expect(milestone.onChainId).not.toBe(pool.onChainId);
+    });
+
+    it('rejects an empty parent id instead of hashing the FNV offset basis', async () => {
+      await expect(
+        service.fund({
+          amount: '1.0000000',
+          asset: AssetType.USDC,
+          funderAddress: 'GFUNDER',
+          milestoneId: '',
+        }),
+      ).rejects.toThrow(BadRequestException);
+
+      expect(escrowRepo.findOne).not.toHaveBeenCalled();
+      expect(escrowRepo.save).not.toHaveBeenCalled();
+      expect(soroban.invoke).not.toHaveBeenCalled();
+    });
+
+    it('rejects an on-chain id already assigned to another escrow', async () => {
+      escrowRepo.findOne.mockResolvedValueOnce({
+        id: 'existing-escrow',
+        onChainId: '4242',
+      });
+
+      await expect(
+        service.fund({
+          amount: '1.0000000',
+          asset: AssetType.USDC,
+          funderAddress: 'GFUNDER',
+          bountyId: 'bounty-collision',
+          onChainIssueId: '4242',
+        }),
+      ).rejects.toThrow('already assigned to escrow existing-escrow');
+
+      expect(escrowRepo.save).not.toHaveBeenCalled();
+      expect(soroban.invoke).not.toHaveBeenCalled();
+    });
+
     it('persists the denormalized sponsorId on the created escrow row', async () => {
       const escrow = await service.fund({
         amount: '100.0000000',

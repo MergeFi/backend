@@ -134,6 +134,9 @@ See [`.env.example`](./.env.example) for the full annotated list. Highlights:
 | Variable | Purpose |
 |---|---|
 | `DATABASE_URL` | Postgres connection string (TypeORM). |
+| `DATABASE_SSL` | Enables PostgreSQL TLS; required in production. Certificate verification is enabled by default. |
+| `DATABASE_SSL_CA` | Optional PEM CA certificate for PostgreSQL TLS when using a private CA. |
+| `DATABASE_SYNCHRONIZE` | Enables TypeORM schema synchronization only in development; production startup refuses `true`. |
 | `TRUST_PROXY` | Express proxy trust configuration: `false` by default, a fixed hop count (for example `1` behind one trusted ingress), or a comma-separated trusted address/subnet list. Do not use `true`, which can let clients spoof forwarded IPs. |
 | `JWT_SECRET`, `JWT_EXPIRES_IN` | Session token signing. |
 | `GITHUB_CLIENT_ID` / `_SECRET`, `GITHUB_OAUTH_CALLBACK_URL` | GitHub OAuth login app. The callback defaults to `${APP_URL}/api/auth/github/callback`; `APP_URL` defaults to `http://localhost:${PORT}`. |
@@ -387,11 +390,12 @@ docker build --target runner -t mergefi-backend:latest .
 - **Least Privilege**: The container runs under the non-root `node` user (`USER node`).
 - **Production Mode**: The final image forces `NODE_ENV=production`.
 - **Graceful Shutdown**: Nest shutdown hooks handle `SIGTERM` and `SIGINT`, allowing providers to clean up and the HTTP server to drain active requests. Set the orchestrator's termination grace period longer than the Soroban poll ceiling (about 62 seconds, plus request/setup overhead) so in-flight escrow operations have time to finish.
-- **Required-secret Enforcer**: When `NODE_ENV=production`, `assertRequiredConfig` (`src/config/validate-required-config.ts`, called from `src/main.ts`) crashes the container at boot — listing every problem at once — unless all of `JWT_SECRET` (not the `insecure-dev-secret` default), `DATABASE_URL` (not the local `postgres:postgres@localhost` default), `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET`, `GITHUB_WEBHOOK_SECRET`, `ESCROW_CONTRACT_ID` and `TREASURY_SECRET` are set to real values. This closes the silent-failure gap where, for example, an empty `GITHUB_WEBHOOK_SECRET` made the app boot "healthy" while rejecting 100% of webhook deliveries. You **must** provide these when running the production container, e.g.:
+- **Required-config Enforcer**: When `NODE_ENV=production`, `assertRequiredConfig` (`src/config/validate-required-config.ts`, called from `src/main.ts`) refuses startup unless required values are configured, including a non-default `DATABASE_URL`, `DATABASE_SSL=true`, and `DATABASE_SYNCHRONIZE=false`. Production URLs may not specify `sslmode=disable`; PostgreSQL TLS verifies certificates by default. It also checks `JWT_SECRET`, GitHub credentials and webhook secret, and the live Soroban deployment/signing settings. You **must** provide these when running the production container, e.g.:
   ```bash
   docker run -p 3000:3000 \
     -e JWT_SECRET="your-highly-secure-random-jwt-key" \
     -e DATABASE_URL="postgresql://user:pass@db-host:5432/mergefi" \
+    -e DATABASE_SSL=true \
     -e GITHUB_CLIENT_ID=... -e GITHUB_CLIENT_SECRET=... \
     -e GITHUB_WEBHOOK_SECRET=... \
     -e ESCROW_CONTRACT_ID=... -e TREASURY_SECRET=... \
@@ -428,7 +432,7 @@ Unit tests cover critical domains including:
 - `test/soroban-xdr-encoding.e2e-spec.ts` — decodes the `xdr.ScVal`s the real Stellar SDK produces for every contract call the backend makes (`fund`, `release`, `refund`, `withdraw`, `release_partial`) and checks them against the `mergefi-contracts` signatures (#840). It runs under the e2e config because the unit config stubs the SDK.
 - `src/analytics/analytics.integration.spec.ts` — Postgres load/parity test: SQL heatmap + top-N match the old JS bucketing on a small fixture; a 3,000-bounty seed must not call `find`/`getMany` (O(n) entity load → O(days)+O(1) aggregates), `forContributor` under 2s, cached homepage summary on a second call.
 
-`DATABASE_SYNCHRONIZE=true` (set in development) will auto-create tables from entities for fast local iteration. Real deployments should run migrations instead — see `src/database/migrations/` and the `migration:*` npm scripts below.
+`DATABASE_SYNCHRONIZE=true` is honored only in development for fast local iteration. It is ignored in other environments, and production startup refuses to proceed if it is set. Real deployments should run migrations instead — see `src/database/migrations/` and the `migration:*` npm scripts below.
 
 ### Migrations
 

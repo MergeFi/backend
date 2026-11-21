@@ -59,11 +59,9 @@ export class FundEscrowDto {
 
   /**
    * The `u64` key `escrow::fund` stores this escrow under on-chain (#158).
-   * For a bounty that is the linked GitHub issue's numeric id; without it
-   * `EscrowService.resolveOnChainId` falls back to a hash of the parent UUID,
-   * which is a materially different on-chain identity than the rest of the
-   * system assumes. Restricted to digits so a direct caller can't smuggle in
-   * an arbitrary seed.
+   * For a bounty this is the linked GitHub issue's numeric id. When omitted,
+   * internal milestone/pool funding derives a parent-type-namespaced key.
+   * Restricted to digits so a direct caller cannot supply an arbitrary seed.
    */
   @ApiProperty({
     required: false,
