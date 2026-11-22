@@ -259,10 +259,24 @@ export class MilestonesService {
     );
   }
 
-  async close(id: string, userId: string): Promise<Milestone> {
-    const milestone = await this.findOne(id);
+  async close(id: string, callerUserId: string): Promise<Milestone> {
+    const milestone = await this.milestoneRepo.findOne({
+      where: { id },
+      relations: { repository: true },
+    });
     if (!milestone) {
       throw new NotFoundException(`Milestone ${id} not found`);
+    }
+
+    const isSponsor =
+      !!milestone.sponsorId && milestone.sponsorId === callerUserId;
+    const isRepoMaintainer =
+      !!milestone.repository?.maintainerId &&
+      milestone.repository.maintainerId === callerUserId;
+    if (!isSponsor && !isRepoMaintainer) {
+      throw new ForbiddenException(
+        "Only the milestone sponsor or the repository's maintainer can close this milestone",
+      );
     }
 
     assertTransition(milestone.status, MilestoneStatus.CLOSED);

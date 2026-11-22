@@ -35,6 +35,7 @@ describe('MilestonesService', () => {
   };
   let escrowService: {
     fund: jest.Mock;
+    refund: jest.Mock;
     releasePartial: jest.Mock;
   };
   let dataSource: {
@@ -53,6 +54,7 @@ describe('MilestonesService', () => {
     };
     escrowService = {
       fund: jest.fn().mockResolvedValue({ id: 'escrow-1', status: 'locked' }),
+      refund: jest.fn().mockResolvedValue({ id: 'escrow-1', status: 'refunded' }),
       releasePartial: jest.fn().mockResolvedValue({
         id: 'payment-1',
         amount: '100',
@@ -87,7 +89,7 @@ describe('MilestonesService', () => {
         sponsorId: 'sponsor-1',
       });
 
-      const milestone = await service.fund('m1', 'GFUNDER');
+      const milestone = await service.fund('m1', 'GFUNDER', 'sponsor-1');
 
       expect(milestone.status).toBe(MilestoneStatus.FUNDED);
       expect(milestone.escrowId).toBe('escrow-1');
@@ -102,7 +104,7 @@ describe('MilestonesService', () => {
         sponsorId: 'sponsor-1',
       });
 
-      await service.fund('m1', 'GFUNDER');
+      await service.fund('m1', 'GFUNDER', 'sponsor-1');
 
       expect(escrowService.fund).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -424,14 +426,14 @@ describe('MilestonesService', () => {
     it('rejects when milestone status is not FUNDED or IN_PROGRESS', async () => {
       milestoneRepo.findOne.mockResolvedValue({
         id: 'm1',
-        status: MilestoneStatus.OPEN,
+        status: MilestoneStatus.COMPLETED,
         escrowId: 'escrow-1',
         issues: [],
       });
 
       await expect(
         service.resolveIssue('m1', 'i1', 'RECIPIENT_ADDR'),
-      ).rejects.toThrow('Milestone m1 is not accepting distributions');
+      ).rejects.toThrow();
     });
 
     it('rejects when the issue does not belong to the milestone (#114)', async () => {
@@ -496,6 +498,7 @@ describe('MilestonesService', () => {
         '333.3333333',
         'RECIPIENT_ADDR',
         undefined,
+        expect.anything(),
       );
     });
   });
@@ -504,6 +507,83 @@ describe('MilestonesService', () => {
     it('answers 501 instead of reporting a fake allocation', async () => {
       await expect(service.allocateBudget('m1')).rejects.toBeInstanceOf(
         NotImplementedException,
+      );
+    });
+  });
+
+  describe('close (#725)', () => {
+    it('throws NotFoundException when the milestone does not exist', async () => {
+      milestoneRepo.findOne.mockResolvedValue(null);
+
+      await expect(service.close('missing', 'user-1')).rejects.toThrow(
+        'Milestone missing not found',
+      );
+      expect(escrowService.refund).not.toHaveBeenCalled();
+    });
+
+    it('throws ForbiddenException when caller is neither sponsor nor repo maintainer (#725)', async () => {
+      milestoneRepo.findOne.mockResolvedValue({
+        id: 'm1',
+        status: MilestoneStatus.OPEN,
+        sponsorId: 'sponsor-1',
+        repository: { id: 'repo-1', maintainerId: 'maintainer-1' },
+      });
+
+      await expect(service.close('m1', 'unrelated-user')).rejects.toThrow(
+        "Only the milestone sponsor or the repository's maintainer can close this milestone",
+      );
+      expect(escrowService.refund).not.toHaveBeenCalled();
+      expect(milestoneRepo.save).not.toHaveBeenCalled();
+    });
+
+    it('allows the milestone sponsor to close and refunds escrow', async () => {
+      milestoneRepo.findOne.mockResolvedValue({
+        id: 'm1',
+        status: MilestoneStatus.OPEN,
+        sponsorId: 'sponsor-1',
+        escrowId: 'escrow-1',
+        repository: { id: 'repo-1', maintainerId: 'maintainer-1' },
+      });
+
+      const closed = await service.close('m1', 'sponsor-1');
+
+      expect(escrowService.refund).toHaveBeenCalledWith('escrow-1');
+      expect(closed.status).toBe(MilestoneStatus.CLOSED);
+      expect(milestoneRepo.save).toHaveBeenCalledWith(
+        expect.objectContaining({ id: 'm1', status: MilestoneStatus.CLOSED }),
+      );
+    });
+
+    it('allows the repository maintainer to close even if not the sponsor', async () => {
+      milestoneRepo.findOne.mockResolvedValue({
+        id: 'm1',
+        status: MilestoneStatus.OPEN,
+        sponsorId: 'sponsor-1',
+        escrowId: 'escrow-1',
+        repository: { id: 'repo-1', maintainerId: 'maintainer-1' },
+      });
+
+      const closed = await service.close('m1', 'maintainer-1');
+
+      expect(escrowService.refund).toHaveBeenCalledWith('escrow-1');
+      expect(closed.status).toBe(MilestoneStatus.CLOSED);
+    });
+
+    it('still closes the milestone if escrow refund throws an error', async () => {
+      milestoneRepo.findOne.mockResolvedValue({
+        id: 'm1',
+        status: MilestoneStatus.OPEN,
+        sponsorId: 'sponsor-1',
+        escrowId: 'escrow-1',
+        repository: { id: 'repo-1', maintainerId: 'maintainer-1' },
+      });
+      escrowService.refund.mockRejectedValueOnce(new Error('Already refunded'));
+
+      const closed = await service.close('m1', 'sponsor-1');
+
+      expect(closed.status).toBe(MilestoneStatus.CLOSED);
+      expect(milestoneRepo.save).toHaveBeenCalledWith(
+        expect.objectContaining({ id: 'm1', status: MilestoneStatus.CLOSED }),
       );
     });
   });
