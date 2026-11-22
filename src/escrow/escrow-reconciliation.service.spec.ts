@@ -125,7 +125,7 @@ describe('EscrowReconciliationService (#849)', () => {
     expect(escrowRepo.createQueryBuilder).not.toHaveBeenCalled();
   });
 
-  it('selects pending-with-hash, locked-with-lastFailure, and flagged/diverged rows', async () => {
+  it('selects pending fund attempts, locked failures, and flagged/diverged rows', async () => {
     await service.reconcileAll();
 
     const clauses = [
@@ -134,6 +134,9 @@ describe('EscrowReconciliationService (#849)', () => {
     ].map(([sql]) => sql as string);
     expect(clauses.join('\n')).toEqual(
       expect.stringContaining(`metadata -> 'pending' ->> 'txHash'`),
+    );
+    expect(clauses.join('\n')).toEqual(
+      expect.stringContaining(`metadata @> '{"attempts":[{"status":"pending"}]}'`),
     );
     expect(clauses.join('\n')).toEqual(
       expect.stringContaining(`metadata -> 'lastFailure'`),
@@ -284,6 +287,42 @@ describe('EscrowReconciliationService (#849)', () => {
         }),
       );
     });
+  });
+
+  it('reconciles an unresolved attempt in the append-only fund history', async () => {
+    seed(
+      escrow({
+        status: EscrowStatus.PENDING,
+        metadata: {
+          attempts: [
+            {
+              attempt: 2,
+              status: 'pending',
+              txHash: 'tx-pending',
+              at: new Date().toISOString(),
+            },
+          ],
+        },
+      }),
+    );
+    soroban.getTransaction.mockResolvedValue({
+      status: 'SUCCESS',
+      ledger: 99,
+      returnValue: null,
+    });
+
+    await service.reconcileAll();
+
+    const row = saved();
+    expect(row.status).toBe(EscrowStatus.LOCKED);
+    expect(row.metadata?.attempts).toEqual([
+      expect.objectContaining({
+        attempt: 2,
+        status: 'succeeded',
+        txHash: 'tx-pending',
+        result: expect.objectContaining({ ledger: 99 }),
+      }),
+    ]);
   });
 
   describe('LOCKED with metadata.lastFailure', () => {

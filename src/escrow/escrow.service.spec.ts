@@ -4,6 +4,9 @@ import { BadRequestException } from '@nestjs/common';
 import { DataSource } from 'typeorm';
 import { EscrowService } from './escrow.service';
 import {
+  address,
+  recipients as recipientsArg,
+  scString,
   SorobanClientService,
   SorobanPendingError,
   u64,
@@ -132,7 +135,7 @@ describe('EscrowService', () => {
       // issue_id is u64 in the escrow ABI — wrapped so the client encodes
       // ScVal::U64 instead of ScVal::I128 (#301).
       expect(args[0]).toEqual(u64(4242n));
-      expect(args[1]).toBe('GABC...FUNDER');
+      expect(args[1]).toEqual(address('GABC...FUNDER'));
       expect(args[3]).toBe(1_000_000_000n);
       // deadline is u64 too, in whole unix seconds (#301, #508).
       expect(args[4]).toEqual(
@@ -418,7 +421,7 @@ describe('EscrowService', () => {
         onChainIssueId: '77',
       };
       let snapshots: Partial<Escrow>[];
-      // fund() replaces metadata wholesale, so a shallow copy is a true snapshot.
+      // Fund metadata snapshots keep each attempt entry intact.
       const snapshot = (data: Partial<Escrow>) =>
         snapshots.push({
           ...data,
@@ -433,7 +436,7 @@ describe('EscrowService', () => {
         });
       });
 
-      it('SorobanPendingError: keeps PENDING, records pending.txHash, rethrows the same error (#527)', async () => {
+      it('records pending attempts and keeps PENDING (#527)', async () => {
         const pending = new SorobanPendingError('tx-pending');
         soroban.invoke.mockRejectedValueOnce(pending);
 
@@ -447,13 +450,15 @@ describe('EscrowService', () => {
         expect(last.fundTxHash).toBe('tx-pending');
         expect(last.lockedAt).toBeUndefined();
         expect(last.metadata).toEqual({
-          pending: { txHash: 'tx-pending', at: expect.any(String) },
+          attempts: [
+            {
+              attempt: 1,
+              status: 'pending',
+              txHash: 'tx-pending',
+              at: expect.any(String),
+            },
+          ],
         });
-        expect(
-          Number.isNaN(
-            Date.parse((last.metadata!.pending as { at: string }).at),
-          ),
-        ).toBe(false);
       });
 
       it('generic invocation error: marks FAILED with the error message and rethrows the same error', async () => {
@@ -467,7 +472,16 @@ describe('EscrowService', () => {
           EscrowStatus.FAILED,
         ]);
         const last = snapshots[1];
-        expect(last.metadata).toEqual({ error: 'simulation failed: bad args' });
+        expect(last.metadata).toEqual({
+          attempts: [
+            {
+              attempt: 1,
+              status: 'failed',
+              error: 'simulation failed: bad args',
+              at: expect.any(String),
+            },
+          ],
+        });
         expect(last.fundTxHash).toBeUndefined();
         expect(last.lockedAt).toBeUndefined();
       });
@@ -495,20 +509,60 @@ describe('EscrowService', () => {
         const retry = snapshots[2];
         expect(retry.fundTxHash).toBe('tx-hash-123');
         expect(retry.lockedAt).toBeInstanceOf(Date);
-        // The fund result must survive alongside lastFailure: it is the only
-        // record of the on-chain lock the reconciler can work from.
         expect(retry.metadata).toEqual({
-          fund: {
-            txHash: 'tx-hash-123',
-            ledger: 42,
-            returnValue: null,
-            status: 'SUCCESS',
-          },
+          attempts: [
+            {
+              attempt: 1,
+              status: 'succeeded',
+              result: {
+                txHash: 'tx-hash-123',
+                ledger: 42,
+                returnValue: null,
+                status: 'SUCCESS',
+              },
+              at: expect.any(String),
+              saveError: 'connection terminated unexpectedly',
+              saveFailedAt: expect.any(String),
+            },
+          ],
           lastFailure: {
             operation: 'fund',
             error: 'connection terminated unexpectedly',
             at: expect.any(String),
           },
+        });
+      });
+
+      it('appends a pending attempt without discarding existing escrow metadata', async () => {
+        escrowRepo.create.mockImplementationOnce(
+          (data: Partial<Escrow>) => ({
+            id: 'escrow-1',
+            ...data,
+            metadata: {
+              audit: 'preserve-me',
+              attempts: [{ attempt: 1, status: 'failed' }],
+            },
+          }),
+        );
+        soroban.invoke.mockRejectedValueOnce(
+          new SorobanPendingError('tx-second-attempt'),
+        );
+
+        await expect(service.fund(input)).rejects.toBeInstanceOf(
+          SorobanPendingError,
+        );
+
+        expect(snapshots[1].metadata).toEqual({
+          audit: 'preserve-me',
+          attempts: [
+            { attempt: 1, status: 'failed' },
+            {
+              attempt: 2,
+              status: 'pending',
+              txHash: 'tx-second-attempt',
+              at: expect.any(String),
+            },
+          ],
         });
       });
 
@@ -630,7 +684,7 @@ describe('EscrowService', () => {
       // release() recipients vector (#161).
       expect(soroban.invoke).toHaveBeenCalledWith(
         'release',
-        [u64(9100n), [['GRECIPIENT', TOTAL_BASIS_POINTS]]],
+        [u64(9100n), recipientsArg([['GRECIPIENT', TOTAL_BASIS_POINTS]])],
         {},
       );
       expect(paymentRepo.save).toHaveBeenCalledWith(
@@ -769,7 +823,7 @@ describe('EscrowService', () => {
 
       expect(soroban.invoke).toHaveBeenCalledWith(
         'release_partial',
-        ['milestone-1', 'GRECIPIENT', 300_000_000n],
+        [scString('milestone-1'), address('GRECIPIENT'), 300_000_000n],
         {},
       );
       expect(paymentRepo.save).toHaveBeenCalledWith(
@@ -981,6 +1035,78 @@ describe('EscrowService', () => {
       });
     });
 
+    it('debits the pool under lock before invoking withdraw (#760)', async () => {
+      escrowRepo.findOne.mockResolvedValue({
+        id: 'escrow-pool',
+        status: EscrowStatus.LOCKED,
+        amount: '500.0000000',
+        asset: AssetType.USDC,
+        maintenancePoolId: 'pool-1',
+        onChainId: '3303',
+      });
+      const order: string[] = [];
+      dataSource.manager.findOne.mockImplementation(async () => {
+        order.push('locked-read');
+        return {
+          id: 'escrow-pool',
+          status: EscrowStatus.LOCKED,
+          amount: '500.0000000',
+          asset: AssetType.USDC,
+          maintenancePoolId: 'pool-1',
+          onChainId: '3303',
+        };
+      });
+      soroban.invoke.mockImplementation(async () => {
+        order.push('withdraw');
+        return {
+          txHash: 'tx-1',
+          ledger: 1,
+          returnValue: null,
+          status: 'SUCCESS',
+        };
+      });
+      const debitPoolBalance = jest.fn(async () => {
+        order.push('balance-debit');
+      });
+
+      await service.poolWithdraw(
+        'escrow-pool',
+        '10.0000000',
+        'GRECIPIENT',
+        undefined,
+        undefined,
+        debitPoolBalance,
+      );
+
+      expect(debitPoolBalance).toHaveBeenCalledWith(dataSource.manager);
+      expect(order).toEqual(['locked-read', 'balance-debit', 'withdraw']);
+    });
+
+    it('does not invoke withdraw when the locked pool balance debit fails', async () => {
+      escrowRepo.findOne.mockResolvedValue({
+        id: 'escrow-pool',
+        status: EscrowStatus.LOCKED,
+        amount: '500.0000000',
+        asset: AssetType.USDC,
+        maintenancePoolId: 'pool-1',
+        onChainId: '3303',
+      });
+      const debitError = new BadRequestException('pool balance is insufficient');
+      const debitPoolBalance = jest.fn().mockRejectedValue(debitError);
+
+      await expect(
+        service.poolWithdraw(
+          'escrow-pool',
+          '10.0000000',
+          'GRECIPIENT',
+          undefined,
+          undefined,
+          debitPoolBalance,
+        ),
+      ).rejects.toBe(debitError);
+      expect(soroban.invoke).not.toHaveBeenCalled();
+    });
+
     it('writes the poolWithdraw Payment through the transaction manager (#738)', async () => {
       escrowRepo.findOne.mockResolvedValue({
         id: 'escrow-pool',
@@ -1029,6 +1155,23 @@ describe('EscrowService', () => {
   });
 
   describe('refund', () => {
+    it('locks the escrow before refunding (#760)', async () => {
+      escrowRepo.findOne.mockResolvedValue({
+        id: 'escrow-refund',
+        status: EscrowStatus.LOCKED,
+        amount: '10.0000000',
+        asset: AssetType.USDC,
+        onChainId: '7007',
+      });
+
+      await service.refund('escrow-refund');
+
+      expect(dataSource.manager.findOne).toHaveBeenCalledWith(Escrow, {
+        where: { id: 'escrow-refund' },
+        lock: { mode: 'pessimistic_write' },
+      });
+    });
+
     it('rejects refunding an escrow that is not LOCKED', async () => {
       escrowRepo.findOne.mockResolvedValue({
         id: 'escrow-pending',
@@ -1152,7 +1295,11 @@ describe('EscrowService', () => {
       // the escrow row LOCKED against its live balance.
       expect(soroban.invoke).toHaveBeenCalledWith(
         'withdraw',
-        [u64(3303n), [['GRECIPIENT', TOTAL_BASIS_POINTS]], 100_000_000n],
+        [
+          u64(3303n),
+          recipientsArg([['GRECIPIENT', TOTAL_BASIS_POINTS]]),
+          100_000_000n,
+        ],
         {},
       );
       expect(paymentRepo.save).toHaveBeenCalledWith(
@@ -1256,7 +1403,7 @@ describe('EscrowService', () => {
         // issue_id is still u64-wrapped on the pinned-contract path (#301).
         [
           { __sorobanU64: expect.any(BigInt) as bigint },
-          [['GRECIPIENT', TOTAL_BASIS_POINTS]],
+          recipientsArg([['GRECIPIENT', TOTAL_BASIS_POINTS]]),
         ],
         { contractId: 'CPINNED' },
       );
@@ -1451,7 +1598,7 @@ describe('EscrowService', () => {
 
       expect(soroban.invoke).toHaveBeenCalledWith(
         'release',
-        [u64(3003n), [['GRECIPIENT', 10_000]]],
+        [u64(3003n), recipientsArg([['GRECIPIENT', 10_000]])],
         {},
       );
     });

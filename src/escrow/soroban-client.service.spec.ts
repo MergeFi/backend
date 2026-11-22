@@ -6,6 +6,7 @@ import {
   SOROBAN_TX_TIMEOUT_SECONDS,
   SorobanClientService,
   SorobanPendingError,
+  scString,
   u64,
 } from './soroban-client.service';
 
@@ -145,7 +146,7 @@ describe('SorobanClientService', () => {
     it('dry-runs without RPC only when explicitly enabled', async () => {
       const service = makeService({ dryRun: true });
 
-      const result = await service.invoke('release', ['ref-1']);
+      const result = await service.invoke('release', [u64(1n)]);
 
       expect(result).toEqual({
         txHash: expect.stringMatching(/^dry-run-release-\d+$/),
@@ -161,7 +162,7 @@ describe('SorobanClientService', () => {
       async (_label, overrides) => {
         const service = makeService(overrides);
 
-        await expect(service.invoke('release', ['ref-1'])).rejects.toThrow(
+        await expect(service.invoke('release', [u64(1n)])).rejects.toThrow(
           'Refusing to invoke "release" without Soroban configuration',
         );
         for (const spy of rpcSpies) expect(spy).not.toHaveBeenCalled();
@@ -171,7 +172,7 @@ describe('SorobanClientService', () => {
     it('does not silently dry-run in production when the flag is unset', async () => {
       const service = makeService({}, 'production');
 
-      await expect(service.invoke('release', ['ref-1'])).rejects.toThrow(
+      await expect(service.invoke('release', [u64(1n)])).rejects.toThrow(
         'Refusing to invoke "release" without Soroban configuration',
       );
       for (const spy of rpcSpies) expect(spy).not.toHaveBeenCalled();
@@ -206,7 +207,7 @@ describe('SorobanClientService', () => {
     });
 
     it('simulates, assembles, signs, submits, and polls to a finalized result', async () => {
-      const result = await service.invoke('fund', ['GFUNDER', 'bounty-1']);
+      const result = await service.invoke('fund', [u64(1n)]);
 
       expect(assembleSpy).toHaveBeenCalledTimes(1);
       expect(result).toEqual({
@@ -224,7 +225,7 @@ describe('SorobanClientService', () => {
           txResponse({ status: 'SUCCESS', ledger: 7, returnValue: 'native' }),
         );
 
-      const result = await service.invoke('release', ['ref-1']);
+      const result = await service.invoke('release', [u64(1n)]);
 
       expect(result.returnValue).toBe('native');
     });
@@ -237,7 +238,7 @@ describe('SorobanClientService', () => {
         .spyOn(rpc.Server.prototype, 'simulateTransaction')
         .mockResolvedValue({ error: 'bad args' } as never);
 
-      await expect(service.invoke('refund', ['ref-1'])).rejects.toThrow(
+      await expect(service.invoke('refund', [u64(1n)])).rejects.toThrow(
         'Soroban simulation failed: bad args',
       );
       expect(isSimulationErrorSpy).toHaveBeenCalled();
@@ -249,7 +250,7 @@ describe('SorobanClientService', () => {
         errorResult: { code: -1 },
       } as never);
 
-      await expect(service.invoke('refund', ['ref-1'])).rejects.toThrow(
+      await expect(service.invoke('refund', [u64(1n)])).rejects.toThrow(
         'Soroban transaction submission failed',
       );
     });
@@ -263,7 +264,7 @@ describe('SorobanClientService', () => {
           status: 'PENDING',
           hash: 'accepted-hash',
         } as never);
-      const pending = service.invoke('fund', ['ref-1']);
+      const pending = service.invoke('fund', [u64(1n)]);
 
       await jest.advanceTimersByTimeAsync(1000);
       const result = await pending;
@@ -278,7 +279,7 @@ describe('SorobanClientService', () => {
       const sendSpy = jest
         .spyOn(rpc.Server.prototype, 'sendTransaction')
         .mockResolvedValue({ status: 'TRY_AGAIN_LATER' } as never);
-      const settled = service.invoke('fund', ['ref-1']).catch((error: Error) =>
+      const settled = service.invoke('fund', [u64(1n)]).catch((error: Error) =>
         error,
       );
 
@@ -300,7 +301,7 @@ describe('SorobanClientService', () => {
           hash: 'duplicate-hash',
         } as never);
 
-      const result = await service.invoke('release', ['ref-1']);
+      const result = await service.invoke('release', [u64(1n)]);
 
       expect(result.txHash).toBe('duplicate-hash');
       expect(rpc.Server.prototype.getTransaction).toHaveBeenCalledWith(
@@ -422,7 +423,7 @@ describe('SorobanClientService', () => {
           txResponse({ status: 'SUCCESS', ledger: 9, returnValue: null }),
         );
 
-      const pending = service.invoke('release', ['ref-1']);
+      const pending = service.invoke('release', [u64(1n)]);
       await jest.advanceTimersByTimeAsync(20_000);
       const result = await pending;
 
@@ -436,7 +437,7 @@ describe('SorobanClientService', () => {
         .spyOn(rpc.Server.prototype, 'getTransaction')
         .mockResolvedValue(txResponse({ status: 'NOT_FOUND' }));
 
-      const settled = service.invoke('refund', ['ref-1']).then(
+      const settled = service.invoke('refund', [u64(1n)]).then(
         () => null,
         (err: Error) => err,
       );
@@ -467,7 +468,7 @@ describe('SorobanClientService', () => {
         txResponse({ status: 'SUCCESS', ledger: 10, returnValue: null }),
       );
       const assembleSpy = jest.spyOn(rpc, 'assembleTransaction');
-      const pending = service.invoke('release', ['ref-1']);
+      const pending = service.invoke('release', [u64(1n)]);
 
       await jest.advanceTimersByTimeAsync(70_000);
       await pending;
@@ -479,29 +480,17 @@ describe('SorobanClientService', () => {
 
   describe('toScVal argument encoding (via private hook)', () => {
     let service: SorobanClientService;
+    const encode = (value: unknown) =>
+      (service as unknown as { toScVal(v: unknown): unknown }).toScVal(value);
 
     beforeEach(() => {
       service = makeService();
     });
 
-    it('detects uppercase alphanumeric strings of >= 32 chars as Stellar addresses', () => {
-      const address =
-        'GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAVAWHV';
-
-      const encoded = (
-        service as unknown as { toScVal(v: unknown): unknown }
-      ).toScVal(address);
-
-      expect(encoded).toBe(address);
-      expect(nativeToScValMock).not.toHaveBeenCalled();
-    });
-
     it('encodes a Buffer as BytesN bytes (#45)', () => {
       const hash = Buffer.from('a'.repeat(32));
 
-      const encoded = (
-        service as unknown as { toScVal(v: unknown): unknown }
-      ).toScVal(hash);
+      const encoded = encode(hash);
 
       expect(nativeToScValMock).toHaveBeenCalledWith(hash, { type: 'bytes' });
       expect(encoded).toEqual(hash);
@@ -510,9 +499,7 @@ describe('SorobanClientService', () => {
     it('encodes a Uint8Array as BytesN bytes (#45)', () => {
       const hash = new Uint8Array(32).fill(7);
 
-      const encoded = (
-        service as unknown as { toScVal(v: unknown): unknown }
-      ).toScVal(hash);
+      const encoded = encode(hash);
 
       expect(nativeToScValMock).toHaveBeenCalledWith(Buffer.from(hash), {
         type: 'bytes',
@@ -521,9 +508,7 @@ describe('SorobanClientService', () => {
     });
 
     it('encodes bigints as i128', () => {
-      const encoded = (
-        service as unknown as { toScVal(v: unknown): unknown }
-      ).toScVal(1_000_000n);
+      const encoded = encode(1_000_000n);
 
       expect(nativeToScValMock).toHaveBeenCalledWith(1_000_000n, {
         type: 'i128',
@@ -532,79 +517,48 @@ describe('SorobanClientService', () => {
     });
 
     it('encodes a u64-marked value as ScVal::U64 instead of i128 (#301)', () => {
-      const encoded = (
-        service as unknown as { toScVal(v: unknown): unknown }
-      ).toScVal(u64(4242n));
+      const encoded = encode(u64(4242n));
 
       expect(nativeToScValMock).toHaveBeenCalledWith(4242n, { type: 'u64' });
       expect(encoded).toBe(4242n);
     });
 
     it('normalizes string/number u64 inputs through BigInt', () => {
-      (service as unknown as { toScVal(v: unknown): unknown }).toScVal(
-        u64('7007'),
-      );
+      encode(u64('7007'));
       expect(nativeToScValMock).toHaveBeenCalledWith(7007n, { type: 'u64' });
 
       nativeToScValMock.mockClear();
-      (service as unknown as { toScVal(v: unknown): unknown }).toScVal(u64(42));
+      encode(u64(42));
       expect(nativeToScValMock).toHaveBeenCalledWith(42n, { type: 'u64' });
     });
 
     it('still encodes a bare bigint amount as i128 (#301 — only u64 params are marked)', () => {
-      (service as unknown as { toScVal(v: unknown): unknown }).toScVal(
-        1_000_000n,
-      );
+      encode(1_000_000n);
       expect(nativeToScValMock).toHaveBeenCalledWith(1_000_000n, {
         type: 'i128',
       });
     });
 
-    it('encodes short/plain strings with generic native encoding', () => {
-      const encoded = (
-        service as unknown as { toScVal(v: unknown): unknown }
-      ).toScVal('bounty-1');
+    it('encodes explicitly marked strings as ScVal::String', () => {
+      const encoded = encode(scString('bounty-1'));
 
-      expect(nativeToScValMock).toHaveBeenCalledWith('bounty-1');
+      expect(nativeToScValMock).toHaveBeenCalledWith('bounty-1', {
+        type: 'string',
+      });
       expect(encoded).toBe('bounty-1');
     });
 
-    it('encodes numbers with generic native encoding', () => {
-      const encoded = (
-        service as unknown as { toScVal(v: unknown): unknown }
-      ).toScVal(42);
-
-      expect(nativeToScValMock).toHaveBeenCalledWith(42);
-      expect(encoded).toBe(42);
+    it('rejects unmarked strings, numbers, and arrays instead of guessing', () => {
+      expect(() => encode('bounty-1')).toThrow(
+        'Unsupported unmarked Soroban argument',
+      );
+      expect(() => encode(42)).toThrow(
+        'Unsupported unmarked Soroban argument',
+      );
+      expect(() => encode(['GA', 5000])).toThrow(
+        'Unsupported unmarked Soroban argument',
+      );
     });
 
-    it('encodes a [address, basisPoints] pair as an (Address, u32) tuple (#161)', () => {
-      const address =
-        'GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAVAWHV';
-
-      const encoded = (
-        service as unknown as { toScVal(v: unknown): unknown }
-      ).toScVal([address, 5000]);
-
-      expect(nativeToScValMock).toHaveBeenCalledWith(5000, { type: 'u32' });
-      expect(encoded).toEqual([address, 5000]);
-    });
-
-    it('encodes a Vec<(Address, u32)> recipients list element-by-element (#161)', () => {
-      const a = 'GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAVAWHV';
-      const b = 'GBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBAAAA';
-
-      const encoded = (
-        service as unknown as { toScVal(v: unknown): unknown }
-      ).toScVal([
-        [a, 6000],
-        [b, 4000],
-      ]);
-
-      expect(encoded).toEqual([
-        [a, 6000],
-        [b, 4000],
-      ]);
-    });
   });
 });

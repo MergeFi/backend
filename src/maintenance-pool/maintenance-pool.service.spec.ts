@@ -453,20 +453,18 @@ describe('MaintenancePoolService', () => {
         balance: '50',
         escrowId: 'escrow-1',
       });
-      // Mock the atomic balance check to return 0 affected rows (balance too low)
-      const mockQueryBuilder = {
-        update: jest.fn().mockReturnThis(),
-        set: jest.fn().mockReturnThis(),
-        where: jest.fn().mockReturnThis(),
-        setParameter: jest.fn().mockReturnThis(),
-        execute: jest.fn().mockResolvedValue({ affected: 0 }),
-      };
-      poolRepo.createQueryBuilder.mockReturnValue(mockQueryBuilder);
+      const manager = { query: jest.fn().mockResolvedValue([]) };
+      escrowService.poolWithdraw.mockImplementation(
+        async (...args: unknown[]) => {
+          await (args[5] as (m: typeof manager) => Promise<void>)(manager);
+          return { id: 'payment-1' };
+        },
+      );
 
       await expect(
         service.assignReward('pool-1', 'issue-1', '100', 'GRECIPIENT'),
       ).rejects.toThrow(BadRequestException);
-      expect(escrowService.poolWithdraw).not.toHaveBeenCalled();
+      expect(manager.query).toHaveBeenCalledTimes(1);
     });
 
     it('releases the reward and atomically decrements the balance', async () => {
@@ -475,16 +473,15 @@ describe('MaintenancePoolService', () => {
         balance: '100',
         escrowId: 'escrow-1',
       });
-      // Mock the atomic balance check to succeed
-      const mockQueryBuilder = {
-        update: jest.fn().mockReturnThis(),
-        set: jest.fn().mockReturnThis(),
-        where: jest.fn().mockReturnThis(),
-        setParameter: jest.fn().mockReturnThis(),
-        execute: jest.fn().mockResolvedValue({ affected: 1 }),
+      const manager = {
+        query: jest.fn().mockResolvedValue([{ id: 'pool-1' }]),
       };
-      poolRepo.createQueryBuilder.mockReturnValue(mockQueryBuilder);
-      escrowService.poolWithdraw.mockResolvedValue({ id: 'payment-1' });
+      escrowService.poolWithdraw.mockImplementation(
+        async (...args: unknown[]) => {
+          await (args[5] as (m: typeof manager) => Promise<void>)(manager);
+          return { id: 'payment-1' };
+        },
+      );
 
       const payment = await service.assignReward(
         'pool-1',
@@ -499,10 +496,14 @@ describe('MaintenancePoolService', () => {
         '30',
         'GRECIPIENT',
         'user-1',
+        undefined,
+        expect.any(Function),
       );
       expect(payment).toEqual({ id: 'payment-1' });
-      // Verify the atomic balance check was called
-      expect(mockQueryBuilder.execute).toHaveBeenCalled();
+      expect(manager.query).toHaveBeenCalledWith(
+        expect.stringContaining('balance >= CAST($1 AS numeric)'),
+        ['30', 'pool-1'],
+      );
     });
 
     it('rejects a reward for a non-maintenance issue before releasing funds', async () => {
@@ -579,24 +580,22 @@ describe('MaintenancePoolService', () => {
       poolRepo.findOne.mockImplementation(() =>
         Promise.resolve({ id: 'pool-1', ...sharedPoolRow }),
       );
-      // Mock the atomic balance check to succeed for both calls
-      const mockQueryBuilder = {
-        update: jest.fn().mockReturnThis(),
-        set: jest.fn().mockReturnThis(),
-        where: jest.fn().mockReturnThis(),
-        setParameter: jest.fn().mockReturnThis(),
-        execute: jest.fn().mockResolvedValue({ affected: 1 }),
+      const manager = {
+        query: jest.fn().mockResolvedValue([{ id: 'pool-1' }]),
       };
-      poolRepo.createQueryBuilder.mockReturnValue(mockQueryBuilder);
-      escrowService.poolWithdraw.mockResolvedValue({ id: 'payment-x' });
+      escrowService.poolWithdraw.mockImplementation(
+        async (...args: unknown[]) => {
+          await (args[5] as (m: typeof manager) => Promise<void>)(manager);
+          return { id: 'payment-x' };
+        },
+      );
 
       await Promise.all([
         service.assignReward('pool-1', 'issue-1', '100', 'GRECIPIENT_A'),
         service.assignReward('pool-1', 'issue-1', '200', 'GRECIPIENT_B'),
       ]);
 
-      // Both calls should have succeeded (atomic check passed)
-      expect(mockQueryBuilder.execute).toHaveBeenCalledTimes(2);
+      expect(manager.query).toHaveBeenCalledTimes(2);
     });
   });
 });

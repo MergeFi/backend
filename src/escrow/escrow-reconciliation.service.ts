@@ -123,8 +123,17 @@ export class EscrowReconciliationService {
     return this.escrowRepo
       .createQueryBuilder('escrow')
       .where(
-        `(escrow.status = :pending AND escrow.metadata -> 'pending' ->> 'txHash' IS NOT NULL)`,
-        { pending: EscrowStatus.PENDING },
+        `((escrow.status = :pending AND escrow.metadata -> 'pending' ->> 'txHash' IS NOT NULL)
+          OR (escrow.status IN (:...fundAttemptStatuses)
+          AND escrow.metadata @> '{"attempts":[{"status":"pending"}]}'))`,
+        {
+          pending: EscrowStatus.PENDING,
+          fundAttemptStatuses: [
+            EscrowStatus.PENDING,
+            EscrowStatus.FAILED,
+            EscrowStatus.LOCKED,
+          ],
+        },
       )
       .orWhere(
         `(escrow.status = :locked AND escrow.metadata -> 'lastFailure' IS NOT NULL)`,
@@ -141,7 +150,12 @@ export class EscrowReconciliationService {
 
   private async reconcileOne(escrow: Escrow): Promise<Outcome> {
     const pendingHash = this.pendingTxHash(escrow);
-    if (escrow.status === EscrowStatus.PENDING && pendingHash) {
+    if (
+      pendingHash &&
+      [EscrowStatus.PENDING, EscrowStatus.FAILED, EscrowStatus.LOCKED].includes(
+        escrow.status,
+      )
+    ) {
       return this.reconcilePendingFund(escrow, pendingHash);
     }
     return this.reconcileAgainstRecord(escrow);
@@ -157,12 +171,18 @@ export class EscrowReconciliationService {
 
     if (lookup.status === 'SUCCESS') {
       return this.apply(escrow, (row) => {
+        const hasAttempt = this.hasFundAttempt(row, txHash);
         row.status = EscrowStatus.LOCKED;
         row.fundTxHash = txHash;
         row.lockedAt = row.lockedAt ?? new Date();
+        this.resolveFundAttempt(row, txHash, {
+          status: 'succeeded',
+          result: { ...lookup, txHash },
+          reconciledAt: new Date().toISOString(),
+        });
         row.metadata = {
           ...omit(row.metadata, 'pending'),
-          fund: { ...lookup, txHash },
+          ...(hasAttempt ? {} : { fund: { ...lookup, txHash } }),
           reconciliation: this.resolvedMarker(row, 'locked'),
         };
         return 'resolved';
@@ -172,18 +192,33 @@ export class EscrowReconciliationService {
     if (lookup.status === 'FAILED') {
       // Included and failed: nothing was locked, so FAILED is truthful.
       return this.apply(escrow, (row) => {
-        row.status = EscrowStatus.FAILED;
+        const hasAttempt = this.hasFundAttempt(row, txHash);
+        const alreadyLocked =
+          row.status === EscrowStatus.LOCKED &&
+          row.fundTxHash !== null &&
+          row.fundTxHash !== txHash;
+        row.status = alreadyLocked ? EscrowStatus.LOCKED : EscrowStatus.FAILED;
+        this.resolveFundAttempt(row, txHash, {
+          status: 'failed',
+          error: `fund transaction ${txHash} failed on-chain`,
+          reconciledAt: new Date().toISOString(),
+        });
         row.metadata = {
           ...omit(row.metadata, 'pending'),
-          error: `fund transaction ${txHash} failed on-chain`,
-          reconciliation: this.resolvedMarker(row, 'failed'),
+          ...(hasAttempt
+            ? {}
+            : { error: `fund transaction ${txHash} failed on-chain` }),
+          reconciliation: this.resolvedMarker(
+            row,
+            alreadyLocked ? 'locked' : 'failed',
+          ),
         };
         return 'resolved';
       });
     }
 
     // NOT_FOUND inside the time bound: it may still be included. Wait.
-    const submittedAt = this.pendingSubmittedAt(escrow);
+    const submittedAt = this.pendingSubmittedAt(escrow, txHash);
     const expiresAt =
       submittedAt + SOROBAN_TX_TIMEOUT_SECONDS * 1000 + PENDING_GRACE_MS;
     if (Date.now() < expiresAt) return 'skipped';
@@ -205,11 +240,28 @@ export class EscrowReconciliationService {
 
     return this.apply(escrow, (row) => {
       if (record === null) {
-        row.status = EscrowStatus.FAILED;
+        const hasAttempt = this.hasFundAttempt(row, txHash);
+        const alreadyLocked =
+          row.status === EscrowStatus.LOCKED &&
+          row.fundTxHash !== null &&
+          row.fundTxHash !== txHash;
+        row.status = alreadyLocked ? EscrowStatus.LOCKED : EscrowStatus.FAILED;
+        this.resolveFundAttempt(row, txHash, {
+          status: 'expired',
+          error: `fund transaction ${txHash} expired without being included`,
+          reconciledAt: new Date().toISOString(),
+        });
         row.metadata = {
           ...omit(row.metadata, 'pending'),
-          error: `fund transaction ${txHash} expired without being included`,
-          reconciliation: this.resolvedMarker(row, 'not_found'),
+          ...(hasAttempt
+            ? {}
+            : {
+                error: `fund transaction ${txHash} expired without being included`,
+              }),
+          reconciliation: this.resolvedMarker(
+            row,
+            alreadyLocked ? 'locked' : 'not_found',
+          ),
         };
         return 'resolved';
       }
@@ -219,6 +271,11 @@ export class EscrowReconciliationService {
         row.status = EscrowStatus.LOCKED;
         row.fundTxHash = txHash;
         row.lockedAt = row.lockedAt ?? new Date();
+        this.resolveFundAttempt(row, txHash, {
+          status: 'succeeded',
+          reconciledByRecord: true,
+          reconciledAt: new Date().toISOString(),
+        });
         row.metadata = {
           ...omit(row.metadata, 'pending'),
           reconciliation: this.resolvedMarker(row, 'locked'),
@@ -452,15 +509,62 @@ export class EscrowReconciliationService {
   }
 
   private pendingTxHash(escrow: Escrow): string | null {
+    const attempt = this.fundAttempts(escrow).find(
+      (candidate) =>
+        candidate.status === 'pending' &&
+        typeof candidate.txHash === 'string',
+    );
+    if (attempt && typeof attempt.txHash === 'string') return attempt.txHash;
     const pending = escrow.metadata?.pending as
       { txHash?: unknown } | undefined;
     return typeof pending?.txHash === 'string' ? pending.txHash : null;
   }
 
-  private pendingSubmittedAt(escrow: Escrow): number {
+  private pendingSubmittedAt(escrow: Escrow, txHash: string): number {
+    const attempt = this.fundAttempts(escrow).find(
+      (candidate) =>
+        candidate.status === 'pending' && candidate.txHash === txHash,
+    );
+    const attemptAt = typeof attempt?.at === 'string' ? attempt.at : undefined;
     const pending = escrow.metadata?.pending as { at?: unknown } | undefined;
-    const at = typeof pending?.at === 'string' ? Date.parse(pending.at) : NaN;
+    const at =
+      typeof attemptAt === 'string'
+        ? Date.parse(attemptAt)
+        : typeof pending?.at === 'string'
+          ? Date.parse(pending.at)
+          : NaN;
     return Number.isNaN(at) ? escrow.updatedAt.getTime() : at;
+  }
+
+  private fundAttempts(escrow: Escrow): Record<string, unknown>[] {
+    const attempts = escrow.metadata?.attempts;
+    if (!Array.isArray(attempts)) return [];
+    return attempts.filter(
+      (attempt): attempt is Record<string, unknown> =>
+        typeof attempt === 'object' &&
+        attempt !== null &&
+        !Array.isArray(attempt),
+    );
+  }
+
+  private resolveFundAttempt(
+    escrow: Escrow,
+    txHash: string,
+    update: Record<string, unknown>,
+  ): void {
+    const metadata = escrow.metadata ?? {};
+    const attempts = this.fundAttempts(escrow);
+    const index = attempts.findIndex((attempt) => attempt.txHash === txHash);
+    if (index < 0) return;
+    const resolved = [...attempts];
+    resolved[index] = { ...resolved[index], ...update };
+    escrow.metadata = { ...metadata, attempts: resolved };
+  }
+
+  private hasFundAttempt(escrow: Escrow, txHash: string): boolean {
+    return this.fundAttempts(escrow).some(
+      (attempt) => attempt.txHash === txHash,
+    );
   }
 
   /** The fields whose change means someone else acted on the row meanwhile. */

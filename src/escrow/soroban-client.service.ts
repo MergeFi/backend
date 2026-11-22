@@ -91,6 +91,44 @@ export function u64(value: bigint | number | string): U64Arg {
   return { __sorobanU64: BigInt(value) };
 }
 
+export interface AddressArg {
+  readonly __sorobanAddress: string;
+}
+
+/** Marks a string argument as a Soroban Address. */
+export function address(value: string): AddressArg {
+  return { __sorobanAddress: value };
+}
+
+export interface StringArg {
+  readonly __sorobanString: string;
+}
+
+/** Marks a string argument as a Soroban String. */
+export function scString(value: string): StringArg {
+  return { __sorobanString: value };
+}
+
+export interface RecipientsArg {
+  readonly __sorobanRecipients: ReadonlyArray<readonly [string, number]>;
+}
+
+/** Marks recipient tuples as `Vec<(Address, u32)>`. */
+export function recipients(
+  value: ReadonlyArray<readonly [string, number]>,
+): RecipientsArg {
+  return { __sorobanRecipients: value };
+}
+
+export interface VecArg {
+  readonly __sorobanVec: ReadonlyArray<unknown>;
+}
+
+/** Marks an array as a Soroban `Vec` whose elements are explicit arguments. */
+export function vec(value: ReadonlyArray<unknown>): VecArg {
+  return { __sorobanVec: value };
+}
+
 /**
  * Thin wrapper around the Stellar/Soroban RPC client used to invoke the
  * escrow smart contract deployed by the sibling `mergefi-contracts` repo.
@@ -458,12 +496,53 @@ export class SorobanClientService {
     throw new SorobanPendingError(hash);
   }
 
+  /**
+   * Requires explicit markers wherever a JavaScript value has ambiguous XDR
+   * types.
+   */
   private toScVal(value: unknown): xdr.ScVal {
     if (isU64Arg(value)) {
       // #301 — `issue_id` / `deadline` are declared u64 in the escrow ABI;
       // a bare bigint would encode as ScVal::I128 and fail host-side
       // argument binding during simulation.
       return nativeToScVal(value.__sorobanU64, { type: 'u64' });
+    }
+    if (isAddressArg(value)) {
+      try {
+        return new Address(value.__sorobanAddress).toScVal();
+      } catch (error) {
+        const detail = error instanceof Error ? `: ${error.message}` : '';
+        throw new Error(
+          `Invalid Soroban address "${value.__sorobanAddress}"${detail}`,
+        );
+      }
+    }
+    if (isStringArg(value)) {
+      return nativeToScVal(value.__sorobanString, { type: 'string' });
+    }
+    if (isRecipientsArg(value)) {
+      return xdr.ScVal.scvVec(
+        value.__sorobanRecipients.map(([recipientAddress, basisPoints]) => {
+          if (
+            !Number.isSafeInteger(basisPoints) ||
+            basisPoints < 0 ||
+            basisPoints > 0xffff_ffff
+          ) {
+            throw new Error(
+              `Invalid recipient basis points: ${String(basisPoints)}`,
+            );
+          }
+          return xdr.ScVal.scvVec([
+            this.toScVal(address(recipientAddress)),
+            xdr.ScVal.scvU32(basisPoints),
+          ]);
+        }),
+      );
+    }
+    if (isVecArg(value)) {
+      return xdr.ScVal.scvVec(
+        value.__sorobanVec.map((element) => this.toScVal(element)),
+      );
     }
     if (Buffer.isBuffer(value) || value instanceof Uint8Array) {
       // BytesN<32> arguments (metadata hashes, description hashes, etc.)
@@ -473,42 +552,11 @@ export class SorobanClientService {
       // Uint8Array as ScVal bytes (#45).
       return nativeToScVal(Buffer.from(value), { type: 'bytes' });
     }
-    if (Array.isArray(value)) {
-      // Vec<...> arguments, including the Vec<(Address, u32)> recipients
-      // list escrow::release takes. A [address, basisPoints] pair encodes
-      // as an (Address, u32) tuple; anything else element-by-element (#161).
-      if (this.isRecipientTuple(value)) {
-        return nativeToScVal([
-          new Address(value[0]).toScVal(),
-          nativeToScVal(value[1], { type: 'u32' }),
-        ]);
-      }
-      return nativeToScVal(value.map((element) => this.toScVal(element)));
-    }
-    if (
-      typeof value === 'string' &&
-      value.length >= 32 &&
-      /^[A-Z0-9]+$/.test(value)
-    ) {
-      // Looks like a Stellar public key / contract address
-      try {
-        return new Address(value).toScVal();
-      } catch {
-        return nativeToScVal(value, { type: 'string' });
-      }
-    }
     if (typeof value === 'bigint') {
       return nativeToScVal(value, { type: 'i128' });
     }
-    return nativeToScVal(value);
-  }
-
-  /** A `[stellarAddress, basisPoints]` pair destined for a `(Address, u32)` tuple. */
-  private isRecipientTuple(value: unknown[]): value is [string, number] {
-    return (
-      value.length === 2 &&
-      typeof value[0] === 'string' &&
-      typeof value[1] === 'number'
+    throw new Error(
+      `Unsupported unmarked Soroban argument (${typeof value}); use an explicit helper`,
     );
   }
 }
@@ -519,5 +567,37 @@ function isU64Arg(value: unknown): value is U64Arg {
     typeof value === 'object' &&
     value !== null &&
     typeof (value as U64Arg).__sorobanU64 === 'bigint'
+  );
+}
+
+function isAddressArg(value: unknown): value is AddressArg {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    typeof (value as AddressArg).__sorobanAddress === 'string'
+  );
+}
+
+function isStringArg(value: unknown): value is StringArg {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    typeof (value as StringArg).__sorobanString === 'string'
+  );
+}
+
+function isRecipientsArg(value: unknown): value is RecipientsArg {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    Array.isArray((value as RecipientsArg).__sorobanRecipients)
+  );
+}
+
+function isVecArg(value: unknown): value is VecArg {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    Array.isArray((value as VecArg).__sorobanVec)
   );
 }
