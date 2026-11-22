@@ -250,36 +250,33 @@ export class MaintenancePoolService {
       );
     }
 
-    // Atomic balance check and decrement — prevents TOCTOU race where concurrent
-    // calls could overdraw the pool (#274). Uses a conditional UPDATE that only
-    // succeeds if balance >= amount, then checks affected rows. Compared and
-    // subtracted as NUMERIC in SQL, never as a JS float (#780).
-    const updateResult = await this.poolRepo
-      .createQueryBuilder()
-      .update(MaintenancePool)
-      .set({ balance: () => 'balance - CAST(:amount AS numeric)' })
-      .where('id = :id AND balance >= CAST(:amount AS numeric)', { id, amount })
-      .setParameter('amount', amount)
-      .execute();
-
-    if (updateResult.affected === 0) {
-      throw new BadRequestException(
-        `Requested reward ${amount} exceeds pool balance ${pool.balance}`,
-      );
-    }
-
     // A maintenance pool is a running on-chain balance (deposit/withdraw),
     // not a milestone-style fixed lock that gets partially released and then
     // closed out — so pay the reward via the pool contract's `withdraw`,
-    // leaving the escrow LOCKED for the next reward (#163).
-    const payment = await this.escrowService.poolWithdraw(
+    // leaving the escrow LOCKED for the next reward (#163). Debit within the
+    // escrow transaction so the row lock serializes balance checks and the
+    // Soroban withdrawal as one operation (#760).
+    return this.escrowService.poolWithdraw(
       pool.escrowId,
       amount,
       recipientAddress,
       recipientId,
+      undefined,
+      async (manager) => {
+        const updated = await manager.query(
+          `UPDATE maintenance_pools
+           SET balance = balance - CAST($1 AS numeric), "updatedAt" = now()
+           WHERE id = $2 AND balance >= CAST($1 AS numeric)
+           RETURNING id`,
+          [amount, id],
+        );
+        if (updated.length === 0) {
+          throw new BadRequestException(
+            `Requested reward ${amount} exceeds pool balance ${pool.balance}`,
+          );
+        }
+      },
     );
-
-    return payment;
   }
 
   async list(): Promise<MaintenancePool[]> {

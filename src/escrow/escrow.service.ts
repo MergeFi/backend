@@ -22,7 +22,10 @@ import {
   stroopsToAmount,
 } from '../common/validators/money.validator';
 import {
+  address,
   ContractInvocationResult,
+  recipients as recipientsArg,
+  scString,
   SorobanClientService,
   u64,
   SorobanPendingError,
@@ -164,8 +167,8 @@ export class EscrowService {
         'fund',
         [
           u64(BigInt(escrow.onChainId)),
-          input.funderAddress,
-          this.resolveTokenAddress(input.asset),
+          address(input.funderAddress),
+          address(this.resolveTokenAddress(input.asset)),
           this.toStroops(input.amount),
           u64(BigInt(Math.floor(deadline.getTime() / 1000))),
         ],
@@ -178,16 +181,20 @@ export class EscrowService {
         // a retry resolves it via getTransaction(hash) — marking FAILED here
         // invites a client retry that locks funds twice (#527).
         escrow.fundTxHash = err.txHash;
-        escrow.metadata = {
-          pending: { txHash: err.txHash, at: new Date().toISOString() },
-        };
+        this.appendFundAttempt(escrow, {
+          status: 'pending',
+          txHash: err.txHash,
+        });
         await saveEscrow(escrow);
         throw err;
       }
       // Only reached when the *contract call* failed: nothing was locked
       // on-chain, so FAILED is the truthful state.
       escrow.status = EscrowStatus.FAILED;
-      escrow.metadata = { error: (err as Error).message };
+      this.appendFundAttempt(escrow, {
+        status: 'failed',
+        error: err instanceof Error ? err.message : String(err),
+      });
       await saveEscrow(escrow);
       throw err;
     }
@@ -196,7 +203,7 @@ export class EscrowService {
       result.status === 'DRY_RUN' ? EscrowStatus.DRY_RUN : EscrowStatus.LOCKED;
     escrow.fundTxHash = result.txHash;
     escrow.lockedAt = result.status === 'DRY_RUN' ? null : new Date();
-    escrow.metadata = { fund: result };
+    this.appendFundAttempt(escrow, { status: 'succeeded', result });
 
     try {
       return await saveEscrow(escrow);
@@ -212,10 +219,14 @@ export class EscrowService {
         ...(escrow.metadata ?? {}),
         lastFailure: {
           operation: 'fund',
-          error: (err as Error).message,
+          error: err instanceof Error ? err.message : String(err),
           at: new Date().toISOString(),
         },
       };
+      this.updateLatestFundAttempt(escrow, {
+        saveError: err instanceof Error ? err.message : String(err),
+        saveFailedAt: new Date().toISOString(),
+      });
       // A second failure here means the row is genuinely unreachable; the
       // tx hash above is the only remaining trace, so the original error is
       // what propagates.
@@ -242,10 +253,10 @@ export class EscrowService {
           this.soroban.invoke(
             'deposit',
             [
-              input.funderAddress,
-              this.onChainKeyFor(escrow),
+              address(input.funderAddress),
+              u64(this.onChainKeyFor(escrow)),
               this.toStroops(input.amount),
-              this.resolveTokenAddress(input.asset),
+              address(this.resolveTokenAddress(input.asset)),
             ],
             this.contractOpts(escrow),
           ),
@@ -494,8 +505,10 @@ export class EscrowService {
             this.soroban.invoke(
               'release_partial',
               [
-                escrow.milestoneId ?? escrow.bountyId ?? escrow.id,
-                recipientAddress,
+                scString(
+                  escrow.milestoneId ?? escrow.bountyId ?? escrow.id,
+                ),
+                address(recipientAddress),
                 this.toStroops(amount),
               ],
               this.contractOpts(escrow),
@@ -564,9 +577,8 @@ export class EscrowService {
    *   - invokes the pool contract's `withdraw`, not `release`;
    *   - leaves the escrow row LOCKED (it mirrors an open, still-funded pool,
    *     not a one-off lock that closes out);
-   *   - does not enforce a ceiling here. The spendable balance is tracked by
-   *     `MaintenancePoolService` on `pool.balance` and checked there before
-   *     this is called.
+   *   - relies on `MaintenancePoolService` to conditionally debit its balance
+   *     through the transaction manager while this escrow lock is held.
    */
   async poolWithdraw(
     escrowId: string,
@@ -574,6 +586,7 @@ export class EscrowService {
     recipientAddress: string,
     recipientId?: string,
     issueId?: string,
+    debitPoolBalance?: (manager: EntityManager) => Promise<void>,
   ): Promise<Payment> {
     // Validate amount and recipient identity before acquiring the row lock so
     // bad-argument errors are cheap and do not briefly block concurrent callers.
@@ -585,6 +598,7 @@ export class EscrowService {
     // concurrent refund reads status = LOCKED before the withdraw commits,
     // passes assertLocked, and both on-chain calls fly for the same escrow.
     return this.withLockedEscrow(escrowId, async (escrow, manager) => {
+      await debitPoolBalance?.(manager);
       const result = await this.invokeOnLockedEscrow(
         escrow,
         'poolWithdraw',
@@ -593,7 +607,7 @@ export class EscrowService {
             'withdraw',
             [
               u64(this.onChainKeyFor(escrow)),
-              [[recipientAddress, TOTAL_BASIS_POINTS]],
+              recipientsArg([[recipientAddress, TOTAL_BASIS_POINTS]]),
               this.toStroops(amount),
             ],
             this.contractOpts(escrow),
@@ -657,6 +671,47 @@ export class EscrowService {
 
   async findOne(id: string): Promise<Escrow> {
     return this.getOrThrow(id);
+  }
+
+  private appendFundAttempt(
+    escrow: Escrow,
+    attempt: Record<string, unknown>,
+  ): void {
+    const metadata = escrow.metadata ?? {};
+    const previousAttempts = metadata.attempts;
+    if (previousAttempts !== undefined && !Array.isArray(previousAttempts)) {
+      throw new Error(`Escrow ${escrow.id} metadata attempts must be an array`);
+    }
+    const attempts = previousAttempts ?? [];
+    escrow.metadata = {
+      ...metadata,
+      attempts: [
+        ...attempts,
+        {
+          attempt: attempts.length + 1,
+          ...attempt,
+          at: new Date().toISOString(),
+        },
+      ],
+    };
+  }
+
+  private updateLatestFundAttempt(
+    escrow: Escrow,
+    update: Record<string, unknown>,
+  ): void {
+    const metadata = escrow.metadata ?? {};
+    const attempts = metadata.attempts;
+    if (!Array.isArray(attempts) || attempts.length === 0) {
+      throw new Error(`Escrow ${escrow.id} has no recorded fund attempt`);
+    }
+    escrow.metadata = {
+      ...metadata,
+      attempts: [
+        ...attempts.slice(0, -1),
+        { ...attempts[attempts.length - 1], ...update },
+      ],
+    };
   }
 
   private async getOrThrow(id: string): Promise<Escrow> {
@@ -806,7 +861,7 @@ export class EscrowService {
         this.soroban.invoke(
           'release',
           // `release(issue_id: u64, recipients)` — u64-typed on-chain (#301).
-          [u64(this.onChainKeyFor(escrow)), recipients],
+          [u64(this.onChainKeyFor(escrow)), recipientsArg(recipients)],
           this.contractOpts(escrow),
         ),
       manager,

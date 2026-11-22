@@ -6,9 +6,12 @@ import { AssetType, EscrowStatus } from '../src/common/enums';
 import { AppConfig } from '../src/config/configuration';
 import { EscrowService } from '../src/escrow/escrow.service';
 import {
+  address,
   ContractInvocationResult,
+  recipients,
   SorobanClientService,
   u64,
+  vec,
 } from '../src/escrow/soroban-client.service';
 
 /**
@@ -87,26 +90,35 @@ describe('SorobanClientService XDR encoding (#840)', () => {
       expect(typeOf(val)).toBe('scvI128');
     });
 
-    it('encodes a Stellar account id as scvAddress', () => {
-      expect(typeOf(encode(soroban, ADDRESS_A))).toBe('scvAddress');
+    it('encodes a marked Stellar account id as scvAddress', () => {
+      expect(typeOf(encode(soroban, address(ADDRESS_A)))).toBe('scvAddress');
     });
 
     it('encodes a contract id as scvAddress', () => {
-      expect(typeOf(encode(soroban, USDC_TOKEN))).toBe('scvAddress');
+      expect(typeOf(encode(soroban, address(USDC_TOKEN)))).toBe('scvAddress');
     });
 
-    it('encodes an [address, 10000] pair as a two-element scvVec of scvAddress and scvU32', () => {
-      const val = encode(soroban, [ADDRESS_A, 10_000]);
+    it('reports invalid explicitly marked addresses clearly', () => {
+      expect(() => encode(soroban, address('not-an-address'))).toThrow(
+        'Invalid Soroban address "not-an-address"',
+      );
+    });
+
+    it('encodes [[addr, 10000]] as a vector containing a two-element tuple vector', () => {
+      const val = encode(soroban, recipients([[ADDRESS_A, 10_000]]));
       expect(typeOf(val)).toBe('scvVec');
-      expect(pairTypes(val)).toEqual(['scvAddress', 'scvU32']);
-      expect(val.vec()![1].u32()).toBe(10_000);
+      const pairs = val.vec()!;
+      expect(pairs).toHaveLength(1);
+      expect(typeOf(pairs[0])).toBe('scvVec');
+      expect(pairTypes(pairs[0])).toEqual(['scvAddress', 'scvU32']);
+      expect(pairs[0].vec()![1].u32()).toBe(10_000);
     });
 
     it('encodes a recipients list as an scvVec of (scvAddress, scvU32) pairs', () => {
-      const val = encode(soroban, [
+      const val = encode(soroban, recipients([
         [ADDRESS_A, 6000],
         [ADDRESS_B, 4000],
-      ]);
+      ]));
       expect(typeOf(val)).toBe('scvVec');
       const pairs = val.vec()!;
       expect(pairs).toHaveLength(2);
@@ -115,6 +127,21 @@ describe('SorobanClientService XDR encoding (#840)', () => {
         expect(pairTypes(pair)).toEqual(['scvAddress', 'scvU32']);
       }
       expect(pairs.map((p) => p.vec()![1].u32())).toEqual([6000, 4000]);
+    });
+
+    it('encodes an explicitly marked generic vector', () => {
+      const val = encode(soroban, vec([address(ADDRESS_A)]));
+      expect(typeOf(val)).toBe('scvVec');
+      expect(typeOf(val.vec()![0])).toBe('scvAddress');
+    });
+
+    it('rejects unmarked string/number pairs instead of inferring recipients', () => {
+      expect(() => encode(soroban, [ADDRESS_A, 10_000])).toThrow(
+        'Unsupported unmarked Soroban argument',
+      );
+      expect(() => encode(soroban, [[ADDRESS_A, 10_000]])).toThrow(
+        'Unsupported unmarked Soroban argument',
+      );
     });
 
     it('encodes a Buffer as scvBytes', () => {
